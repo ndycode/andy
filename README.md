@@ -1,6 +1,6 @@
 # Andy — an iMessage personal finance assistant
 
-[![CI](https://github.com/ndycode/poke/actions/workflows/ci.yml/badge.svg)](https://github.com/ndycode/poke/actions/workflows/ci.yml)
+[![CI](https://github.com/ndycode/andy/actions/workflows/ci.yml/badge.svg)](https://github.com/ndycode/andy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Bun](https://img.shields.io/badge/runtime-Bun-black)](https://bun.sh)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6)](https://www.typescriptlang.org/)
