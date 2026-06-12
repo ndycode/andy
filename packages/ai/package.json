@@ -1,0 +1,25 @@
+{
+  "name": "@repo/ai",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^3.0.81",
+    "@ai-sdk/groq": "^3.0.40",
+    "@repo/db": "*",
+    "@repo/shared": "*",
+    "ai": "^6.0.202",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^3.0.10",
+    "typescript": "^5.7.0"
+  }
+}

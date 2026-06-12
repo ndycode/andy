@@ -1,0 +1,29 @@
+{
+  "name": "@repo/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./money": "./src/money.ts",
+    "./time": "./src/time.ts",
+    "./categories": "./src/categories.ts",
+    "./allowlist": "./src/allowlist.ts",
+    "./goals": "./src/goals.ts",
+    "./budget": "./src/budget.ts",
+    "./dedup": "./src/dedup.ts",
+    "./errors": "./src/errors.ts",
+    "./env": "./src/env.ts",
+    "./log": "./src/log.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@t3-oss/env-core": "^0.13.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
