@@ -13,9 +13,15 @@
  *  - Idempotent: drizzle tracks applied migrations in its __drizzle_migrations table, so re-running
  *    only applies what's new.
  */
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
+
+// Resolve the migrations folder relative to THIS file, not the cwd, so the runner works whether it's
+// invoked from packages/db (bun run db:migrate) or the repo root (where .env lives for Bun autoload).
+const migrationsFolder = join(dirname(fileURLToPath(import.meta.url)), "..", "migrations");
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -34,8 +40,8 @@ const sql = postgres(url, { max: 1, prepare: false });
 const db = drizzle(sql);
 
 try {
-  console.log("Applying migrations from ./migrations …");
-  await migrate(db, { migrationsFolder: "./migrations" });
+  console.log(`Applying migrations from ${migrationsFolder} …`);
+  await migrate(db, { migrationsFolder });
   console.log("✅ Migrations applied (or already up to date).");
 } catch (err) {
   console.error("❌ Migration failed:", err instanceof Error ? err.message : err);
