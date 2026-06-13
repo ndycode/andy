@@ -715,7 +715,7 @@ export async function recentTurns(userId: string, limit = 10): Promise<ChatTurn[
     .select({ role: messages.role, content: messages.content })
     .from(messages)
     .where(eq(messages.userId, userId))
-    .orderBy(sql`${messages.createdAt} desc`)
+    .orderBy(sql`${messages.seq} desc`)
     .limit(limit);
   return rows.reverse().map((r) => ({ role: r.role, content: r.content }));
 }

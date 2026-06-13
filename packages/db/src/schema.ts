@@ -149,8 +149,15 @@ export const messages = pgTable(
     role: messageRoleEnum("role").notNull(),
     content: text("content").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Monotonic insertion order. created_at defaults to now() which is txn-stable, so the user and
+    // assistant turns of one inbound message share a created_at; seq breaks that tie so recentTurns
+    // returns them in true insertion order (user before assistant) instead of a nondeterministic tie.
+    seq: bigserial("seq", { mode: "number" }).notNull(),
   },
-  (t) => [index("messages_user_time_idx").on(t.userId, t.createdAt)],
+  (t) => [
+    index("messages_user_time_idx").on(t.userId, t.createdAt),
+    index("messages_user_seq_idx").on(t.userId, t.seq),
+  ],
 );
 
 /** Learned merchant→category mappings, so "grab" auto-categorizes as Transport. */

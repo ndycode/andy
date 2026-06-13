@@ -57,6 +57,13 @@
       "when": 1781338227804,
       "tag": "0007_schema_hardening_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781341514463,
+      "tag": "0008_messages_seq_ordering",
+      "breakpoints": true
     }
   ]
 }
