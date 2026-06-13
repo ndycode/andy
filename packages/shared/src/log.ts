@@ -18,7 +18,17 @@ export const log = {
 };
 
 /** Normalize an unknown thrown value to a compact, loggable shape. */
-export function errInfo(err: unknown): { name: string; message: string } {
-  if (err instanceof Error) return { name: err.name, message: err.message };
+export function errInfo(
+  err: unknown,
+  opts?: { stack?: boolean },
+): { name: string; message: string; stack?: string } {
+  if (err instanceof Error) {
+    // Stack is opt-in: expected/handled errors (rate limits, Sendblue non-200) stay terse, while
+    // truly-unexpected boundaries (request onError, cron.error) can ask for the stack — the single
+    // most useful field when diagnosing an unforeseen production failure from the log drain.
+    return opts?.stack && err.stack
+      ? { name: err.name, message: err.message, stack: err.stack }
+      : { name: err.name, message: err.message };
+  }
   return { name: "NonError", message: String(err) };
 }

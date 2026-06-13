@@ -12,7 +12,11 @@ const app = new Hono();
 // (structured, via the existing logger — Vercel's drain indexes it) instead of leaking a stack.
 // handleInbound already self-handles its own errors; this is the backstop for everything else.
 app.onError((err, c) => {
-  log.error("request.error", { path: c.req.path, ...errInfo(err) });
+  log.error("request.error", {
+    method: c.req.method,
+    path: c.req.path,
+    ...errInfo(err, { stack: true }),
+  });
   return c.json({ ok: false }, 500);
 });
 
@@ -46,7 +50,7 @@ app.get("/api/cron/weekly-summary", async (c) => {
     log.info("cron.done", result);
     return c.json({ ok: true, ...result });
   } catch (err) {
-    log.error("cron.error", errInfo(err));
+    log.error("cron.error", errInfo(err, { stack: true }));
     return c.json({ ok: false }, 500);
   }
 });
