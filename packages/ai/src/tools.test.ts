@@ -117,6 +117,39 @@ describe("createGoal buffers a goal intent", () => {
     expect(res.ok).toBe(false);
     expect(drain()).toHaveLength(0);
   });
+
+  test("a valid YYYY-MM-DD deadline is accepted", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.createGoal, {
+      name: "Trip",
+      target: "30k",
+      targetDate: "2026-12-25",
+    });
+    expect(res).toMatchObject({ ok: true, targetDate: "2026-12-25" });
+    expect(drain()[0]).toMatchObject({ targetDate: "2026-12-25" });
+  });
+
+  test("a raw natural-language deadline is rejected (no bad date reaches the DB)", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.createGoal, {
+      name: "Trip",
+      target: "30k",
+      targetDate: "december",
+    });
+    expect(res.ok).toBe(false);
+    expect(drain()).toHaveLength(0);
+  });
+
+  test("a non-calendar deadline (Feb 30) is rejected", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.createGoal, {
+      name: "Trip",
+      target: "30k",
+      targetDate: "2026-02-30",
+    });
+    expect(res.ok).toBe(false);
+    expect(drain()).toHaveLength(0);
+  });
 });
 
 describe("edit/delete buffer intents pinned to the loop-start snapshot (C2/C4)", () => {
@@ -143,11 +176,45 @@ describe("edit/delete buffer intents pinned to the loop-start snapshot (C2/C4)",
     ]);
   });
 
+  test("editLast can clear a note with an empty string (L3)", async () => {
+    const { tools, drain } = ctxWithBuffer({ lastTransaction: sampleLast });
+    const res = await run(tools.editLast, { note: "" });
+    expect(res.ok).toBe(true);
+    const writes = drain();
+    expect(writes).toEqual([
+      { type: "editLast", userId: "user-1", targetId: "tx-last", patch: { note: "" } },
+    ]);
+  });
+
   test("editLast with no fields is an error", async () => {
     const { tools, drain } = ctxWithBuffer({ lastTransaction: sampleLast });
     const res = await run(tools.editLast, {});
     expect(res.ok).toBe(false);
     expect(drain()).toHaveLength(0);
+  });
+});
+
+describe("same-turn log → edit → delete reflects post-edit values (L4)", () => {
+  test("'grab 180, make it 200, delete that' confirms ₱200, not ₱180", async () => {
+    const { tools, drain } = ctxWithBuffer({ lastTransaction: sampleLast });
+    await run(tools.logExpense, { amount: "180", category: "Transport", note: "grab" });
+    await run(tools.editLast, { amount: "200" });
+    const res = await run(tools.deleteLast, {});
+    // The confirmation must echo the edited amount, matching what flushWrites stored then removed.
+    expect(res).toMatchObject({ ok: true, deleted: { amount: "₱200.00", category: "Transport" } });
+    const writes = drain();
+    // Sequence: expense, editLast(same-turn), deleteLast(same-turn) — none target history.
+    expect(writes.map((w) => w.type)).toEqual(["expense", "editLast", "deleteLast"]);
+    expect(writes[2]).toEqual({ type: "deleteLast", userId: "user-1", targetSameTurn: true });
+  });
+
+  test("same-turn category edit then delete confirms the new category", async () => {
+    const { tools, drain } = ctxWithBuffer({ lastTransaction: sampleLast });
+    await run(tools.logExpense, { amount: "180", category: "Transport", note: "grab" });
+    await run(tools.editLast, { category: "Food" });
+    const res = await run(tools.deleteLast, {});
+    expect(res).toMatchObject({ ok: true, deleted: { category: "Food" } });
+    drain();
   });
 });
 
@@ -251,6 +318,70 @@ describe("setBudget buffers a budget intent (Wave 3)", () => {
     expect(drain()).toEqual([
       { type: "setBudget", userId: "user-1", category: "Food", monthlyLimitCentavos: 500000 },
     ]);
+  });
+});
+
+describe("backdating: logExpense/logIncome accept an optional date", () => {
+  test("logExpense with a valid past date buffers that localDate", async () => {
+    const { tools, drain } = ctxWithBuffer(); // ctx.today = 2026-06-11
+    const res = await run(tools.logExpense, {
+      amount: "800",
+      category: "Food",
+      note: "grocery",
+      date: "2026-06-09",
+    });
+    expect(res).toMatchObject({ ok: true, date: "2026-06-09" });
+    expect(drain()[0]).toMatchObject({
+      type: "expense",
+      amountCentavos: 80000,
+      localDate: "2026-06-09",
+    });
+  });
+
+  test("omitting date logs to today (ctx.today)", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    await run(tools.logExpense, { amount: "180", category: "Transport" });
+    expect(drain()[0]).toMatchObject({ localDate: "2026-06-11" });
+  });
+
+  test("a future date is rejected and buffers nothing", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.logExpense, {
+      amount: "180",
+      category: "Food",
+      date: "2026-06-20",
+    });
+    expect(res.ok).toBe(false);
+    expect(drain()).toHaveLength(0);
+  });
+
+  test("a non-calendar date is rejected", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.logIncome, { amount: "25k", date: "2026-02-30" });
+    expect(res.ok).toBe(false);
+    expect(drain()).toHaveLength(0);
+  });
+
+  test("logIncome backdates too", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.logIncome, { amount: "25k", note: "sweldo", date: "2026-05-30" });
+    expect(res).toMatchObject({ ok: true, date: "2026-05-30" });
+    expect(drain()[0]).toMatchObject({ type: "income", localDate: "2026-05-30" });
+  });
+});
+
+describe("removeBudget buffers a removeBudget intent", () => {
+  test("'drop the food budget' buffers removeBudget(Food)", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.removeBudget, { category: "Food" });
+    expect(res).toMatchObject({ ok: true, removed: "Food" });
+    expect(drain()).toEqual([{ type: "removeBudget", userId: "user-1", category: "Food" }]);
+  });
+
+  test("unknown category coerces to Other", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    await run(tools.removeBudget, { category: "Nonsense" });
+    expect(drain()[0]).toMatchObject({ type: "removeBudget", category: "Other" });
   });
 });
 

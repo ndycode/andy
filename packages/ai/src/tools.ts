@@ -1,16 +1,29 @@
 import {
+  budgetStatuses,
   findGoalByName,
+  findRecurringByLabel,
   getInsights,
   getMonthOverview,
   getRecentTransactions,
   getSpendingByCategory,
   listGoals,
   listRecurring,
+  searchTransactions,
   sumByCategory,
 } from "@repo/db";
-import { CATEGORIES, type Category, coerceCategory } from "@repo/shared/categories";
+import { spendingDelta, spendingPace } from "@repo/shared/analytics";
+import { type CATEGORIES, type Category, coerceCategory } from "@repo/shared/categories";
 import { goalProgressMessage } from "@repo/shared/goals";
 import { formatPHP, parseAmount } from "@repo/shared/money";
+import {
+  daysInLocalMonth,
+  localDayOfMonth,
+  monthAnchor,
+  monthRange,
+  prevMonthAnchor,
+  validateCalendarDate,
+  validateLogDate,
+} from "@repo/shared/time";
 import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "./context";
@@ -28,6 +41,27 @@ export function buildTools(ctx: ToolContext) {
   // saves re-sending the 9-value enum across ~8 tools every step). coerceCategory() hardens it
   // server-side on every write path, so a bad value safely becomes "Other".
   const category = z.string().describe("One of the listed categories.");
+  // Optional backdate: the LLM resolves natural language ("yesterday", "last friday") against the
+  // <today> block into YYYY-MM-DD; validateLogDate() hardens it server-side (real date, not future,
+  // not absurdly old). Omitted → today.
+  const date = z
+    .string()
+    .optional()
+    .describe("Date the expense/income happened, YYYY-MM-DD. Omit for today.");
+  // Optional historical month for read tools, resolved by the LLM to YYYY-MM. Omitted → this month.
+  const month = z
+    .string()
+    .optional()
+    .describe("Month to query as YYYY-MM (e.g. '2026-05'). Omit for the current month.");
+
+  // Resolve an optional backdate against validateLogDate; returns the localDate string or an error.
+  const resolveLogDate = (
+    d: string | undefined,
+  ): { ok: true; date: string } | { ok: false; error: string } => {
+    if (d === undefined) return { ok: true, date: ctx.today };
+    const r = validateLogDate(d, new Date(`${ctx.today}T12:00:00Z`));
+    return r.ok ? { ok: true, date: r.date } : { ok: false, error: r.reason };
+  };
 
   // ── logging ──────────────────────────────────────────────
   const logExpense = tool({
@@ -36,70 +70,93 @@ export function buildTools(ctx: ToolContext) {
       amount,
       category,
       note: z.string().optional().describe("Short label, e.g. 'lunch', 'grab'."),
+      date,
     }),
-    execute: ({ amount, category, note }) => {
+    execute: ({ amount, category, note, date }) => {
       const r = parseAmount(amount);
       if (!r.ok) return { ok: false, error: r.reason };
+      const d = resolveLogDate(date);
+      if (!d.ok) return { ok: false, error: d.error };
       ctx.addWrite({
         type: "expense",
         userId: ctx.userId,
         amountCentavos: r.centavos,
         category: coerceCategory(category),
         note,
-        localDate: ctx.today,
+        localDate: d.date,
       });
-      return { ok: true, logged: formatPHP(r.centavos), category };
+      return { ok: true, logged: formatPHP(r.centavos), category, date: d.date };
     },
   });
 
   const logIncome = tool({
     description: "Log an income entry (sweldo, salary, payment received).",
-    inputSchema: z.object({ amount, note: z.string().optional() }),
-    execute: ({ amount, note }) => {
+    inputSchema: z.object({ amount, note: z.string().optional(), date }),
+    execute: ({ amount, note, date }) => {
       const r = parseAmount(amount);
       if (!r.ok) return { ok: false, error: r.reason };
+      const d = resolveLogDate(date);
+      if (!d.ok) return { ok: false, error: d.error };
       ctx.addWrite({
         type: "income",
         userId: ctx.userId,
         amountCentavos: r.centavos,
         category: "Income",
         note,
-        localDate: ctx.today,
+        localDate: d.date,
       });
-      return { ok: true, logged: formatPHP(r.centavos) };
+      return { ok: true, logged: formatPHP(r.centavos), date: d.date };
     },
   });
 
   // ── questions / reads ────────────────────────────────────
+  // Resolve an optional YYYY-MM into the `at` Date the month-scoped queries expect; null month → now.
+  const resolveMonthAt = (
+    m: string | undefined,
+  ): { at: Date | undefined; label: string | null } => {
+    if (m === undefined) return { at: undefined, label: null };
+    const anchor = monthAnchor(m);
+    return anchor ? { at: anchor, label: m } : { at: undefined, label: null };
+  };
+
   const getSpending = tool({
-    description: "Total spending in ONE category this month.",
-    inputSchema: z.object({ category }),
-    execute: async ({ category }) => {
+    description: "Total spending in ONE category, this month or a past month.",
+    inputSchema: z.object({ category, month }),
+    execute: async ({ category, month }) => {
       const cat = coerceCategory(category);
-      const total = await sumByCategory(ctx.userId, cat);
-      return { category: cat, total: formatPHP(total) };
+      const { at, label } = resolveMonthAt(month);
+      const total = await sumByCategory(ctx.userId, cat, at ?? new Date());
+      return { category: cat, total: formatPHP(total), month: label };
     },
   });
 
   const getOverview = tool({
-    description: "Month income, expenses, and net. For 'how am i doing', 'am i broke'.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      const o = await getMonthOverview(ctx.userId);
+    description:
+      "Income, expenses, and net for this month or a past month. For 'how am i doing', 'am i broke', 'how was may'.",
+    inputSchema: z.object({ month }),
+    execute: async ({ month }) => {
+      const { at, label } = resolveMonthAt(month);
+      const o = await getMonthOverview(ctx.userId, at ?? new Date());
       return {
         income: formatPHP(o.income),
         expenses: formatPHP(o.expense),
         net: formatPHP(o.net),
+        month: label,
       };
     },
   });
 
   const getCategoryBreakdown = tool({
-    description: "Spending by category this month, biggest first. For 'where's my money going'.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      const rows = await getSpendingByCategory(ctx.userId);
-      return { breakdown: rows.map((r) => ({ category: r.category, total: formatPHP(r.total) })) };
+    description:
+      "Spending by category (biggest first), this month or a past month. For 'where's my money going'.",
+    inputSchema: z.object({ month }),
+    execute: async ({ month }) => {
+      const { at, label } = resolveMonthAt(month);
+      const rows = await getSpendingByCategory(ctx.userId, at ?? new Date());
+      return {
+        breakdown: rows.map((r) => ({ category: r.category, total: formatPHP(r.total) })),
+        month: label,
+      };
     },
   });
 
@@ -131,23 +188,34 @@ export function buildTools(ctx: ToolContext) {
     execute: ({ name, target, targetDate }) => {
       const r = parseAmount(target);
       if (!r.ok) return { ok: false, error: r.reason };
+      // Harden the deadline: the LLM must resolve "december" → YYYY-MM-DD; reject anything else so a
+      // raw/invalid date can't reach the DB and later render as "Invalid Date"/NaN pace in status.
+      let deadline: string | null = null;
+      if (targetDate !== undefined && targetDate.trim() !== "") {
+        const dv = validateCalendarDate(targetDate);
+        if (!dv.ok) return { ok: false, error: `deadline ${dv.reason}` };
+        deadline = dv.date;
+      }
       ctx.addWrite({
         type: "createGoal",
         userId: ctx.userId,
         name,
         targetCentavos: r.centavos,
-        targetDate: targetDate ?? null,
+        targetDate: deadline,
       });
-      return { ok: true, name, target: formatPHP(r.centavos), targetDate: targetDate ?? null };
+      return { ok: true, name, target: formatPHP(r.centavos), targetDate: deadline };
     },
   });
 
   const contributeToGoal = tool({
-    description: "Add money to an existing goal, e.g. 'put 2000 to emergency fund'.",
-    inputSchema: z.object({ goalName: z.string(), amount }),
-    execute: async ({ goalName, amount }) => {
+    description:
+      "Add money to an existing goal, e.g. 'put 2000 to emergency fund'. Accepts an optional backdate like logExpense.",
+    inputSchema: z.object({ goalName: z.string(), amount, date }),
+    execute: async ({ goalName, amount, date }) => {
       const r = parseAmount(amount);
       if (!r.ok) return { ok: false, error: r.reason };
+      const d = resolveLogDate(date);
+      if (!d.ok) return { ok: false, error: d.error };
       const goal = await findGoalByName(ctx.userId, goalName);
       if (!goal) return { ok: false, error: `no goal matching "${goalName}". create it first.` };
       ctx.addWrite({
@@ -155,13 +223,14 @@ export function buildTools(ctx: ToolContext) {
         userId: ctx.userId,
         goalId: goal.id,
         amountCentavos: r.centavos,
-        localDate: ctx.today,
+        localDate: d.date,
       });
       const newSaved = goal.savedCentavos + r.centavos;
       return {
         ok: true,
         goal: goal.name,
         added: formatPHP(r.centavos),
+        date: d.date,
         progress: `${formatPHP(newSaved)} / ${formatPHP(goal.targetCentavos)}`,
       };
     },
@@ -173,7 +242,9 @@ export function buildTools(ctx: ToolContext) {
     execute: async ({ goalName }) => {
       const goals = await listGoals(ctx.userId);
       if (goals.length === 0) return { goals: [], note: "no savings goals yet." };
-      const today = new Date();
+      // Use the request's Manila "today" (not server-UTC) so pace math is consistent with how
+      // dates were resolved when goals/deadlines were created.
+      const today = new Date(`${ctx.today}T00:00:00Z`);
       const chosen = goalName
         ? [await findGoalByName(ctx.userId, goalName)].filter(Boolean)
         : goals;
@@ -190,6 +261,62 @@ export function buildTools(ctx: ToolContext) {
           }),
         ),
       };
+    },
+  });
+
+  const editGoal = tool({
+    description:
+      "Edit an existing savings goal's name, target amount, or deadline. For 'rename my trip fund to japan', 'make the laptop goal 30k', 'move the emergency deadline to march'. Populate at least one field.",
+    inputSchema: z.object({
+      goalName: z.string().describe("name (or part) of the goal to edit"),
+      newName: z.string().optional().describe("new goal name"),
+      target: amount.optional().describe("new target amount, token as written"),
+      targetDate: z.string().optional().describe("new deadline YYYY-MM-DD, or 'none' to clear it"),
+    }),
+    execute: async ({ goalName, newName, target, targetDate }) => {
+      const goal = await findGoalByName(ctx.userId, goalName);
+      if (!goal) return { ok: false, error: `no goal matching "${goalName}".` };
+      const patch: { name?: string; targetCentavos?: number; targetDate?: string | null } = {};
+      if (newName) patch.name = newName;
+      if (target !== undefined) {
+        const r = parseAmount(target);
+        if (!r.ok) return { ok: false, error: r.reason };
+        patch.targetCentavos = r.centavos;
+      }
+      if (targetDate !== undefined) {
+        // "none"/"clear"/"" wipes the deadline; otherwise validate it as a real calendar date (any
+        // direction — a goal deadline can be in the future, unlike a backdated log).
+        const t = targetDate.trim().toLowerCase();
+        if (t === "none" || t === "clear" || t === "") patch.targetDate = null;
+        else {
+          const dv = validateCalendarDate(targetDate);
+          if (!dv.ok)
+            return { ok: false, error: `deadline ${dv.reason} (use YYYY-MM-DD or 'none')` };
+          patch.targetDate = dv.date;
+        }
+      }
+      if (Object.keys(patch).length === 0) {
+        return { ok: false, error: "no change specified — pass a new name, target, or deadline" };
+      }
+      ctx.addWrite({ type: "editGoal", userId: ctx.userId, goalId: goal.id, patch });
+      return {
+        ok: true,
+        goal: patch.name ?? goal.name,
+        target: formatPHP(patch.targetCentavos ?? goal.targetCentavos),
+        targetDate: patch.targetDate !== undefined ? patch.targetDate : goal.targetDate,
+      };
+    },
+  });
+
+  const deleteGoal = tool({
+    description:
+      "Delete a savings goal entirely. For 'delete my trip goal', 'cancel the laptop fund', 'remove that goal'. Contributions stay logged as Savings/Goals expenses; only the goal is removed.",
+    inputSchema: z.object({ goalName: z.string() }),
+    execute: async ({ goalName }) => {
+      const goal = await findGoalByName(ctx.userId, goalName);
+      if (!goal) return { ok: false, error: `no goal matching "${goalName}".` };
+      ctx.addWrite({ type: "deleteGoal", userId: ctx.userId, goalId: goal.id });
+      return { ok: true, deleted: goal.name };
     },
   });
 
@@ -247,6 +374,13 @@ export function buildTools(ctx: ToolContext) {
         last = { amountCentavos: w.amountCentavos, category: w.category, note: w.note ?? null };
       } else if (w.type === "goalContribution") {
         last = { amountCentavos: w.amountCentavos, category: "Savings/Goals", note: null };
+      } else if (w.type === "editLast" && w.targetSameTurn && last) {
+        // A same-turn edit of the just-logged row: apply the patch so a following "delete that"
+        // confirmation echoes the post-edit values, not the original ones. flushWrites applies the
+        // same patch to the row, so the reply matches what's actually stored/removed.
+        if (w.patch.amountCentavos != null) last.amountCentavos = w.patch.amountCentavos;
+        if (w.patch.category != null) last.category = w.patch.category;
+        if (w.patch.note != null) last.note = w.patch.note;
       } else if (w.type === "deleteLast" && w.targetSameTurn) {
         last = null; // the just-logged row was removed this turn
       }
@@ -319,7 +453,9 @@ export function buildTools(ctx: ToolContext) {
         patch.amountCentavos = r.centavos;
       }
       if (category) patch.category = coerceCategory(category);
-      if (note) patch.note = note;
+      // Use `!== undefined` (not truthiness) so an explicit empty string clears the note;
+      // the schema marks note optional, so an omitted field stays undefined and is ignored.
+      if (note !== undefined) patch.note = note;
       if (Object.keys(patch).length === 0) {
         return { ok: false, error: "no change specified — pass the new amount, category, or note" };
       }
@@ -344,16 +480,126 @@ export function buildTools(ctx: ToolContext) {
   // ── insights ─────────────────────────────────────────────
   const insights = tool({
     description:
-      "Spending insights: weekday vs weekend + biggest leak. For 'where's my money leaking', 'any patterns'.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      const i = await getInsights(ctx.userId);
+      "Spending insights: weekday vs weekend + biggest leak, this month or a past month. For 'where's my money leaking', 'any patterns'.",
+    inputSchema: z.object({ month }),
+    execute: async ({ month }) => {
+      const { at, label } = resolveMonthAt(month);
+      const i = await getInsights(ctx.userId, at ?? new Date());
       return {
         weekend: formatPHP(i.weekendCentavos),
         weekday: formatPHP(i.weekdayCentavos),
         topLeak: i.topLeak
           ? { what: i.topLeak.note ?? "uncategorized", total: formatPHP(i.topLeak.centavos) }
           : null,
+        month: label,
+      };
+    },
+  });
+
+  const compareSpending = tool({
+    description:
+      "Compare total spending between two months to spot a trend. For 'am i spending more than last month', 'how does this month compare to april'. Defaults to this month vs last month.",
+    inputSchema: z.object({
+      current: month.describe("the more recent month as YYYY-MM; omit for this month"),
+      previous: month.describe("the baseline month as YYYY-MM; omit for last month"),
+      category: category
+        .optional()
+        .describe("limit the comparison to one category; omit for all spending"),
+    }),
+    execute: async ({ current, previous, category }) => {
+      // Resolve the two anchors. Defaults: current = this month, previous = the month before it.
+      const curAt = current ? (monthAnchor(current) ?? new Date()) : new Date();
+      const prevAt = previous
+        ? (monthAnchor(previous) ?? prevMonthAnchor(curAt))
+        : prevMonthAnchor(curAt);
+      const cat = category ? coerceCategory(category) : null;
+      // Per-category uses the category sum; all-spending uses month EXPENSE (not net) so the trend
+      // reflects outflow, which is what "spending more" means.
+      const monthExpense = async (at: Date) => (await getMonthOverview(ctx.userId, at)).expense;
+      const [cur, prev] = await Promise.all([
+        cat ? sumByCategory(ctx.userId, cat, curAt) : monthExpense(curAt),
+        cat ? sumByCategory(ctx.userId, cat, prevAt) : monthExpense(prevAt),
+      ]);
+      const d = spendingDelta(cur, prev);
+      return {
+        scope: cat ?? "all spending",
+        current: formatPHP(d.current),
+        previous: formatPHP(d.previous),
+        change: `${d.delta >= 0 ? "+" : "-"}${formatPHP(Math.abs(d.delta))}`,
+        pctChange: d.pctChange,
+        direction: d.direction,
+      };
+    },
+  });
+
+  const searchHistory = tool({
+    description:
+      "Search past transactions by keyword, category, amount range, or recency. For 'find that grab last week', 'what was my biggest expense this month', 'anything over 1k on food'. Use byAmount for 'biggest/largest'.",
+    inputSchema: z.object({
+      text: z.string().optional().describe("keyword to match in the note, e.g. 'grab', 'jollibee'"),
+      category: category.optional(),
+      month: month.describe("limit to a month as YYYY-MM; omit for all time"),
+      minAmount: amount.optional().describe("only entries at least this much, token as written"),
+      maxAmount: amount.optional().describe("only entries at most this much"),
+      kind: z.enum(["expense", "income"]).optional(),
+      byAmount: z
+        .boolean()
+        .optional()
+        .describe("true to sort biggest-first (for 'largest/biggest')"),
+      limit: z.number().int().min(1).max(50).optional(),
+    }),
+    execute: async ({ text, category, month, minAmount, maxAmount, kind, byAmount, limit }) => {
+      const range = month ? monthAnchor(month) : null;
+      const win = range ? monthRange(range) : null;
+      const min = minAmount ? parseAmount(minAmount) : null;
+      const max = maxAmount ? parseAmount(maxAmount) : null;
+      if (min && !min.ok) return { ok: false, error: min.reason };
+      if (max && !max.ok) return { ok: false, error: max.reason };
+      const rows = await searchTransactions(ctx.userId, {
+        text,
+        category: category ? coerceCategory(category) : undefined,
+        startDate: win?.start,
+        endDate: win?.end,
+        minCentavos: min?.ok ? min.centavos : undefined,
+        maxCentavos: max?.ok ? max.centavos : undefined,
+        kind,
+        byAmount,
+        limit,
+      });
+      return {
+        ok: true,
+        count: rows.length,
+        transactions: rows.map((r) => ({
+          kind: r.kind,
+          amount: formatPHP(r.amountCentavos),
+          category: r.category,
+          note: r.note,
+          date: r.localDate,
+        })),
+      };
+    },
+  });
+
+  const getSpendingPace = tool({
+    description:
+      "Project this month's spending to month-end at the current rate and flag a budget it's on track to blow. For 'am i gonna blow my food budget', 'how's my pace this month', 'will i overspend'. Current month only.",
+    inputSchema: z.object({ category }),
+    execute: async ({ category }) => {
+      const cat = coerceCategory(category);
+      const now = new Date();
+      const [spent, statuses] = await Promise.all([
+        sumByCategory(ctx.userId, cat, now),
+        budgetStatuses(ctx.userId, now),
+      ]);
+      const limit = statuses.find((s) => s.category === cat)?.limit ?? 0;
+      const v = spendingPace(spent, localDayOfMonth(now), daysInLocalMonth(now), limit);
+      return {
+        category: cat,
+        spentSoFar: formatPHP(v.spentSoFar),
+        projectedMonthEnd: formatPHP(v.projected),
+        budget: v.limit > 0 ? formatPHP(v.limit) : null,
+        onTrackToExceed: v.willExceed,
+        projectedOver: v.willExceed ? formatPHP(v.projectedOver) : null,
       };
     },
   });
@@ -429,6 +675,120 @@ export function buildTools(ctx: ToolContext) {
     },
   });
 
+  const getBudgets = tool({
+    description:
+      "List every category budget with spent / limit / % used, this month or a past month. For 'how are my budgets', 'am i within budget', 'budget check', 'how were my budgets in may'.",
+    inputSchema: z.object({ month }),
+    execute: async ({ month }) => {
+      const { at, label } = resolveMonthAt(month);
+      const rows = await budgetStatuses(ctx.userId, at ?? new Date());
+      const real = rows.filter((b) => b.limit > 0);
+      return {
+        budgets: real.map((b) => ({
+          category: b.category,
+          spent: formatPHP(b.spent),
+          limit: formatPHP(b.limit),
+          pct: Math.round((b.spent / b.limit) * 100),
+          left: formatPHP(Math.max(0, b.limit - b.spent)),
+          over: b.spent > b.limit,
+        })),
+        month: label,
+      };
+    },
+  });
+
+  const removeBudget = tool({
+    description:
+      "Remove a category's monthly budget. For 'drop the food budget', 'stop tracking my shopping budget', 'remove budget for transport'.",
+    inputSchema: z.object({ category }),
+    execute: ({ category }) => {
+      const cat = coerceCategory(category);
+      ctx.addWrite({ type: "removeBudget", userId: ctx.userId, category: cat });
+      return { ok: true, removed: cat };
+    },
+  });
+
+  const removeRecurringBill = tool({
+    description:
+      "Remove a recurring bill/income reminder by name. For 'cancel my netflix reminder', 'stop reminding me about rent', 'remove the load reminder'.",
+    inputSchema: z.object({
+      label: z.string().describe("name of the bill to remove, e.g. 'netflix', 'rent'"),
+    }),
+    execute: async ({ label }) => {
+      // Resolve at tool time for a useful reply ("no reminder matching X"); the same fuzzy match runs
+      // again in flushWrites against the live row so a concurrent change can't delete the wrong one.
+      const hit = await findRecurringByLabel(ctx.userId, label);
+      if (!hit) return { ok: false, error: `no recurring reminder matching "${label}".` };
+      ctx.addWrite({ type: "removeRecurring", userId: ctx.userId, match: label });
+      return { ok: true, removed: hit.label };
+    },
+  });
+
+  const editRecurringBill = tool({
+    description:
+      "Change an existing recurring bill/income reminder: amount, category, cadence, or which day. For 'change rent to 9k', 'move netflix to the 5th', 'make load weekly on fridays'. Populate at least one field besides the name.",
+    inputSchema: z.object({
+      label: z.string().describe("name of the bill to change, e.g. 'rent', 'netflix'"),
+      amount: amount.optional(),
+      category: category.optional(),
+      cadence: z.enum(["weekly", "monthly"]).optional(),
+      dayOfMonth: z.number().int().min(1).max(31).optional().describe("for monthly"),
+      dayOfWeek: z.number().int().min(0).max(6).optional().describe("0=Sun..6=Sat, weekly"),
+    }),
+    execute: async ({ label, amount: amt, category, cadence, dayOfMonth, dayOfWeek }) => {
+      const hit = await findRecurringByLabel(ctx.userId, label);
+      if (!hit) return { ok: false, error: `no recurring reminder matching "${label}".` };
+      const patch: {
+        amountCentavos?: number;
+        category?: Category;
+        cadence?: "weekly" | "monthly";
+        dayOfMonth?: number | null;
+        dayOfWeek?: number | null;
+      } = {};
+      if (amt !== undefined) {
+        const r = parseAmount(amt);
+        if (!r.ok) return { ok: false, error: r.reason };
+        patch.amountCentavos = r.centavos;
+      }
+      if (category !== undefined) patch.category = coerceCategory(category);
+      if (dayOfMonth !== undefined) patch.dayOfMonth = dayOfMonth;
+      if (dayOfWeek !== undefined) patch.dayOfWeek = dayOfWeek;
+      if (cadence !== undefined) {
+        patch.cadence = cadence;
+        // Switching cadence requires the day for the NEW cadence, and clears the old one — otherwise
+        // the row keeps a stale dayOfMonth with a null dayOfWeek (or vice versa) and dueRecurringToday
+        // silently never fires it again.
+        if (cadence === "weekly") {
+          if (dayOfWeek === undefined) {
+            return { ok: false, error: "switching to weekly needs a day of week (0=Sun..6=Sat)" };
+          }
+          patch.dayOfMonth = null;
+        } else {
+          if (dayOfMonth === undefined) {
+            return { ok: false, error: "switching to monthly needs a day of month (1-31)" };
+          }
+          patch.dayOfWeek = null;
+        }
+      }
+      if (Object.keys(patch).length === 0) {
+        return {
+          ok: false,
+          error: "no change specified — pass a new amount, category, cadence, or day",
+        };
+      }
+      ctx.addWrite({ type: "editRecurring", userId: ctx.userId, match: label, patch });
+      return {
+        ok: true,
+        label: hit.label,
+        ...(patch.amountCentavos != null ? { amount: formatPHP(patch.amountCentavos) } : {}),
+        ...(patch.category != null ? { category: patch.category } : {}),
+        ...(patch.cadence ? { cadence: patch.cadence } : {}),
+        ...(patch.dayOfMonth != null ? { dayOfMonth: patch.dayOfMonth } : {}),
+        ...(patch.dayOfWeek != null ? { dayOfWeek: patch.dayOfWeek } : {}),
+      };
+    },
+  });
+
   return {
     logExpense,
     logIncome,
@@ -439,15 +799,24 @@ export function buildTools(ctx: ToolContext) {
     createGoal,
     contributeToGoal,
     getGoalStatus,
+    editGoal,
+    deleteGoal,
     remember,
     forgetMemory,
     listMemory,
     deleteLast,
     editLast,
     insights,
+    compareSpending,
+    searchHistory,
+    getSpendingPace,
     addRecurringBill,
     listRecurringBills,
+    removeRecurringBill,
+    editRecurringBill,
     setBudget,
+    getBudgets,
+    removeBudget,
   };
 }
 

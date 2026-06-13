@@ -21,6 +21,10 @@ const READ_TOOLS = new Set([
   "insights",
   "listRecurringBills",
   "listMemory",
+  "getBudgets",
+  "compareSpending",
+  "searchHistory",
+  "getSpendingPace",
 ]);
 
 /**
@@ -62,8 +66,8 @@ export async function runAgent(
       ? `\n\n<habits>\nThis user's usual categories — apply them when the note matches:\n${habitList.map((h) => `- ${h.merchant} → ${h.category}`).join("\n")}\n</habits>`
       : "";
 
-  // Give Andy today's date (Manila) so relative dates like "by December" resolve correctly.
-  const dateBlock = `\n\n<today>Today is ${base.today} (Asia/Manila). Resolve relative dates from this. "December" with no year means the next December on/after today.</today>`;
+  // Give Andy today's date (in the user's timezone) so relative dates like "by December" resolve correctly.
+  const dateBlock = `\n\n<today>Today is ${base.today} (${base.timezone}). Resolve relative dates from this. "December" with no year means the next December on/after today.</today>`;
 
   const priorMessages: ModelMessage[] = history.map((t) => ({ role: t.role, content: t.content }));
   const instructions = SYSTEM_PROMPT + dateBlock + memoryBlock + habitBlock;
@@ -102,9 +106,11 @@ export async function runAgent(
         model: cand.model,
         instructions,
         tools: buildTools(ctx),
-        // 6 steps covers even multi-entry messages (one tool call each + a final text); a lower cap
-        // bounds worst-case token use, since every step re-sends the prompt + all tool schemas.
-        stopWhen: stepCountIs(6),
+        // 12 steps: a busy message can log several entries AND run a follow-up read ("log these 5
+        // then how am i doing"), each its own tool step, plus the final text. 6 truncated such turns
+        // mid-action. The cap still bounds worst-case token use (every step re-sends prompt + tool
+        // schemas) and the wall-clock AbortSignal below is the real safety net against a runaway loop.
+        stopWhen: stepCountIs(12),
         // Output is 5x the price of input ($5 vs $1 /Mtok on Haiku). Andy sends 1-2 sentence texts,
         // so cap worst-case generation. 512 (not lower) leaves room for a legit multi-item reply
         // like "what do you remember" / "list my recurring bills" without truncating mid-message.
@@ -242,7 +248,11 @@ function summarizeReadResult(output: unknown): string {
     if (typeof o.total === "string" && typeof o.category === "string") {
       return `${o.category}: ${o.total} so far this month.`;
     }
-    if (typeof o.income === "string" && typeof o.net === "string") {
+    if (
+      typeof o.income === "string" &&
+      typeof o.expenses === "string" &&
+      typeof o.net === "string"
+    ) {
       return `in ${o.income}, out ${o.expenses}, net ${o.net} this month.`;
     }
     if (Array.isArray(o.breakdown)) {
@@ -274,6 +284,31 @@ function summarizeReadResult(output: unknown): string {
       const rows = o.recurring as Array<{ label?: string; amount?: string }>;
       const top = rows.map((r) => `${r.label} ${r.amount}`).join(", ");
       return top ? `recurring: ${top}.` : "no recurring bills set up.";
+    }
+    if (Array.isArray(o.budgets)) {
+      const rows = o.budgets as Array<{
+        category?: string;
+        spent?: string;
+        limit?: string;
+        pct?: number;
+      }>;
+      const top = rows.map((b) => `${b.category} ${b.spent}/${b.limit} (${b.pct}%)`).join(", ");
+      return top ? `budgets: ${top}.` : "no budgets set up.";
+    }
+    if (typeof o.direction === "string" && typeof o.current === "string") {
+      // compareSpending result
+      const pct =
+        typeof o.pctChange === "number" ? ` (${o.pctChange > 0 ? "+" : ""}${o.pctChange}%)` : "";
+      const word = o.direction === "up" ? "up" : o.direction === "down" ? "down" : "flat";
+      return `${o.scope ?? "spending"}: ${o.current} now vs ${o.previous} before, ${word}${pct}.`;
+    }
+    if (typeof o.projectedMonthEnd === "string") {
+      // getSpendingPace result
+      const head = `${o.category}: ${o.spentSoFar} so far, on pace for ${o.projectedMonthEnd} by month end`;
+      if (o.onTrackToExceed && o.projectedOver) {
+        return `${head} — that's ${o.projectedOver} over your ${o.budget} budget 👀`;
+      }
+      return o.budget ? `${head}, within your ${o.budget} budget.` : `${head}.`;
     }
     if (typeof o.weekend === "string" && typeof o.weekday === "string") {
       const leak = o.topLeak as { what?: string; total?: string } | null;
