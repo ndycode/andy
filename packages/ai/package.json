@@ -20,6 +20,8 @@
   },
   "devDependencies": {
     "@ai-sdk/provider": "^3.0.10",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.5",
     "typescript": "^5.7.0"
   }
 }
