@@ -6,15 +6,15 @@ import {
   learnHabit,
   localDate,
   resolveUserId,
-  saveTurn,
 } from "@repo/db";
 import { isAllowed } from "@repo/shared/allowlist";
-import { budgetReactionLine } from "@repo/shared/budget";
+import { budgetReactionLines, countsTowardBudgetReaction } from "@repo/shared/budget";
 import type { Category } from "@repo/shared/categories";
 import { contentDedupKey } from "@repo/shared/dedup";
 import { env } from "@repo/shared/env";
 import { failureReply } from "@repo/shared/errors";
 import { errInfo, log } from "@repo/shared/log";
+import { APP_TIMEZONE, monthRange } from "@repo/shared/time";
 import { sendMessage, sendReaction, sendTyping } from "./sendblue";
 
 /**
@@ -50,12 +50,21 @@ export async function handleInbound(
     const userId = await resolveUserId(phone);
     const { reply, writes } = await runAgent(text, {
       userId,
-      timezone: "Asia/Manila",
+      timezone: APP_TIMEZONE,
       today: localDate(),
     });
 
-    // Phase 3 — flush writes + complete the dedup marker atomically.
-    await flushWrites(dedupId, writes);
+    // Phase 3 — flush writes + complete the dedup marker atomically. The two conversation turns are
+    // flushed in the SAME transaction (M1 fix): previously they ran post-commit via allSettled, so a
+    // failed turn insert was silently swallowed while the completed marker turned the redelivery into
+    // a no-op, permanently losing the turn. Now turn persistence is atomic with the marker — a failure
+    // rolls the whole flush back, leaves the marker 'claimed', and the redelivery retries.
+    const flushIntents: typeof writes = [
+      ...writes,
+      { type: "saveTurn", userId, role: "user", content: text },
+      { type: "saveTurn", userId, role: "assistant", content: reply },
+    ];
+    await flushWrites(dedupId, flushIntents);
 
     // In-the-moment reaction (Wave 3): if a just-logged expense crossed a budget threshold,
     // append one Andy line to the SAME reply — zero extra messages, the data's already here.
@@ -64,20 +73,19 @@ export async function handleInbound(
 
     log.info("inbound.done", { corr, writes: writes.length, reacted: Boolean(reaction) });
 
-    // Persist conversation turns + learn habits. MUST await — serverless freezes the
-    // instance on return, so fire-and-forget writes get killed before they commit.
-    const after: Promise<unknown>[] = [
-      saveTurn(userId, "user", text),
-      saveTurn(userId, "assistant", reply),
-    ];
+    // Learn merchant→category habits. Best-effort (allSettled) and idempotent reinforcement, so —
+    // unlike the conversation turns above — it's fine for this to run post-commit; a miss just means
+    // one fewer reinforcement, not lost data. MUST await: serverless freezes the instance on return.
+    const after: Promise<unknown>[] = [];
     for (const w of writes) {
       if (w.type === "expense" && w.note) after.push(learnHabit(userId, w.note, w.category));
     }
-    await Promise.allSettled(after);
+    if (after.length > 0) await Promise.allSettled(after);
 
     // Tapback requires the real inbound Apple GUID (a synthesized dedup key won't work), so only
-    // react when Sendblue actually gave us a message_handle. Best-effort, not state.
-    if (writes.length > 0 && messageId) void sendReaction(phone, "love", messageId);
+    // react when Sendblue actually gave us a message_handle. Best-effort (self-catching), but MUST
+    // be awaited: on serverless the instance can freeze on return and kill an unawaited POST.
+    if (writes.length > 0 && messageId) await sendReaction(phone, "love", messageId);
   } catch (err) {
     // Marker stays 'claimed' → a redelivery safely retries (not lost, not double-logged).
     log.error("inbound.error", { corr, ...errInfo(err) });
@@ -86,30 +94,33 @@ export async function handleInbound(
 }
 
 /**
- * One short budget line if a just-logged expense crossed its category threshold on THIS message.
- * priorSpent = current month-to-date spend minus what we just logged in that category, so the
+ * Budget heads-up line(s) for the categories a just-logged expense crossed a threshold in, on THIS
+ * message. priorSpent = current month-to-date spend minus what we just logged in that category, so a
  * line fires only on the crossing transaction (not on every later expense in the same category).
+ *
+ * A single message can log into several categories ("lunch 300, grab 150, shopping 2k"), each of
+ * which may cross its own threshold — surface ALL of them (one line each), not just the first, so no
+ * relevant signal is silently dropped. Returns the joined block, or null if nothing crossed.
+ *
+ * Only current-month expenses count: budgetStatusesFor sums the current Manila month, so a
+ * backdated expense (localDate in a past month) is NOT part of `spent` and must be excluded from
+ * `justLogged` too — otherwise we'd subtract it from this month's total and compute a wrong (even
+ * negative) priorSpent, firing a bogus alert.
  */
 async function budgetReaction(
   userId: string,
   writes: Awaited<ReturnType<typeof runAgent>>["writes"],
 ): Promise<string | null> {
+  const thisMonth = monthRange();
   const loggedByCategory = new Map<Category, number>();
   for (const w of writes) {
-    if (w.type === "expense") {
+    if (w.type === "expense" && countsTowardBudgetReaction(w.localDate, thisMonth)) {
       loggedByCategory.set(w.category, (loggedByCategory.get(w.category) ?? 0) + w.amountCentavos);
     }
   }
   if (loggedByCategory.size === 0) return null;
 
   const statuses = await budgetStatusesFor(userId, [...loggedByCategory.keys()]);
-  for (const s of statuses) {
-    const justLogged = loggedByCategory.get(s.category) ?? 0;
-    const line = budgetReactionLine(
-      { category: s.category, limit: s.limit, spent: s.spent },
-      s.spent - justLogged,
-    );
-    if (line) return line; // surface the first crossing; keep replies short
-  }
-  return null;
+  const lines = budgetReactionLines(statuses, loggedByCategory);
+  return lines.length > 0 ? lines.join("\n") : null;
 }

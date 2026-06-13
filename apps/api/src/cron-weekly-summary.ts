@@ -6,6 +6,7 @@ import {
   recordSummary,
   resolveUserId,
 } from "@repo/db";
+import { env } from "@repo/shared/env";
 import { goalProgressMessage } from "@repo/shared/goals";
 import { formatPHP } from "@repo/shared/money";
 import { sendMessage } from "./sendblue";
@@ -14,13 +15,21 @@ import { sendMessage } from "./sendblue";
  * Weekly recap, triggered by a DAILY Vercel Cron (verification C6).
  * Time-window self-heal: gated by a summary_runs row for the current Manila week, NOT
  * day-of-week — a missed daily tick is recovered later in the same week.
- * recordSummary runs only after a successful send (at-least-once; rare double-send acceptable).
+ *
+ * record-before-send: we CLAIM the week's slot (recordSummary) before sending. Only the claim
+ * winner sends, so a send failure after a claim means at worst one missed recap that week — never a
+ * duplicate recap on a later daily tick. The hasSummaryForWeek check stays as a cheap fast-path that
+ * skips building the recap once it's already been sent.
  */
 export async function runWeeklySummary(): Promise<{ sent: boolean }> {
-  if (await hasSummaryForWeek()) return { sent: false }; // already done this Manila week
+  if (await hasSummaryForWeek()) return { sent: false }; // fast-path: already done this Manila week
 
-  const phone = process.env.ALLOWED_PHONE;
+  const phone = env.ALLOWED_PHONE;
   if (!phone) return { sent: false };
+
+  // Atomically claim the slot before doing any work. A lost claim means a concurrent/earlier tick
+  // already took this week — bail without sending.
+  if (!(await recordSummary())) return { sent: false };
 
   const userId = await resolveUserId(phone);
   const [overview, byCat, goals] = await Promise.all([
@@ -31,7 +40,6 @@ export async function runWeeklySummary(): Promise<{ sent: boolean }> {
 
   const text = renderRecap(overview, byCat, goals);
   await sendMessage(phone, text);
-  await recordSummary();
   return { sent: true };
 }
 

@@ -1,3 +1,4 @@
+import { constantTimeEqual } from "@repo/shared/allowlist";
 import { env } from "@repo/shared/env";
 import { errInfo, log } from "@repo/shared/log";
 import { Hono } from "hono";
@@ -6,6 +7,14 @@ import { handleInbound } from "./handler";
 import { parseInbound } from "./sendblue";
 
 const app = new Hono();
+
+// Global error boundary: any uncaught throw in a route returns a clean 500 with a logged trace
+// (structured, via the existing logger — Vercel's drain indexes it) instead of leaking a stack.
+// handleInbound already self-handles its own errors; this is the backstop for everything else.
+app.onError((err, c) => {
+  log.error("request.error", { path: c.req.path, ...errInfo(err) });
+  return c.json({ ok: false }, 500);
+});
 
 app.get("/health", (c) => c.json({ status: "ok", service: "andy" }));
 
@@ -29,7 +38,9 @@ app.post("/webhooks/sendblue", async (c) => {
 // Vercel injects `Authorization: Bearer <CRON_SECRET>` (exact env name).
 app.get("/api/cron/weekly-summary", async (c) => {
   const auth = c.req.header("authorization");
-  if (auth !== `Bearer ${env.CRON_SECRET}`) return c.json({ ok: false }, 401);
+  // Constant-time compare (matches the webhook-token boundary) — no early-exit timing signal.
+  if (!auth || !constantTimeEqual(auth, `Bearer ${env.CRON_SECRET}`))
+    return c.json({ ok: false }, 401);
   try {
     const result = await runDailyChecks();
     log.info("cron.done", result);
