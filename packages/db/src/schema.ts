@@ -37,7 +37,7 @@ export const transactions = pgTable(
     amountCentavos: bigint("amount_centavos", { mode: "number" }).notNull(),
     category: categoryEnum("category").notNull(),
     note: text("note"),
-    goalId: uuid("goal_id").references(() => savingsGoals.id),
+    goalId: uuid("goal_id").references(() => savingsGoals.id, { onDelete: "set null" }),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
     localDate: date("local_date").notNull(),
     // Monotonic insertion order. occurredAt defaults to now() which is txn-stable, so all
@@ -49,6 +49,8 @@ export const transactions = pgTable(
     index("tx_user_date_idx").on(t.userId, t.localDate),
     // Live reply loop (recent / edit-last / delete-last) sorts by recency per user.
     index("tx_user_seq_idx").on(t.userId, t.seq),
+    // Amounts are always positive (parseAmount rejects <=0 at the app layer); enforce at the DB too.
+    check("tx_amount_positive", sql`${t.amountCentavos} > 0`),
   ],
 );
 
@@ -71,6 +73,8 @@ export const savingsGoals = pgTable(
     // SQL arithmetic, so this can't currently go negative — the constraint just makes the invariant
     // enforced by the DB rather than only by convention.
     check("saved_centavos_non_negative", sql`${t.savedCentavos} >= 0`),
+    // A goal target is always a positive amount (parseAmount rejects <=0).
+    check("goal_target_positive", sql`${t.targetCentavos} > 0`),
   ],
 );
 
@@ -84,7 +88,11 @@ export const budgets = pgTable(
     monthlyLimitCentavos: bigint("monthly_limit_centavos", { mode: "number" }).notNull(),
   },
   // One budget per (user, category); enables upsert and prevents duplicates.
-  (t) => [primaryKey({ columns: [t.userId, t.category] })],
+  (t) => [
+    primaryKey({ columns: [t.userId, t.category] }),
+    // A budget limit is always a positive amount (parseAmount rejects <=0).
+    check("budget_limit_positive", sql`${t.monthlyLimitCentavos} > 0`),
+  ],
 );
 
 /** Dedup marker. status='completed' = true duplicate; 'claimed'-only = crashed mid-flight, safe to retry. */
@@ -181,7 +189,21 @@ export const recurringItems = pgTable(
     lastRemindedDate: date("last_reminded_date"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("recurring_user_idx").on(t.userId)],
+  (t) => [
+    index("recurring_user_idx").on(t.userId),
+    // Amount is always positive (parseAmount rejects <=0).
+    check("recurring_amount_positive", sql`${t.amountCentavos} > 0`),
+    // Day-of-month is 1..31, day-of-week is 0..6 (Sun..Sat) when present.
+    check("day_of_month_range", sql`${t.dayOfMonth} IS NULL OR ${t.dayOfMonth} BETWEEN 1 AND 31`),
+    check("day_of_week_range", sql`${t.dayOfWeek} IS NULL OR ${t.dayOfWeek} BETWEEN 0 AND 6`),
+    // The cadence MUST carry the matching day, or the item silently never fires in
+    // dueRecurringToday (monthly needs day_of_month; weekly needs day_of_week). Enforced at the DB
+    // so no write path — app or manual — can create a permanently-dead reminder.
+    check(
+      "cadence_day_consistency",
+      sql`(${t.cadence} = 'monthly' AND ${t.dayOfMonth} IS NOT NULL) OR (${t.cadence} = 'weekly' AND ${t.dayOfWeek} IS NOT NULL)`,
+    ),
+  ],
 );
 
 /** Dedup log so proactive nudges don't spam (one per kind+key per Manila week). */
