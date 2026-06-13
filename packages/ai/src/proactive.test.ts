@@ -53,4 +53,13 @@ describe("composeProactive — money-correctness guard", () => {
     const model = modelSaying("you've spent 5200 of your 5000 food budget, oof");
     expect(await composeProactive(brief, fallback, model)).toContain("5200");
   });
+
+  test("a model error/timeout -> deterministic fallback (never drops the message)", async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        throw Object.assign(new Error("The operation timed out."), { name: "TimeoutError" });
+      },
+    });
+    expect(await composeProactive(brief, fallback, model)).toBe(fallback);
+  });
 });

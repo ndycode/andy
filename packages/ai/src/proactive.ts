@@ -25,6 +25,11 @@ export async function composeProactive(
       model,
       system: VOICE,
       prompt: brief,
+      // Bound this single-shot call. In the daily cron composeProactive runs in a loop (per budget
+      // category + per due bill); without a timeout one hung LLM call would block the whole cron
+      // until the platform wall-clock kill. On abort the catch below falls back to the deterministic
+      // template — the proactive message is never dropped, just un-rephrased.
+      abortSignal: AbortSignal.timeout(15_000),
     });
     const out = text.trim();
     if (out.length === 0) return fallback;
