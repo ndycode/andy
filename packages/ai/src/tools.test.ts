@@ -1,7 +1,19 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { LastTransaction, WriteIntent } from "@repo/db";
-import { createWriteBuffer } from "./context";
-import { buildTools } from "./tools";
+
+// logExpense/logIncome now call findRecentDuplicate (a DB read) to warn on accidental re-logs.
+// These are buffer-only unit tests with no DB. Spread the REAL @repo/db (pure helpers like
+// validateLogDate/monthAnchor stay real; importing it does NOT connect — getDb is lazy) and override
+// only the DB-touching reads the exercised tools hit, defaulting to "no duplicate".
+import * as realDb from "@repo/db";
+
+mock.module("@repo/db", () => ({
+  ...realDb,
+  findRecentDuplicate: async () => null,
+}));
+
+const { createWriteBuffer } = await import("./context");
+const { buildTools } = await import("./tools");
 
 function ctxWithBuffer(opts?: { lastTransaction?: LastTransaction | null; memories?: string[] }) {
   const { addWrite, peek, drain } = createWriteBuffer();
@@ -86,20 +98,27 @@ describe("write-tools buffer intents (no DB during agent run)", () => {
     expect(drain()[0]).toMatchObject({ category: "Other" });
   });
 
-  test("H2: a non-canonical category is echoed as the STORED value, not the raw arg", async () => {
+  test("H2: a non-canonical category is echoed as the STORED (coerced) value, not the raw arg", async () => {
     const { tools, drain } = ctxWithBuffer();
-    // "groceries" is not a canonical category → stored as Other. The confirmation must say Other too,
-    // otherwise the user is told "logged on groceries" while reads/budgets see nothing under it.
+    // "groceries" is a known synonym → stored as Food. The confirmation must echo the STORED value
+    // (Food), never the raw arg, so the reply matches what reads/budgets see.
     const res = await run(tools.logExpense, { amount: "500", category: "groceries", note: "sm" });
+    expect(res).toMatchObject({ ok: true, category: "Food" });
+    expect(drain()[0]).toMatchObject({ category: "Food" });
+  });
+
+  test("H2: a truly-unknown category still echoes the stored Other", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.logExpense, { amount: "500", category: "zxqw", note: "huh" });
     expect(res).toMatchObject({ ok: true, category: "Other" });
     expect(drain()[0]).toMatchObject({ category: "Other" });
   });
 
-  test("H2: setBudget echoes the coerced category", async () => {
+  test("H2: setBudget echoes the coerced category (synonym gas → Transport)", async () => {
     const { tools, drain } = ctxWithBuffer();
     const res = await run(tools.setBudget, { category: "gas", monthlyLimit: "3k" });
-    expect(res).toMatchObject({ ok: true, category: "Other" });
-    expect(drain()[0]).toMatchObject({ type: "setBudget", category: "Other" });
+    expect(res).toMatchObject({ ok: true, category: "Transport" });
+    expect(drain()[0]).toMatchObject({ type: "setBudget", category: "Transport" });
   });
 });
 

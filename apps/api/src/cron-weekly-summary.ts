@@ -6,10 +6,11 @@ import {
   recordSummary,
   resolveUserId,
 } from "@repo/db";
+import { spendingDelta } from "@repo/shared/analytics";
 import { env } from "@repo/shared/env";
 import { goalProgressMessage } from "@repo/shared/goals";
 import { formatPHP } from "@repo/shared/money";
-import { localDate } from "@repo/shared/time";
+import { localDate, prevMonthAnchor } from "@repo/shared/time";
 import { sendMessage } from "./sendblue";
 
 /**
@@ -33,18 +34,20 @@ export async function runWeeklySummary(): Promise<{ sent: boolean }> {
   if (!(await recordSummary())) return { sent: false };
 
   const userId = await resolveUserId(phone);
-  const [overview, byCat, goals] = await Promise.all([
+  const [overview, byCat, prevByCat, goals] = await Promise.all([
     getMonthOverview(userId),
     getSpendingByCategory(userId),
+    getSpendingByCategory(userId, prevMonthAnchor()),
     listGoals(userId),
   ]);
 
-  const text = renderRecap(overview, byCat, goals);
+  const text = renderRecap(overview, byCat, goals, prevByCat);
   await sendMessage(phone, text);
   return { sent: true };
 }
 
-function renderRecap(
+/** Exported for unit testing with fixed data (no DB / no fixed clock dependence in the pure parts). */
+export function renderRecap(
   overview: { income: number; expense: number; net: number },
   byCat: { category: string; total: number }[],
   goals: {
@@ -54,6 +57,7 @@ function renderRecap(
     createdAt: Date;
     targetDate: string | null;
   }[],
+  prevByCat: { category: string; total: number }[] = [],
 ): string {
   const lines: string[] = ["📊 your money this month so far:"];
   lines.push(
@@ -61,10 +65,21 @@ function renderRecap(
   );
 
   if (byCat.length > 0) {
+    const prev = new Map(prevByCat.map((c) => [c.category, c.total]));
     lines.push("");
     lines.push("where it went:");
     for (const c of byCat.slice(0, 5)) {
-      lines.push(`  ${c.category}: ${formatPHP(c.total)}`);
+      // Month-over-month context per category: turns a bare total into a trend the user can act on.
+      const prior = prev.get(c.category);
+      let trend = "";
+      if (prior != null && prior > 0) {
+        const d = spendingDelta(c.total, prior);
+        if (d.direction !== "flat" && d.pctChange != null && Math.abs(d.pctChange) >= 5) {
+          const arrow = d.direction === "up" ? "↑" : "↓";
+          trend = ` (${arrow}${Math.abs(d.pctChange)}% vs last month)`;
+        }
+      }
+      lines.push(`  ${c.category}: ${formatPHP(c.total)}${trend}`);
     }
   }
 

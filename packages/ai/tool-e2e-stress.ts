@@ -111,19 +111,15 @@ try {
       { tool: "logExpense", args: { amount: "500", category: "groceries", note: "sm" } },
     ])) as { ok: boolean; category: string }[];
     ok(
-      "H2: logExpense echoes COERCED category (groceries→Other)",
-      r.category === "Other",
+      "synonym category coerced + echoed (groceries→Food)",
+      r.category === "Food",
       `got ${r.category}`,
     );
     const [row] = await db
       .select()
       .from(transactions)
       .where(and(eq(transactions.userId, userId), eq(transactions.note, "sm")));
-    ok(
-      "H2: stored category matches echo (Other)",
-      row?.category === "Other",
-      `stored ${row?.category}`,
-    );
+    ok("stored category matches echo (Food)", row?.category === "Food", `stored ${row?.category}`);
   }
 
   // 2. logIncome — always Income

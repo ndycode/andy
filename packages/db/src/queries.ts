@@ -484,6 +484,65 @@ export async function sumByCategory(
   return Number(row?.total ?? 0);
 }
 
+/**
+ * Detect a likely accidental re-log: a transaction of the same kind, SAME amount, on the same
+ * localDate, with a matching note (case-insensitive — either side may be null/blank). Used to WARN
+ * (not block) on a probable duplicate so Andy can offer an undo. Returns the most recent match's note
+ * or null. Note matching: both blank counts as a match; otherwise exact (case-insensitive) note.
+ */
+export async function findRecentDuplicate(
+  userId: string,
+  kind: "income" | "expense",
+  amountCentavos: number,
+  note: string | null | undefined,
+  localDate: string,
+): Promise<{ note: string | null } | null> {
+  const db = getDb();
+  const noteKey = (note ?? "").trim().toLowerCase();
+  const [row] = await db
+    .select({ note: transactions.note })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.kind, kind),
+        eq(transactions.amountCentavos, amountCentavos),
+        eq(transactions.localDate, localDate),
+        sql`lower(coalesce(trim(${transactions.note}), '')) = ${noteKey}`,
+      ),
+    )
+    .orderBy(sql`${transactions.seq} desc`)
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Individual expense amounts (centavos) for one category in the local month containing `at`. Feeds
+ * the outlier-aware pace projection (projectMonthEndRobust) so a single big one-off isn't
+ * extrapolated into a false "you'll overspend" panic.
+ */
+export async function categoryAmountsThisMonth(
+  userId: string,
+  category: Category,
+  at: Date = new Date(),
+): Promise<number[]> {
+  const db = getDb();
+  const { start, end } = monthRange(at);
+  const rows = await db
+    .select({ amount: transactions.amountCentavos })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.category, category),
+        eq(transactions.kind, "expense"),
+        gte(transactions.localDate, start),
+        lte(transactions.localDate, end),
+      ),
+    );
+  return rows.map((r) => r.amount);
+}
+
 export async function hasSummaryForWeek(at: Date = new Date()): Promise<boolean> {
   const db = getDb();
   const wk = currentWeekStart(at);
@@ -741,15 +800,43 @@ export async function saveMemory(
 }
 
 /** Recall recent memories (most recent first). */
+/**
+ * Recall memories for prompt injection. Smarter than plain recency:
+ *  - de-dups EXACT duplicate content (case-insensitive), keeping the newest — kills pile-ups like
+ *    "payday is the 15th" saved twice. (We do NOT dedup by kind: a user can have two real paydays,
+ *    the 15th and 30th, so collapsing by kind would lose a genuine fact.)
+ *  - ranks by KIND so actionable facts lead: payday → fact/preference/goal → person/other, then
+ *    recency within a kind. The model sees the money-cadence facts first.
+ * Pulls a wider window from the DB (limit*4, capped) then trims to `limit` after rank/dedup.
+ */
+const MEMORY_KIND_RANK: Record<string, number> = {
+  payday: 0,
+  fact: 1,
+  preference: 1,
+  goal: 2,
+  person: 3,
+  other: 3,
+};
+
 export async function recallMemories(userId: string, limit = 20): Promise<string[]> {
   const db = getDb();
   const rows = await db
-    .select({ content: memories.content })
+    .select({ content: memories.content, kind: memories.kind, createdAt: memories.createdAt })
     .from(memories)
     .where(eq(memories.userId, userId))
     .orderBy(sql`${memories.createdAt} desc`)
-    .limit(limit);
-  return rows.map((r) => r.content);
+    .limit(Math.min(limit * 4, 100));
+  // De-dup exact content (case-insensitive), keeping the first seen (newest, since ordered desc).
+  const seen = new Set<string>();
+  const unique = rows.filter((r) => {
+    const key = r.content.trim().toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  // Stable sort by kind rank (recency already the input order within a kind).
+  unique.sort((a, b) => (MEMORY_KIND_RANK[a.kind] ?? 3) - (MEMORY_KIND_RANK[b.kind] ?? 3));
+  return unique.slice(0, limit).map((r) => r.content);
 }
 
 /** Memories with id + kind, most recent first — for the transparent listMemory tool. */

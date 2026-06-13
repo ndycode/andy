@@ -19,8 +19,18 @@ export function parseAmount(raw: string): ParseResult {
   let s = raw.trim().toLowerCase();
   if (s === "") return { ok: false, reason: "empty" };
 
+  // A range ("100-200", "100 to 200") is ambiguous — surface a clear ask instead of silently
+  // mangling it (the old path stripped the dash and produced a wrong number or a vague reject).
+  if (/\d\s*(?:-|to|–|—)\s*\d/.test(s)) {
+    return { ok: false, reason: "looks like a range — send one amount" };
+  }
+
   // strip peso sign, currency code, spaces, thousands separators
-  s = s.replace(/₱|php/g, "").replace(/,/g, "").replace(/\s/g, "").trim();
+  s = s
+    .replace(/₱|php|pesos?/g, "")
+    .replace(/,/g, "")
+    .replace(/\s/g, "")
+    .trim();
 
   // optional k/m suffix multiplier
   let multiplier = 1;
@@ -32,6 +42,10 @@ export function parseAmount(raw: string): ParseResult {
     multiplier = 1_000_000;
     s = s.slice(0, -1);
   }
+
+  // Normalize a trailing dot ("150." from a sentence) and a bare leading dot (".50" → "0.50").
+  if (s.endsWith(".")) s = s.slice(0, -1);
+  if (s.startsWith(".")) s = `0${s}`;
 
   if (s === "" || !/^\d*\.?\d+$/.test(s)) {
     return { ok: false, reason: `unparseable amount: "${raw}"` };

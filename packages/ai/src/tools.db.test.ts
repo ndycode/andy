@@ -13,6 +13,10 @@ const sumByMonth: Record<string, number> = {};
 const expenseByMonth: Record<string, number> = {};
 
 mock.module("@repo/db", () => ({
+  findRecentDuplicate: async () => null,
+  // getSpendingPace passes these amounts to the outlier-aware projection. Empty (<3 samples) →
+  // falls back to the linear run-rate, so the pace assertions below stay on the simple formula.
+  categoryAmountsThisMonth: async () => [],
   budgetStatuses: async (_userId: string, at?: Date) => {
     lastBudgetStatusesAt = at;
     return [

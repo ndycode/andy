@@ -1,8 +1,10 @@
 import { composeProactive } from "@repo/ai";
 import {
   budgetStatuses,
+  categoryAmountsThisMonth,
   claimReminder,
   dueRecurringToday,
+  listGoals,
   reapMessages,
   reapProcessedMessages,
   reconcileGoalBalances,
@@ -11,9 +13,10 @@ import {
 } from "@repo/db";
 import { shouldWarnPace, spendingPace } from "@repo/shared/analytics";
 import { env } from "@repo/shared/env";
+import { goalProgressMessage } from "@repo/shared/goals";
 import { errInfo, log } from "@repo/shared/log";
 import { formatPHP } from "@repo/shared/money";
-import { daysInLocalMonth, localDayOfMonth } from "@repo/shared/time";
+import { daysInLocalMonth, localDate, localDayOfMonth } from "@repo/shared/time";
 import { runWeeklySummary } from "./cron-weekly-summary";
 import { sendMessage } from "./sendblue";
 
@@ -28,6 +31,7 @@ export async function runDailyChecks(): Promise<{
   nudges: number;
   paceWarnings: number;
   reminders: number;
+  goalNudges: number;
   recapSent: boolean;
   reaped: number;
 }> {
@@ -72,7 +76,9 @@ export async function runDailyChecks(): Promise<{
     }
 
     // Under the near-threshold: is the run-rate on track to blow the budget anyway?
-    const pace = spendingPace(b.spent, dom, dim, b.limit);
+    // Use per-tx amounts so a single big one-off this month isn't extrapolated into a false alarm.
+    const paceAmounts = await categoryAmountsThisMonth(userId, b.category, now);
+    const pace = spendingPace(b.spent, dom, dim, b.limit, paceAmounts);
     if (!shouldWarnPace(pace, dom)) continue;
     const kind = `pace:${b.category}`;
     try {
@@ -105,6 +111,35 @@ export async function runDailyChecks(): Promise<{
     }
   }
 
+  // 2.5 Goal-pace reminders — once per week per goal, only when a goal with a deadline is BEHIND
+  //     pace. Reuses goalProgressMessage (single source of truth for the verdict) + the weekly nudge
+  //     dedup (key goalpace:<id>) so it's claim-before-send like every other proactive message.
+  let goalNudges = 0;
+  const goalToday = new Date(`${localDate(now)}T00:00:00Z`);
+  for (const g of await listGoals(userId)) {
+    if (!g.targetDate) continue; // no deadline → no pace to be behind on
+    const progress = goalProgressMessage({
+      name: g.name,
+      savedCentavos: g.savedCentavos,
+      targetCentavos: g.targetCentavos,
+      createdAt: g.createdAt,
+      today: goalToday,
+      targetDate: new Date(g.targetDate),
+    });
+    if (!progress.includes("Behind pace")) continue; // on track → don't nag
+    const kind = `goalpace:${g.id}`;
+    try {
+      if (!(await recordNudge(userId, kind))) continue; // already nudged this goal this week
+      const fallback = `🎯 ${progress}`;
+      const brief = `The user's savings goal is behind pace: "${progress}". Give a short, encouraging nudge to get back on track. Not preachy.`;
+      const msg = await composeProactive(brief, fallback);
+      await sendMessage(phone, msg);
+      goalNudges++;
+    } catch (err) {
+      log.error("cron.goalpace.error", { id: g.id, ...errInfo(err) });
+    }
+  }
+
   // 3. Weekly recap — self-gated to once per Manila week.
   let recapSent = false;
   try {
@@ -133,5 +168,5 @@ export async function runDailyChecks(): Promise<{
     log.error("cron.goal_reconcile.error", errInfo(err));
   }
 
-  return { nudges, paceWarnings, reminders, recapSent, reaped };
+  return { nudges, paceWarnings, reminders, goalNudges, recapSent, reaped };
 }

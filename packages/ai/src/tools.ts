@@ -1,7 +1,9 @@
 import {
   budgetStatuses,
+  categoryAmountsThisMonth,
   findGoalByName,
   findGoalsByName,
+  findRecentDuplicate,
   findRecurringByLabel,
   getInsights,
   getMonthOverview,
@@ -73,7 +75,7 @@ export function buildTools(ctx: ToolContext) {
       note: z.string().optional().describe("Short label, e.g. 'lunch', 'grab'."),
       date,
     }),
-    execute: ({ amount, category, note, date }) => {
+    execute: async ({ amount, category, note, date }) => {
       const r = parseAmount(amount);
       if (!r.ok) return { ok: false, error: r.reason };
       const d = resolveLogDate(date);
@@ -81,6 +83,10 @@ export function buildTools(ctx: ToolContext) {
       // Coerce once and confirm the SAME value we store: a non-canonical token ("groceries", "Gas")
       // is stored as "Other", so returning the raw arg would confirm a category the DB never saw.
       const cat = coerceCategory(category);
+      // WARN (don't block) on a probable accidental re-log: same amount+note+day already exists.
+      // We still log it (a real second "grab 250" same day is valid; never trap the user into
+      // resending), but flag it so Andy can offer an undo in the reply.
+      const dup = await findRecentDuplicate(ctx.userId, "expense", r.centavos, note, d.date);
       ctx.addWrite({
         type: "expense",
         userId: ctx.userId,
@@ -89,18 +95,25 @@ export function buildTools(ctx: ToolContext) {
         note,
         localDate: d.date,
       });
-      return { ok: true, logged: formatPHP(r.centavos), category: cat, date: d.date };
+      return {
+        ok: true,
+        logged: formatPHP(r.centavos),
+        category: cat,
+        date: d.date,
+        ...(dup ? { possibleDuplicate: true } : {}),
+      };
     },
   });
 
   const logIncome = tool({
     description: "Log an income entry (sweldo, salary, payment received).",
     inputSchema: z.object({ amount, note: z.string().optional(), date }),
-    execute: ({ amount, note, date }) => {
+    execute: async ({ amount, note, date }) => {
       const r = parseAmount(amount);
       if (!r.ok) return { ok: false, error: r.reason };
       const d = resolveLogDate(date);
       if (!d.ok) return { ok: false, error: d.error };
+      const dup = await findRecentDuplicate(ctx.userId, "income", r.centavos, note, d.date);
       ctx.addWrite({
         type: "income",
         userId: ctx.userId,
@@ -109,7 +122,12 @@ export function buildTools(ctx: ToolContext) {
         note,
         localDate: d.date,
       });
-      return { ok: true, logged: formatPHP(r.centavos), date: d.date };
+      return {
+        ok: true,
+        logged: formatPHP(r.centavos),
+        date: d.date,
+        ...(dup ? { possibleDuplicate: true } : {}),
+      };
     },
   });
 
@@ -617,12 +635,14 @@ export function buildTools(ctx: ToolContext) {
     execute: async ({ category }) => {
       const cat = coerceCategory(category);
       const now = new Date();
-      const [spent, statuses] = await Promise.all([
+      const [spent, statuses, amounts] = await Promise.all([
         sumByCategory(ctx.userId, cat, now),
         budgetStatuses(ctx.userId, now),
+        categoryAmountsThisMonth(ctx.userId, cat, now),
       ]);
       const limit = statuses.find((s) => s.category === cat)?.limit ?? 0;
-      const v = spendingPace(spent, localDayOfMonth(now), daysInLocalMonth(now), limit);
+      // Pass the per-tx amounts so a big one-off isn't extrapolated into a false overspend panic.
+      const v = spendingPace(spent, localDayOfMonth(now), daysInLocalMonth(now), limit, amounts);
       return {
         category: cat,
         spentSoFar: formatPHP(v.spentSoFar),

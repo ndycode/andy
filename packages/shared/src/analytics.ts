@@ -36,6 +36,48 @@ export function projectMonthEnd(
   return Math.round(perDay * daysInMonth);
 }
 
+/**
+ * Outlier-aware projection. A purely linear run-rate is fooled by a single big one-off early in the
+ * month: a ₱20k rent payment on day 3 extrapolates to a ₱200k "you're overspending!" panic. This
+ * splits the spend into a recurring/typical stream (run-rate projected forward) plus one-off
+ * outliers (counted ONCE, not extrapolated).
+ *
+ * An amount is an outlier when it exceeds 2x the median AND there are >=3 transactions (below that
+ * there's no stable median, so fall back to linear). The projection is: run-rate of the non-outlier
+ * spend across the month, PLUS the outliers as fixed costs, floored at what's already spent (a
+ * projection should never be less than reality).
+ */
+export function projectMonthEndRobust(
+  amounts: readonly number[],
+  dayOfMonth: number,
+  daysInMonth: number,
+): number {
+  const spentSoFar = amounts.reduce((a, b) => a + b, 0);
+  if (dayOfMonth < 1) return spentSoFar;
+  if (amounts.length < 3) return projectMonthEnd(spentSoFar, dayOfMonth, daysInMonth);
+
+  const sorted = [...amounts].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2 === 0
+      ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2
+      : (sorted[mid] ?? 0);
+
+  const threshold = median * 2;
+  let outlierTotal = 0;
+  let typicalTotal = 0;
+  for (const a of amounts) {
+    if (a > threshold) outlierTotal += a;
+    else typicalTotal += a;
+  }
+  // No outlier separated out → identical to linear.
+  if (outlierTotal === 0) return projectMonthEnd(spentSoFar, dayOfMonth, daysInMonth);
+
+  const typicalPerDay = typicalTotal / dayOfMonth;
+  const projected = Math.round(typicalPerDay * daysInMonth) + outlierTotal;
+  return Math.max(projected, spentSoFar); // never project below reality
+}
+
 export interface PaceVerdict {
   spentSoFar: number; // centavos MTD
   projected: number; // centavos projected month-end
@@ -46,14 +88,22 @@ export interface PaceVerdict {
   projectedOver: number;
 }
 
-/** Combine a month-to-date total + budget into a forward-looking pace verdict. */
+/**
+ * Combine a month-to-date total + budget into a forward-looking pace verdict.
+ * Pass `amounts` (the individual MTD transaction centavos for the category) to use the
+ * outlier-aware projection — a big one-off won't be extrapolated. Omit it for the plain linear
+ * run-rate (back-compat for callers that only have the total).
+ */
 export function spendingPace(
   spentSoFar: number,
   dayOfMonth: number,
   daysInMonth: number,
   limit: number,
+  amounts?: readonly number[],
 ): PaceVerdict {
-  const projected = projectMonthEnd(spentSoFar, dayOfMonth, daysInMonth);
+  const projected = amounts
+    ? projectMonthEndRobust(amounts, dayOfMonth, daysInMonth)
+    : projectMonthEnd(spentSoFar, dayOfMonth, daysInMonth);
   const hasBudget = limit > 0;
   const willExceed = hasBudget && projected > limit;
   const projectedOver = willExceed ? projected - limit : 0;

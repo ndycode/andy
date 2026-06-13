@@ -9,6 +9,7 @@ mock.module("@repo/db", () => ({
   recentTurns: async () => [],
   getLastTransaction: async () => null,
   getMonthOverview: async () => ({ income: 2_500_000, expense: 1_800_000, net: 700_000 }),
+  findRecentDuplicate: async () => null,
 }));
 
 import { MockLanguageModelV3 } from "ai/test";
@@ -80,7 +81,7 @@ describe("runAgent — multi-action turn (sample)", () => {
     expect(reply).toBe("logged grab ₱180 🛵 — net's looking healthy at ₱7,000");
   });
 
-  test("a non-canonical category is stored as Other (H2 regression guard)", async () => {
+  test("a non-canonical category is coerced to its synonym bucket (smarter categories)", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({
       doGenerate: async () => {
@@ -100,14 +101,14 @@ describe("runAgent — multi-action turn (sample)", () => {
             "tool-calls",
           );
         }
-        return result([{ type: "text", text: "logged ₱500.00 on other." }], "stop");
+        return result([{ type: "text", text: "logged ₱500.00 on food." }], "stop");
       },
     });
 
-    // The synonym "groceries" is not in the category enum → coerced + stored as Other (the H2 fix).
+    // "groceries" is a known synonym → coerced + stored as Food (smarter coerceCategory).
     const { writes } = await runAgent("groceries 500 at sm", base, model);
     expect(call).toBe(2); // looped once for the tool result, then produced the final reply
     expect(writes).toHaveLength(1);
-    expect(writes[0]).toMatchObject({ type: "expense", category: "Other" });
+    expect(writes[0]).toMatchObject({ type: "expense", category: "Food" });
   });
 });

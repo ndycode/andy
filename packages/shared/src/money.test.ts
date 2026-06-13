@@ -33,6 +33,37 @@ describe("parseAmount", () => {
     expect(parseAmount(String(MAX_ENTRY_CENTAVOS / 100 + 1)).ok).toBe(false);
   });
 
+  test("normalizes a trailing dot (sentence punctuation): '150.' -> 15000c", () => {
+    const r = parseAmount("150.");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.centavos).toBe(15000);
+  });
+
+  test("normalizes a bare leading dot: '.50' -> 50c", () => {
+    const r = parseAmount(".50");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.centavos).toBe(50);
+  });
+
+  test("strips 'pesos'/'peso' word: 'pesos 150' -> 15000c", () => {
+    const r = parseAmount("pesos 150");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.centavos).toBe(15000);
+  });
+
+  test("rejects a range with a clear, actionable reason", () => {
+    for (const range of ["100-200", "100 to 200", "50–100"]) {
+      const r = parseAmount(range);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toMatch(/range/);
+    }
+  });
+
+  test("still rejects word amounts and multi-dot junk", () => {
+    expect(parseAmount("two hundred").ok).toBe(false);
+    expect(parseAmount("12.3.4").ok).toBe(false);
+  });
+
   test("never returns a non-integer centavo value", () => {
     for (let i = 0; i < 1000; i++) {
       const pesos = (Math.random() * 100000).toFixed(2);

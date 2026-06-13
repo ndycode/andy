@@ -1,5 +1,46 @@
 import { describe, expect, test } from "bun:test";
-import { projectMonthEnd, shouldWarnPace, spendingDelta, spendingPace } from "./analytics";
+import {
+  projectMonthEnd,
+  projectMonthEndRobust,
+  shouldWarnPace,
+  spendingDelta,
+  spendingPace,
+} from "./analytics";
+
+describe("projectMonthEndRobust (outlier-aware)", () => {
+  test("a day-3 big one-off is NOT extrapolated (the false-panic case)", () => {
+    // day 3 of 30: three ₱500 food txns + one ₱20,000 one-off.
+    // linear: 2,150,000 / 3 * 30 ≈ ₱215k panic.
+    // robust: typical 150k/3*30 = 1.5M, + 2M outlier counted once = 3.5M ≈ ₱35k — far saner.
+    const amounts = [50_000, 50_000, 50_000, 2_000_000]; // centavos
+    const linear = projectMonthEnd(2_150_000, 3, 30);
+    const robust = projectMonthEndRobust(amounts, 3, 30);
+    expect(robust).toBeLessThan(linear); // key property: robust < naive linear
+    expect(robust).toBeGreaterThanOrEqual(2_150_000); // never below reality
+  });
+
+  test("no outlier → identical to linear", () => {
+    const amounts = [50_000, 50_000, 50_000];
+    expect(projectMonthEndRobust(amounts, 3, 30)).toBe(projectMonthEnd(150_000, 3, 30));
+  });
+
+  test("fewer than 3 txns → falls back to linear (no stable median)", () => {
+    const amounts = [50_000, 2_000_000];
+    expect(projectMonthEndRobust(amounts, 2, 30)).toBe(projectMonthEnd(2_050_000, 2, 30));
+  });
+
+  test("projection never drops below what's already spent", () => {
+    const amounts = [10, 10, 10, 5_000_000];
+    expect(projectMonthEndRobust(amounts, 28, 30)).toBeGreaterThanOrEqual(5_000_030);
+  });
+
+  test("spendingPace with amounts uses the robust projection", () => {
+    const amounts = [50_000, 50_000, 50_000, 2_000_000];
+    const withAmounts = spendingPace(2_150_000, 3, 30, 300_000, amounts);
+    const linear = spendingPace(2_150_000, 3, 30, 300_000);
+    expect(withAmounts.projected).toBeLessThan(linear.projected);
+  });
+});
 
 describe("spendingDelta", () => {
   test("up: current > previous, signed delta + rounded pct", () => {

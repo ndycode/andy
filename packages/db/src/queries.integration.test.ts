@@ -315,5 +315,50 @@ d("queries.ts — integration (real Postgres)", () => {
       // Next day → claimable again.
       expect(await q.claimReminder(id, userId, new Date("2026-06-12T03:00:00Z"))).toBe(true);
     });
+
+    test("findRecentDuplicate matches same kind+amount+note+day, ignores mismatches", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      await q.flushWrites("dup1", [
+        {
+          type: "expense",
+          userId,
+          amountCentavos: 25000,
+          category: "Transport",
+          note: "grab",
+          localDate: "2026-06-14",
+        },
+      ]);
+      // exact match (same day/amount/kind/note, case-insensitive note)
+      expect(
+        await q.findRecentDuplicate(userId, "expense", 25000, "GRAB", "2026-06-14"),
+      ).not.toBeNull();
+      // different amount → no match
+      expect(
+        await q.findRecentDuplicate(userId, "expense", 30000, "grab", "2026-06-14"),
+      ).toBeNull();
+      // different day → no match
+      expect(
+        await q.findRecentDuplicate(userId, "expense", 25000, "grab", "2026-06-13"),
+      ).toBeNull();
+      // different note → no match
+      expect(
+        await q.findRecentDuplicate(userId, "expense", 25000, "taxi", "2026-06-14"),
+      ).toBeNull();
+      // different kind → no match
+      expect(await q.findRecentDuplicate(userId, "income", 25000, "grab", "2026-06-14")).toBeNull();
+      // a blank-note expense matches a blank-note query
+      await q.flushWrites("dup2", [
+        {
+          type: "expense",
+          userId,
+          amountCentavos: 9900,
+          category: "Other",
+          localDate: "2026-06-14",
+        },
+      ]);
+      expect(
+        await q.findRecentDuplicate(userId, "expense", 9900, undefined, "2026-06-14"),
+      ).not.toBeNull();
+    });
   });
 });
