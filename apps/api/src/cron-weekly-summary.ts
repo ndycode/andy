@@ -9,6 +9,7 @@ import {
 import { env } from "@repo/shared/env";
 import { goalProgressMessage } from "@repo/shared/goals";
 import { formatPHP } from "@repo/shared/money";
+import { localDate } from "@repo/shared/time";
 import { sendMessage } from "./sendblue";
 
 /**
@@ -70,7 +71,9 @@ function renderRecap(
   if (goals.length > 0) {
     lines.push("");
     lines.push("goals:");
-    const today = new Date();
+    // Anchor "today" to the local (Manila) calendar date, matching getGoalStatus — server-UTC could
+    // flip an on-track/behind verdict near the day boundary.
+    const today = new Date(`${localDate()}T00:00:00Z`);
     for (const g of goals) {
       lines.push(
         `  ${goalProgressMessage({

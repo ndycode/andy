@@ -15,6 +15,12 @@ function clamp(x: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, x));
 }
 
+/** Whole UTC day number for a Date — collapses a timestamptz instant to its calendar day so pace
+ * math compares like-for-like (createdAt is a real instant; today/targetDate are date-midnights). */
+function dayNumber(d: Date): number {
+  return Math.floor(d.getTime() / DAY_MS);
+}
+
 /** Short "Mon D" label, e.g. "Sep 30". */
 function shortDate(d: Date): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
@@ -33,12 +39,13 @@ export function goalProgressMessage(g: GoalProgressInput): string {
     return `${head} No deadline set.`;
   }
 
-  const elapsedFraction = clamp(
-    (g.today.getTime() - g.createdAt.getTime()) / (g.targetDate.getTime() - g.createdAt.getTime()),
-    0,
-    1,
-  );
   const savedFraction = g.savedCentavos / g.targetCentavos;
+  // Compare calendar days (not the raw timestamptz instant vs date-midnights) so a +8 offset can't
+  // skew elapsed by ~1 day. A deadline on/before the creation day has a zero/negative span, so
+  // "elapsed" is fully spent — on-track then means the goal is actually funded (savedFraction >= 1).
+  const span = dayNumber(g.targetDate) - dayNumber(g.createdAt);
+  const elapsedFraction =
+    span > 0 ? clamp((dayNumber(g.today) - dayNumber(g.createdAt)) / span, 0, 1) : 1;
   const onTrack = savedFraction >= elapsedFraction;
   const when = shortDate(g.targetDate);
 

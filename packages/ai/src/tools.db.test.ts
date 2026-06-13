@@ -60,6 +60,20 @@ mock.module("@repo/db", () => ({
           createdAt: new Date("2026-05-01T00:00:00Z"),
         }
       : null,
+  findGoalsByName: async (_userId: string, name: string) =>
+    name.toLowerCase().includes("laptop")
+      ? [
+          {
+            id: "g1",
+            name: "Laptop",
+            userId: "user-1",
+            targetCentavos: 2_000_000,
+            savedCentavos: 500_000,
+            targetDate: "2026-12-31",
+            createdAt: new Date("2026-05-01T00:00:00Z"),
+          },
+        ]
+      : [],
   findRecurringByLabel: async (_userId: string, label: string) =>
     label.toLowerCase().includes("netflix")
       ? { id: "r1", label: "Netflix", userId: "user-1" }
@@ -339,6 +353,20 @@ describe("contributeToGoal (backdate parity with logExpense)", () => {
     });
     expect(res.ok).toBe(false);
     expect(drain()).toHaveLength(0);
+  });
+
+  test("M3: contributing to a goal CREATED earlier this same turn gives a retry hint, not 'create it first'", async () => {
+    const { tools, drain } = ctx();
+    // Simulate a same-turn createGoal buffered before the contribution. The goal isn't in the DB yet
+    // (no id until flush), so findGoalByName (mocked: only 'laptop' resolves) misses "vacation".
+    await run(tools.createGoal, { name: "Vacation", target: "20k" });
+    const res = await run(tools.contributeToGoal, { goalName: "vacation", amount: "5000" });
+    expect(res.ok).toBe(false);
+    expect(String(res.error)).toContain("just created"); // clear retry hint, not the generic miss
+    // The createGoal intent is still buffered; only the contribution was (correctly) not buffered.
+    const writes = drain();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ type: "createGoal", name: "Vacation" });
   });
 });
 

@@ -85,6 +85,65 @@ describe("write-tools buffer intents (no DB during agent run)", () => {
     await run(tools.logExpense, { amount: "50", category: "Other" });
     expect(drain()[0]).toMatchObject({ category: "Other" });
   });
+
+  test("H2: a non-canonical category is echoed as the STORED value, not the raw arg", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    // "groceries" is not a canonical category → stored as Other. The confirmation must say Other too,
+    // otherwise the user is told "logged on groceries" while reads/budgets see nothing under it.
+    const res = await run(tools.logExpense, { amount: "500", category: "groceries", note: "sm" });
+    expect(res).toMatchObject({ ok: true, category: "Other" });
+    expect(drain()[0]).toMatchObject({ category: "Other" });
+  });
+
+  test("H2: setBudget echoes the coerced category", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.setBudget, { category: "gas", monthlyLimit: "3k" });
+    expect(res).toMatchObject({ ok: true, category: "Other" });
+    expect(drain()[0]).toMatchObject({ type: "setBudget", category: "Other" });
+  });
+});
+
+describe("H1: addRecurringBill guards the cadence↔day pairing before buffering", () => {
+  test("monthly without a day of month is rejected (no intent buffered)", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.addRecurringBill, {
+      label: "rent",
+      amount: "8k",
+      category: "Bills",
+      cadence: "monthly",
+    });
+    expect(res.ok).toBe(false);
+    expect(drain()).toHaveLength(0);
+  });
+
+  test("weekly without a day of week is rejected (no intent buffered)", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.addRecurringBill, {
+      label: "allowance",
+      amount: "500",
+      category: "Income",
+      kind: "income",
+      cadence: "weekly",
+    });
+    expect(res.ok).toBe(false);
+    expect(drain()).toHaveLength(0);
+  });
+
+  test("monthly WITH a day of month buffers the intent", async () => {
+    const { tools, drain } = ctxWithBuffer();
+    const res = await run(tools.addRecurringBill, {
+      label: "rent",
+      amount: "8k",
+      category: "Bills",
+      cadence: "monthly",
+      dayOfMonth: 1,
+    });
+    expect(res.ok).toBe(true);
+    expect(drain()[0]).toMatchObject({
+      type: "addRecurring",
+      recurring: { label: "rent", cadence: "monthly", dayOfMonth: 1, dayOfWeek: null },
+    });
+  });
 });
 
 describe("createGoal buffers a goal intent", () => {

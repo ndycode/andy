@@ -1,9 +1,11 @@
 import { composeProactive } from "@repo/ai";
 import {
   budgetStatuses,
+  claimReminder,
   dueRecurringToday,
-  markReminded,
+  reapMessages,
   reapProcessedMessages,
+  reconcileGoalBalances,
   recordNudge,
   resolveUserId,
 } from "@repo/db";
@@ -85,16 +87,18 @@ export async function runDailyChecks(): Promise<{
     }
   }
 
-  // 2. Recurring reminders — bills/income due today; mark reminded only after a successful send.
+  // 2. Recurring reminders — bills/income due today. Claim the day's slot atomically BEFORE sending
+  //    (record-before-send, like the nudges above): a cron double-fire or a kill mid-send can't
+  //    re-send. Trade = a rare missed reminder over a duplicate.
   let reminders = 0;
   for (const r of await dueRecurringToday(userId)) {
     try {
+      if (!(await claimReminder(r.id, userId))) continue; // lost the claim → already reminded today
       const verb = r.kind === "income" ? "expected today" : "due today";
       const fallback = `🔔 ${r.label} (${formatPHP(r.amountCentavos)}) ${verb} — want me to log it?`;
       const brief = `Remind the user that "${r.label}" (${formatPHP(r.amountCentavos)}) is ${verb}. Offer to log it. Keep it light.`;
       const msg = await composeProactive(brief, fallback);
       await sendMessage(phone, msg);
-      await markReminded(r.id); // only after the send actually succeeded
       reminders++;
     } catch (err) {
       log.error("cron.reminder.error", { id: r.id, ...errInfo(err) });
@@ -109,12 +113,24 @@ export async function runDailyChecks(): Promise<{
     log.error("cron.recap.error", errInfo(err));
   }
 
-  // 4. Hygiene — drop dedup markers that can no longer matter (keeps the table bounded).
+  // 4. Hygiene — drop dedup markers that can no longer matter, bound the conversation log, and
+  //    self-heal any goal-balance drift (keeps the DB bounded + the denormalized total honest).
   let reaped = 0;
   try {
     reaped = await reapProcessedMessages();
   } catch (err) {
     log.error("cron.reap.error", errInfo(err));
+  }
+  try {
+    await reapMessages(userId);
+  } catch (err) {
+    log.error("cron.reap_messages.error", errInfo(err));
+  }
+  try {
+    const fixed = await reconcileGoalBalances(userId);
+    if (fixed > 0) log.warn("cron.goal_reconcile.corrected", { goals: fixed });
+  } catch (err) {
+    log.error("cron.goal_reconcile.error", errInfo(err));
   }
 
   return { nudges, paceWarnings, reminders, recapSent, reaped };

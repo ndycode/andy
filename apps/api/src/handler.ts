@@ -64,12 +64,28 @@ export async function handleInbound(
       { type: "saveTurn", userId, role: "user", content: text },
       { type: "saveTurn", userId, role: "assistant", content: reply },
     ];
-    await flushWrites(dedupId, flushIntents);
+    const flushed = await flushWrites(dedupId, flushIntents);
+
+    // "superseded": a concurrent worker stole our slot under an infra stall and completed the marker
+    // first, so flushWrites rolled our writes back. The winner owns the reply — we must NOT send one
+    // (it would be a duplicate) and must NOT have applied writes (we didn't). Bail quietly.
+    if (flushed === "superseded") {
+      log.info("inbound.superseded", { corr });
+      return;
+    }
 
     // In-the-moment reaction (Wave 3): if a just-logged expense crossed a budget threshold,
     // append one Andy line to the SAME reply — zero extra messages, the data's already here.
     const reaction = await budgetReaction(userId, writes).catch(() => null);
-    await sendMessage(phone, reaction ? `${reply}\n\n${reaction}` : reply);
+    // The writes are already COMMITTED at this point. A send failure here must NOT fall into the
+    // generic-failure catch below — that would tell the user "something went wrong" about data that
+    // was actually saved, prompting a resend (the marker now dedups the data, but the reply is a lie).
+    // Log it and move on; the turn is persisted, so the next message has full context regardless.
+    try {
+      await sendMessage(phone, reaction ? `${reply}\n\n${reaction}` : reply);
+    } catch (sendErr) {
+      log.error("inbound.reply_send_failed", { corr, ...errInfo(sendErr) });
+    }
 
     log.info("inbound.done", { corr, writes: writes.length, reacted: Boolean(reaction) });
 
@@ -87,7 +103,9 @@ export async function handleInbound(
     // be awaited: on serverless the instance can freeze on return and kill an unawaited POST.
     if (writes.length > 0 && messageId) await sendReaction(phone, "love", messageId);
   } catch (err) {
-    // Marker stays 'claimed' → a redelivery safely retries (not lost, not double-logged).
+    // Only PRE-flush errors reach here (agent or flush threw): the marker stays 'claimed', so a
+    // redelivery safely retries — nothing committed, nothing lost. The post-flush reply send catches
+    // its own failure above, so a committed turn never produces this misleading failure reply.
     log.error("inbound.error", { corr, ...errInfo(err) });
     await sendMessage(phone, failureReply(err)).catch(() => {});
   }

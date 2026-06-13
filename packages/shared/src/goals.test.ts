@@ -33,4 +33,28 @@ describe("AC5 goal pace — exact plan fixtures", () => {
       "Emergency Fund: ₱8,000.00 / ₱20,000.00 (40%). No deadline set.",
     );
   });
+
+  test("deadline on/before creation day → on-track only when fully funded", () => {
+    // targetDate == createdAt: zero/negative span. Underfunded must NOT report "on track".
+    const sameDay = {
+      ...base,
+      createdAt: new Date("2026-06-11T15:00:00Z"),
+      targetDate: new Date("2026-06-11T00:00:00Z"),
+      today: new Date("2026-06-11T00:00:00Z"),
+    };
+    expect(goalProgressMessage({ ...sameDay, savedCentavos: 400_000 })).toContain("Behind pace");
+    expect(goalProgressMessage({ ...sameDay, savedCentavos: 2_000_000 })).toContain("On track");
+  });
+
+  test("createdAt as a real timestamptz instant doesn't skew the day-based pace", () => {
+    // createdAt at 23:00 UTC (a real instant) vs date-midnight today/target must compare by calendar
+    // day — saved 0.40 >= elapsed 0.27 stays on track, not flipped by the ~1-day instant offset.
+    expect(
+      goalProgressMessage({
+        ...base,
+        createdAt: new Date("2026-05-01T23:30:00Z"),
+        savedCentavos: 800_000,
+      }),
+    ).toBe("Emergency Fund: ₱8,000.00 / ₱20,000.00 (40%). On track to hit Sep 30.");
+  });
 });

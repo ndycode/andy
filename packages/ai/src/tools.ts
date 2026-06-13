@@ -1,6 +1,7 @@
 import {
   budgetStatuses,
   findGoalByName,
+  findGoalsByName,
   findRecurringByLabel,
   getInsights,
   getMonthOverview,
@@ -77,15 +78,18 @@ export function buildTools(ctx: ToolContext) {
       if (!r.ok) return { ok: false, error: r.reason };
       const d = resolveLogDate(date);
       if (!d.ok) return { ok: false, error: d.error };
+      // Coerce once and confirm the SAME value we store: a non-canonical token ("groceries", "Gas")
+      // is stored as "Other", so returning the raw arg would confirm a category the DB never saw.
+      const cat = coerceCategory(category);
       ctx.addWrite({
         type: "expense",
         userId: ctx.userId,
         amountCentavos: r.centavos,
-        category: coerceCategory(category),
+        category: cat,
         note,
         localDate: d.date,
       });
-      return { ok: true, logged: formatPHP(r.centavos), category, date: d.date };
+      return { ok: true, logged: formatPHP(r.centavos), category: cat, date: d.date };
     },
   });
 
@@ -217,7 +221,23 @@ export function buildTools(ctx: ToolContext) {
       const d = resolveLogDate(date);
       if (!d.ok) return { ok: false, error: d.error };
       const goal = await findGoalByName(ctx.userId, goalName);
-      if (!goal) return { ok: false, error: `no goal matching "${goalName}". create it first.` };
+      if (!goal) {
+        // The goal may have been CREATED earlier in this same turn ("save 20k for a laptop and put
+        // 5k in now") — it isn't in the DB yet (createGoal is buffered, no id until flush), so
+        // findGoalByName can't see it. Detect that buffered createGoal and tell the user to send the
+        // amount next, instead of the misleading "create it first" that silently drops the 5k.
+        const q = goalName.trim().toLowerCase();
+        const justCreated = ctx
+          .peekWrites()
+          .some((w) => w.type === "createGoal" && w.name.trim().toLowerCase().includes(q));
+        if (justCreated) {
+          return {
+            ok: false,
+            error: `just created "${goalName}" — send the amount again (e.g. "put 5k in ${goalName}") and i'll add it.`,
+          };
+        }
+        return { ok: false, error: `no goal matching "${goalName}". create it first.` };
+      }
       ctx.addWrite({
         type: "goalContribution",
         userId: ctx.userId,
@@ -313,7 +333,17 @@ export function buildTools(ctx: ToolContext) {
       "Delete a savings goal entirely. For 'delete my trip goal', 'cancel the laptop fund', 'remove that goal'. Contributions stay logged as Savings/Goals expenses; only the goal is removed.",
     inputSchema: z.object({ goalName: z.string() }),
     execute: async ({ goalName }) => {
-      const goal = await findGoalByName(ctx.userId, goalName);
+      // Destructive → disambiguate rather than deleting an arbitrary match. matchGoals drops the
+      // over-broad reverse-substring direction, so this only triggers on genuine multi-goal overlap.
+      const matches = await findGoalsByName(ctx.userId, goalName);
+      if (matches.length === 0) return { ok: false, error: `no goal matching "${goalName}".` };
+      if (matches.length > 1) {
+        return {
+          ok: false,
+          error: `which one? ${matches.map((g) => `"${g.name}"`).join(", ")} — say the exact name.`,
+        };
+      }
+      const [goal] = matches;
       if (!goal) return { ok: false, error: `no goal matching "${goalName}".` };
       ctx.addWrite({ type: "deleteGoal", userId: ctx.userId, goalId: goal.id });
       return { ok: true, deleted: goal.name };
@@ -620,6 +650,17 @@ export function buildTools(ctx: ToolContext) {
     execute: ({ label, amount: amt, category, kind, cadence, dayOfMonth, dayOfWeek }) => {
       const r = parseAmount(amt);
       if (!r.ok) return { ok: false, error: r.reason };
+      // Guard the cadence↔day pairing BEFORE buffering (mirrors editRecurringBill). The DB enforces
+      // cadence_day_consistency as a CHECK, so an unguarded monthly-without-day (or weekly-without-dow)
+      // would violate it INSIDE flushWrites and roll back the whole transaction — taking any expense
+      // logged in the same message, both conversation turns, and the marker completion down with it.
+      // Returning a normal tool error keeps the bad input out of the DB entirely.
+      if (cadence === "monthly" && dayOfMonth === undefined) {
+        return { ok: false, error: "a monthly reminder needs a day of month (1-31)" };
+      }
+      if (cadence === "weekly" && dayOfWeek === undefined) {
+        return { ok: false, error: "a weekly reminder needs a day of week (0=Sun..6=Sat)" };
+      }
       ctx.addWrite({
         type: "addRecurring",
         userId: ctx.userId,
@@ -665,13 +706,16 @@ export function buildTools(ctx: ToolContext) {
     execute: ({ category, monthlyLimit }) => {
       const r = parseAmount(monthlyLimit);
       if (!r.ok) return { ok: false, error: r.reason };
+      // Coerce once and confirm the stored value (see logExpense): a non-canonical category is
+      // stored as "Other", and the budget is keyed on the coerced value, so confirm that.
+      const cat = coerceCategory(category);
       ctx.addWrite({
         type: "setBudget",
         userId: ctx.userId,
-        category: coerceCategory(category),
+        category: cat,
         monthlyLimitCentavos: r.centavos,
       });
-      return { ok: true, category, monthlyLimit: formatPHP(r.centavos) };
+      return { ok: true, category: cat, monthlyLimit: formatPHP(r.centavos) };
     },
   });
 
