@@ -16,7 +16,7 @@ andy ▸ you're at ₱2,408 net this month. you get paid the 15th, so you're fin
 
 Andy is a single-user, free-tier, serverless finance assistant. You talk to it like a friend; it turns natural language into typed financial transactions, persists them with exact integer-centavo money math, and answers questions from real SQL aggregation — never from chat history. It's built for the Philippines (PHP, Asia/Manila, GCash/sweldo idioms) and runs at ~$0/month.
 
-**119 tests · TypeScript strict · typecheck + lint + test green in CI.**
+**233 tests · TypeScript strict · typecheck + lint + test + build green in CI.**
 
 ---
 
@@ -31,7 +31,7 @@ iMessage ─▶ Sendblue webhook ─▶ Hono API (Vercel, sin1)
                   ▼                  ▼                   ▼
           packages/shared     packages/ai          packages/db
           money · time ·      AI SDK v6 agent      Drizzle + Neon
-          allowlist ·         15 finance tools     atomic dedup ·
+          allowlist ·         27 finance tools     atomic dedup ·
           budget · errors     multi-model chain    short txns
 ```
 
@@ -39,7 +39,7 @@ iMessage ─▶ Sendblue webhook ─▶ Hono API (Vercel, sin1)
 |---|---|
 | `packages/shared` | Pure, dependency-free core: integer-centavo money math, Asia/Manila time, E.164 allowlist, budget logic, env validation, structured logging |
 | `packages/db` | Drizzle schema + queries on Neon Postgres. Atomic claim/flush dedup, idempotent writes, no N+1 |
-| `packages/ai` | AI SDK v6 `ToolLoopAgent` with 15 finance tools, a buffered-write pattern, and a multi-provider fallback chain |
+| `packages/ai` | AI SDK v6 `ToolLoopAgent` with 27 finance tools, a buffered-write pattern, and a multi-provider fallback chain |
 | `apps/api` | Hono webhook + cron. Three-phase inbound handler, Sendblue adapter, proactive nudges |
 
 **Stack:** Bun · TypeScript (strict) · Hono · Drizzle ORM · Neon Postgres · Vercel (Build Output API) · AI SDK v6 · Biome · Turbo.
@@ -70,7 +70,8 @@ This is a personal, single-user project. Running it live requires the author's o
 bun install
 bun run typecheck   # tsc --noEmit across all packages
 bun run lint        # Biome
-bun test            # 119 tests
+bun test            # 233 tests
+bun run build       # production Vercel bundle (Build Output API)
 ```
 
 ## License

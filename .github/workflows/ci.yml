@@ -28,3 +28,8 @@ jobs:
 
       - name: Test
         run: bun test
+
+      - name: Build (production Vercel bundle)
+        # Exercises the real Build Output API bundle (build-vercel.sh) so a bundling/import failure
+        # is caught in CI, not at deploy. No secrets needed — this is a pure bundle, no DB connection.
+        run: bun run build
