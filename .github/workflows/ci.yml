@@ -9,6 +9,24 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+
+    # Ephemeral Postgres for the gated DB-layer integration tests (queries.integration.test.ts).
+    # Without this the integration suite only ever runs on a developer's machine; here it gates
+    # every push — the claim/flush/dedup concurrency design is the most correctness-critical code.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: andy_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +46,14 @@ jobs:
 
       - name: Test
         run: bun test
+
+      - name: Integration tests (DB layer vs real Postgres)
+        # The integration suite is gated behind TEST_DATABASE_URL; it migrates the schema in beforeAll
+        # then exercises queries.ts against the service container above. The main Test step (no
+        # TEST_DATABASE_URL) skips it, so this is the only place it runs in CI.
+        run: bun test packages/db/src/queries.integration.test.ts
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/andy_test
 
       - name: Build (production Vercel bundle)
         # Exercises the real Build Output API bundle (build-vercel.sh) so a bundling/import failure
