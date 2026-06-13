@@ -16,7 +16,7 @@ andy ▸ you're at ₱2,408 net this month. you get paid the 15th, so you're fin
 
 Andy is a single-user, free-tier, serverless finance assistant. You talk to it like a friend; it turns natural language into typed financial transactions, persists them with exact integer-centavo money math, and answers questions from real SQL aggregation — never from chat history. It's built for the Philippines (PHP, Asia/Manila, GCash/sweldo idioms) and runs at ~$0/month.
 
-**233 tests · TypeScript strict · typecheck + lint + test + build green in CI.**
+**240+ tests · TypeScript strict · typecheck + lint + test + build green in CI.**
 
 ---
 
@@ -70,7 +70,7 @@ This is a personal, single-user project. Running it live requires the author's o
 bun install
 bun run typecheck   # tsc --noEmit across all packages
 bun run lint        # Biome
-bun test            # 233 tests
+bun test            # 240+ tests
 bun run build       # production Vercel bundle (Build Output API)
 ```
 
