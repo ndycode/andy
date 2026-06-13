@@ -11,18 +11,27 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
+// MIGRATION FOOTGUN: Postgres forbids USING a freshly-added enum label in the same transaction that
+// ADDs it, and the migrator (scripts/migrate.ts) wraps each migration file in one transaction. So
+// adding a category requires TWO separate migration files: file A does
+// `ALTER TYPE category ADD VALUE IF NOT EXISTS 'X'`; a LATER file B may reference 'X' (backfill,
+// CHECK, partial index, seed). Doing both in one file aborts at apply time.
 export const categoryEnum = pgEnum("category", CATEGORIES);
 export const txKindEnum = pgEnum("tx_kind", ["income", "expense"]);
 export const msgStatusEnum = pgEnum("msg_status", ["claimed", "completed"]);
 
+// Money columns are bigint read back as JS numbers (mode:"number"). App validation caps amounts far
+// below this, but a CHECK keeps any raw write inside the JS safe-integer range so a value can never
+// silently lose precision when it round-trips through Number(). 2^53 - 1.
+const MAX_SAFE_CENTAVOS = 9007199254740991;
+
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   phone: text("phone").notNull().unique(),
-  timezone: text("timezone").notNull().default("Asia/Manila"),
-  currency: text("currency").notNull().default("PHP"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -38,19 +47,26 @@ export const transactions = pgTable(
     category: categoryEnum("category").notNull(),
     note: text("note"),
     goalId: uuid("goal_id").references(() => savingsGoals.id, { onDelete: "set null" }),
-    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
     localDate: date("local_date").notNull(),
-    // Monotonic insertion order. occurredAt defaults to now() which is txn-stable, so all
-    // entries of one multi-entry message share an occurredAt; seq breaks the tie so
-    // "delete that" / "make that 200" always target the genuinely last-inserted row.
+    // Monotonic insertion order. created-instant is txn-stable (all entries of one multi-entry
+    // message share it), so seq breaks the tie so "delete that" / "make that 200" always target the
+    // genuinely last-inserted row.
     seq: bigserial("seq", { mode: "number" }).notNull(),
+    // Last-touched audit marker for the money ledger. Set on insert and on every edit so a corrected
+    // amount/category has a record of when it changed.
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("tx_user_date_idx").on(t.userId, t.localDate),
     // Live reply loop (recent / edit-last / delete-last) sorts by recency per user.
     index("tx_user_seq_idx").on(t.userId, t.seq),
+    // Goal deletion detaches by goal_id (UPDATE ... SET goal_id = NULL) and the ON DELETE SET NULL
+    // referential action both look up by goal_id; index the non-null links so it's not a table scan.
+    index("tx_goal_idx").on(t.goalId).where(sql`${t.goalId} IS NOT NULL`),
     // Amounts are always positive (parseAmount rejects <=0 at the app layer); enforce at the DB too.
     check("tx_amount_positive", sql`${t.amountCentavos} > 0`),
+    // Keep amounts inside the JS safe-integer range (defense-in-depth; app caps far below this).
+    check("tx_amount_safe", sql`${t.amountCentavos} <= ${MAX_SAFE_CENTAVOS}`),
   ],
 );
 
@@ -66,15 +82,21 @@ export const savingsGoals = pgTable(
     savedCentavos: bigint("saved_centavos", { mode: "number" }).notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     targetDate: date("target_date"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("goals_user_idx").on(t.userId),
+    // One goal per (user, case-insensitive name) so "add 500 to japan" / "delete japan" resolve to a
+    // single deterministic row instead of an arbitrary one of several same-named goals.
+    uniqueIndex("goals_user_name_uniq").on(t.userId, sql`lower(${t.name})`),
     // Belt-and-suspenders: app logic keeps savedCentavos == sum(live contributions) via txn-scoped
     // SQL arithmetic, so this can't currently go negative — the constraint just makes the invariant
     // enforced by the DB rather than only by convention.
     check("saved_centavos_non_negative", sql`${t.savedCentavos} >= 0`),
     // A goal target is always a positive amount (parseAmount rejects <=0).
     check("goal_target_positive", sql`${t.targetCentavos} > 0`),
+    // Keep amounts inside the JS safe-integer range (defense-in-depth).
+    check("goal_target_safe", sql`${t.targetCentavos} <= ${MAX_SAFE_CENTAVOS}`),
   ],
 );
 
@@ -86,12 +108,15 @@ export const budgets = pgTable(
       .references(() => users.id),
     category: categoryEnum("category").notNull(),
     monthlyLimitCentavos: bigint("monthly_limit_centavos", { mode: "number" }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   // One budget per (user, category); enables upsert and prevents duplicates.
   (t) => [
     primaryKey({ columns: [t.userId, t.category] }),
     // A budget limit is always a positive amount (parseAmount rejects <=0).
     check("budget_limit_positive", sql`${t.monthlyLimitCentavos} > 0`),
+    // Keep amounts inside the JS safe-integer range (defense-in-depth).
+    check("budget_limit_safe", sql`${t.monthlyLimitCentavos} <= ${MAX_SAFE_CENTAVOS}`),
   ],
 );
 
@@ -133,7 +158,12 @@ export const memories = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   // Recall reads most-recent-first per user → cover (user_id, created_at desc).
-  (t) => [index("memories_user_created_idx").on(t.userId, t.createdAt.desc())],
+  (t) => [
+    index("memories_user_created_idx").on(t.userId, t.createdAt.desc()),
+    // LLM-authored and fed into every prompt-context read; cap length so a runaway memory can't
+    // bloat the row or the context window (mirrors the messages.content 4000-char slice).
+    check("memory_content_len", sql`char_length(${t.content}) <= 4000`),
+  ],
 );
 
 export const messageRoleEnum = pgEnum("message_role", ["user", "assistant"]);
@@ -154,10 +184,8 @@ export const messages = pgTable(
     // returns them in true insertion order (user before assistant) instead of a nondeterministic tie.
     seq: bigserial("seq", { mode: "number" }).notNull(),
   },
-  (t) => [
-    index("messages_user_time_idx").on(t.userId, t.createdAt),
-    index("messages_user_seq_idx").on(t.userId, t.seq),
-  ],
+  // recentTurns is the sole reader and orders by seq; (user_id, created_at) was pure write overhead.
+  (t) => [index("messages_user_seq_idx").on(t.userId, t.seq)],
 );
 
 /** Learned merchant→category mappings, so "grab" auto-categorizes as Transport. */
@@ -173,7 +201,14 @@ export const habits = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   // Composite PK so ON CONFLICT (user_id, merchant) works for upsert.
-  (t) => [primaryKey({ columns: [t.userId, t.merchant] })],
+  (t) => [
+    primaryKey({ columns: [t.userId, t.merchant] }),
+    // count is a reinforcement tally, always >= 1 (the one writer inserts 1 then increments).
+    check("habit_count_positive", sql`${t.count} >= 1`),
+    // merchant is always a lowercased keyword (noteKeywords folds case); enforce it so a raw write
+    // can't create a case-variant duplicate of the (user, merchant) key (e.g. 'Grab' vs 'grab').
+    check("habit_merchant_lower", sql`${t.merchant} = lower(${t.merchant})`),
+  ],
 );
 
 export const cadenceEnum = pgEnum("cadence", ["weekly", "monthly"]);
@@ -195,11 +230,17 @@ export const recurringItems = pgTable(
     dayOfWeek: bigint("day_of_week", { mode: "number" }), // 0=Sun..6=Sat for weekly
     lastRemindedDate: date("last_reminded_date"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("recurring_user_idx").on(t.userId),
+    // One recurring item per (user, case-insensitive label) so a duplicate bill can't accrue and
+    // fire a duplicate reminder every cadence period; addRecurring upserts on this key.
+    uniqueIndex("recurring_user_label_uniq").on(t.userId, sql`lower(${t.label})`),
     // Amount is always positive (parseAmount rejects <=0).
     check("recurring_amount_positive", sql`${t.amountCentavos} > 0`),
+    // Keep amounts inside the JS safe-integer range (defense-in-depth).
+    check("recurring_amount_safe", sql`${t.amountCentavos} <= ${MAX_SAFE_CENTAVOS}`),
     // Day-of-month is 1..31, day-of-week is 0..6 (Sun..Sat) when present.
     check("day_of_month_range", sql`${t.dayOfMonth} IS NULL OR ${t.dayOfMonth} BETWEEN 1 AND 31`),
     check("day_of_week_range", sql`${t.dayOfWeek} IS NULL OR ${t.dayOfWeek} BETWEEN 0 AND 6`),

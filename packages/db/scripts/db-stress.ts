@@ -2,13 +2,19 @@
 // with guaranteed cleanup in finally. Verifies claim/flush/dedup/concurrency/edit/delete/goal math
 // that unit tests can't (they have no Postgres). Never touches the real user's data.
 import {
+  addRecurring,
   budgetStatusesFor,
+  claimReminder,
   claimSlot,
+  findGoalsByName,
   flushWrites,
   getInsights,
   getLastTransaction,
   getRecentTransactions,
+  listGoals,
+  reapMessages,
   reapProcessedMessages,
+  reconcileGoalBalances,
   resolveUserId,
 } from "../src/index";
 import { getDb } from "../src/client";
@@ -24,7 +30,7 @@ import {
   transactions,
   users,
 } from "../src/schema";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 
 const PHONE = `+0000STRESS${Date.now()}`; // unique throwaway number
 const RUN = `stress-${Date.now()}`; // prefix for every processed_messages id we create
@@ -235,7 +241,155 @@ try {
   const reaped = await reapProcessedMessages();
   ok("reaper executes", typeof reaped === "number");
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // STRESS: the fixes shipped this session (High#1-3 + 4 Mediums + schema 0009).
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // 13. HIGH#3 — stale-claim double-log race, LOOPED to catch non-determinism.
+  // A stale claim is stolen by a redelivery; BOTH workers then flush the same expense. The
+  // self-fencing marker must let exactly ONE commit (money logged once), the other "superseded".
+  {
+    let committedTotal = 0;
+    let supersededTotal = 0;
+    let doubleLogged = 0;
+    const ITER = 25;
+    for (let i = 0; i < ITER; i++) {
+      const id = mid();
+      const stale = new Date(Date.now() - 3 * 60 * 1000); // older than CLAIM_TTL_MS (120s)
+      await claimSlot(id, stale); // worker A claimed long ago
+      await claimSlot(id); // worker B steals the stale slot
+      const exp = {
+        type: "expense" as const,
+        userId,
+        amountCentavos: 12345,
+        category: "Other" as const,
+        note: `race-${i}`,
+        localDate: "2026-06-12",
+      };
+      const [a, b] = await Promise.all([flushWrites(id, [exp]), flushWrites(id, [exp])]);
+      const committed = [a, b].filter((r) => r === "committed").length;
+      const superseded = [a, b].filter((r) => r === "superseded").length;
+      committedTotal += committed;
+      supersededTotal += superseded;
+      // Count how many rows actually landed for this race note — must be exactly 1.
+      const [{ c }] = await db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(transactions)
+        .where(eq(transactions.note, `race-${i}`));
+      if (Number(c) !== 1) doubleLogged++;
+    }
+    ok(
+      `H3: ${ITER}x stale-steal race → exactly one commit each`,
+      committedTotal === ITER && supersededTotal === ITER,
+      `committed=${committedTotal} superseded=${supersededTotal} (want ${ITER}/${ITER})`,
+    );
+    ok("H3: ZERO double-logged expenses across the race loop", doubleLogged === 0, `${doubleLogged} dupes`);
+  }
+
+  // 14. M1 — goals_user_name_uniq: a case-variant duplicate name must NOT create a second goal,
+  // and matchGoals must resolve deterministically (no arbitrary row).
+  {
+    const g1 = mid();
+    await claimSlot(g1);
+    await flushWrites(g1, [
+      { type: "createGoal", userId, name: "Japan Trip", targetCentavos: 1000000, targetDate: null },
+    ]);
+    const g2 = mid();
+    await claimSlot(g2);
+    await flushWrites(g2, [
+      { type: "createGoal", userId, name: "JAPAN TRIP", targetCentavos: 9999999, targetDate: null },
+      { type: "expense", userId, amountCentavos: 500, category: "Food", localDate: "2026-06-12" },
+    ]);
+    const japans = (await listGoals(userId)).filter((x) => x.name.toLowerCase() === "japan trip");
+    ok("M1: dup goal name (case-variant) did NOT create a 2nd goal", japans.length === 1, `${japans.length}`);
+    ok("M1: original goal kept, not overwritten", japans[0]?.targetCentavos === 1000000);
+    const matched = await findGoalsByName(userId, "japan");
+    ok("M1: findGoalsByName resolves the single goal", matched.length === 1);
+  }
+
+  // 15. M2-adjacent / schema — recurring_user_label_uniq upsert (flush path + standalone helper).
+  {
+    const r1 = mid();
+    await claimSlot(r1);
+    await flushWrites(r1, [
+      {
+        type: "addRecurring",
+        userId,
+        recurring: { label: "Rent", kind: "expense", amountCentavos: 800000, category: "Bills", cadence: "monthly", dayOfMonth: 1, dayOfWeek: null },
+      },
+    ]);
+    // standalone helper, different case + new amount → upsert, not a 2nd row
+    await addRecurring(userId, { label: "rent", kind: "expense", amountCentavos: 900000, category: "Bills", cadence: "monthly", dayOfMonth: 1 });
+    const rents = await db.select().from(recurringItems).where(eq(recurringItems.userId, userId));
+    const onlyRent = rents.filter((x) => x.label.toLowerCase() === "rent");
+    ok("schema: recurring label upsert (no dup)", onlyRent.length === 1, `${onlyRent.length}`);
+    ok("schema: recurring upsert updated amount in place", onlyRent[0]?.amountCentavos === 900000, `${onlyRent[0]?.amountCentavos}`);
+  }
+
+  // 16. M4 — claimReminder is an atomic once-per-day claim (record-before-send).
+  {
+    const [rent] = await db
+      .select()
+      .from(recurringItems)
+      .where(eq(recurringItems.userId, userId))
+      .limit(1);
+    const at = new Date("2026-06-12T03:00:00Z");
+    const first = await claimReminder(rent!.id, userId, at);
+    const second = await claimReminder(rent!.id, userId, at);
+    ok("M4: first claimReminder wins, second loses (no dup send)", first === true && second === false, `${first}/${second}`);
+    const nextDay = await claimReminder(rent!.id, userId, new Date("2026-06-13T03:00:00Z"));
+    ok("M4: next day is claimable again", nextDay === true);
+  }
+
+  // 17. M4/schema — reconcileGoalBalances self-heals a drifted denormalized total.
+  {
+    const [jp] = (await listGoals(userId)).filter((x) => x.name.toLowerCase() === "japan trip");
+    const cm = mid();
+    await claimSlot(cm);
+    await flushWrites(cm, [
+      { type: "goalContribution", userId, goalId: jp!.id, amountCentavos: 7000, localDate: "2026-06-12" },
+    ]);
+    await db.update(savingsGoals).set({ savedCentavos: 999999 }).where(eq(savingsGoals.id, jp!.id));
+    const fixed = await reconcileGoalBalances(userId);
+    const [after] = await db.select().from(savingsGoals).where(eq(savingsGoals.id, jp!.id));
+    ok("reconcile corrects drift to SUM(contributions)", after!.savedCentavos === 7000, `got ${after!.savedCentavos}`);
+    ok("reconcile reported >=1 corrected", fixed >= 1, `${fixed}`);
+    ok("reconcile idempotent (2nd run fixes 0)", (await reconcileGoalBalances(userId)) === 0);
+  }
+
+  // 18. schema — reapMessages keeps only the most-recent N turns.
+  {
+    for (let i = 0; i < 6; i++) {
+      const t = mid();
+      await claimSlot(t);
+      await flushWrites(t, [{ type: "saveTurn", userId, role: "user", content: `stress-turn-${i}` }]);
+    }
+    const deleted = await reapMessages(userId, 2);
+    const remaining = await db.select().from(messages).where(eq(messages.userId, userId));
+    ok("reapMessages deletes the older turns", deleted >= 4, `deleted ${deleted}`);
+    ok("reapMessages keeps exactly the cap", remaining.length === 2, `kept ${remaining.length}`);
+  }
+
+  // 19. schema — money upper-bound CHECK rejects an over-safe-integer raw write.
+  {
+    let rejected = false;
+    try {
+      await db.execute(
+        sql`insert into transactions (user_id, kind, amount_centavos, category, local_date)
+            values (${userId}, 'expense', 9007199254740992, 'Food', '2026-06-12')`,
+      );
+    } catch {
+      rejected = true;
+    }
+    ok("schema: tx_amount_safe rejects > 2^53-1", rejected);
+  }
+
   console.log(`\n=== DB STRESS: ${pass} pass / ${fail} fail ===`);
+} catch (err) {
+  // A THROWN error (not a soft `ok(...)` fail) must be surfaced loudly — otherwise it jumps to the
+  // finally below, which would exit 0 if no prior soft-fail was recorded (a false green).
+  fail++;
+  console.error("\n✗ THREW:", err instanceof Error ? (err.stack ?? err.message) : err);
 } finally {
   // CLEANUP — delete everything this run created, in FK-safe order. Scoped to the throwaway user
   // and to OUR tracked marker ids only; never an unscoped delete.

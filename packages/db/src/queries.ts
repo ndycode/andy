@@ -119,8 +119,25 @@ export type WriteIntent =
 /** "process" = we own this message (fresh, or stole a crashed claim); "skip" = dup or in-flight sibling. */
 export type ClaimResult = "process" | "skip";
 
+/**
+ * Result of a flush: "committed" = our writes landed and we own the reply; "superseded" = a
+ * concurrent worker (which stole this slot under an infra stall) completed the marker first, so we
+ * rolled everything back and must NOT send a reply or double-count. See flushWrites' self-fence.
+ */
+export type FlushResult = "committed" | "superseded";
+
+/** Thrown inside the flush txn to roll it back when another worker already completed the marker. */
+class MarkerSupersededError extends Error {}
+
 /** A claim older than this is assumed crashed (not an in-flight sibling) and is safe to steal. */
 export const CLAIM_TTL_MS = 2 * 60 * 1000;
+
+/**
+ * Bound the flush critical section well under CLAIM_TTL_MS so a wedged statement can't keep an attempt
+ * "live" past the point where a redelivery is allowed to steal its slot. Defense-in-depth on top of
+ * the self-fencing marker completion (which is what actually prevents a double-log). 30s ≪ 120s.
+ */
+const FLUSH_STATEMENT_TIMEOUT_MS = 30_000;
 
 /**
  * Phase 1 — single atomic statement (closes the concurrent-redelivery double-log race).
@@ -170,220 +187,278 @@ function pickRecurringMatch<T extends { label: string }>(rows: T[], match: strin
 
 /**
  * Phase 3 — short txn. Apply all buffered writes AND mark the marker completed, atomically.
+ *
+ * Self-fencing: the marker is completed only WHERE status='claimed'. If a concurrent worker stole
+ * this slot under an infra stall (claimSlot steals a 'claimed' marker older than CLAIM_TTL_MS) and
+ * completed it first, our UPDATE matches 0 rows and we roll the ENTIRE flush back — so the two
+ * workers can never both insert the same transaction. Under READ COMMITTED both flushes contend on
+ * the single marker row; exactly one wins and commits its writes, the loser returns "superseded".
+ * With no messageId (cron paths) there's no marker to fence and we always commit.
  */
-export async function flushWrites(messageId: string | null, intents: WriteIntent[]): Promise<void> {
+export async function flushWrites(
+  messageId: string | null,
+  intents: WriteIntent[],
+): Promise<FlushResult> {
   const db = getDb();
-  await db.transaction(async (tx) => {
-    // Tracks the transaction inserted earlier in THIS same flush, so an edit/delete that followed
-    // a log in the same message targets the just-logged row, not a stale historical snapshot.
-    let lastInsertedTxId: string | null = null;
-    for (const w of intents) {
-      if (w.type === "expense" || w.type === "income") {
-        const [ins] = await tx
-          .insert(transactions)
-          .values({
-            userId: w.userId,
-            kind: w.type,
-            amountCentavos: w.amountCentavos,
-            category: w.category,
-            note: w.note,
-            localDate: w.localDate,
-          })
-          .returning({ id: transactions.id });
-        lastInsertedTxId = ins?.id ?? lastInsertedTxId;
-      } else if (w.type === "goalContribution") {
-        const [ins] = await tx
-          .insert(transactions)
-          .values({
-            userId: w.userId,
-            kind: "expense",
-            amountCentavos: w.amountCentavos,
-            category: "Savings/Goals",
-            goalId: w.goalId,
-            localDate: w.localDate,
-          })
-          .returning({ id: transactions.id });
-        lastInsertedTxId = ins?.id ?? lastInsertedTxId;
-        await tx
-          .update(savingsGoals)
-          .set({ savedCentavos: sql`${savingsGoals.savedCentavos} + ${w.amountCentavos}` })
-          .where(and(eq(savingsGoals.id, w.goalId), eq(savingsGoals.userId, w.userId)));
-      } else if (w.type === "createGoal") {
-        await tx.insert(savingsGoals).values({
-          userId: w.userId,
-          name: w.name,
-          targetCentavos: w.targetCentavos,
-          targetDate: w.targetDate,
-        });
-      } else if (w.type === "setBudget") {
-        await tx
-          .insert(budgets)
-          .values({
-            userId: w.userId,
-            category: w.category,
-            monthlyLimitCentavos: w.monthlyLimitCentavos,
-          })
-          .onConflictDoUpdate({
-            target: [budgets.userId, budgets.category],
-            set: { monthlyLimitCentavos: w.monthlyLimitCentavos },
-          });
-      } else if (w.type === "deleteLast") {
-        // Same-turn target wins (correction after a log in one message); else the loop-start
-        // snapshot id. Scoped to the user, so a replayed/stale id can't touch another row.
-        const targetId = w.targetSameTurn ? lastInsertedTxId : (w.targetId ?? null);
-        if (targetId) {
-          const [row] = await tx
-            .select({ amountCentavos: transactions.amountCentavos, goalId: transactions.goalId })
-            .from(transactions)
-            .where(and(eq(transactions.id, targetId), eq(transactions.userId, w.userId)));
-          if (row) {
-            if (row.goalId) {
-              await tx
-                .update(savingsGoals)
-                .set({ savedCentavos: sql`${savingsGoals.savedCentavos} - ${row.amountCentavos}` })
-                .where(eq(savingsGoals.id, row.goalId));
-            }
-            await tx
-              .delete(transactions)
+  try {
+    await db.transaction(async (tx) => {
+      // Bound the critical section so a wedged statement can't outlive the steal window (pooler-safe:
+      // SET LOCAL is scoped to this txn and reset on commit/rollback). SET does not accept a bound
+      // parameter for its value, so the timeout is interpolated as a literal — it's a module constant,
+      // never user input, so there's no injection surface.
+      await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${FLUSH_STATEMENT_TIMEOUT_MS}`));
+      await tx.execute(
+        sql.raw(`SET LOCAL idle_in_transaction_session_timeout = ${FLUSH_STATEMENT_TIMEOUT_MS}`),
+      );
+      // Tracks the transaction inserted earlier in THIS same flush, so an edit/delete that followed
+      // a log in the same message targets the just-logged row, not a stale historical snapshot.
+      let lastInsertedTxId: string | null = null;
+      for (const w of intents) {
+        if (w.type === "expense" || w.type === "income") {
+          const [ins] = await tx
+            .insert(transactions)
+            .values({
+              userId: w.userId,
+              kind: w.type,
+              amountCentavos: w.amountCentavos,
+              category: w.category,
+              note: w.note,
+              localDate: w.localDate,
+            })
+            .returning({ id: transactions.id });
+          lastInsertedTxId = ins?.id ?? lastInsertedTxId;
+        } else if (w.type === "goalContribution") {
+          const [ins] = await tx
+            .insert(transactions)
+            .values({
+              userId: w.userId,
+              kind: "expense",
+              amountCentavos: w.amountCentavos,
+              category: "Savings/Goals",
+              goalId: w.goalId,
+              localDate: w.localDate,
+            })
+            .returning({ id: transactions.id });
+          lastInsertedTxId = ins?.id ?? lastInsertedTxId;
+          await tx
+            .update(savingsGoals)
+            .set({
+              savedCentavos: sql`${savingsGoals.savedCentavos} + ${w.amountCentavos}`,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(savingsGoals.id, w.goalId), eq(savingsGoals.userId, w.userId)));
+        } else if (w.type === "createGoal") {
+          // Per-user case-insensitive unique name (goals_user_name_uniq). A second goal with the same
+          // name must NOT abort the whole flush txn — keep the existing goal untouched and no-op.
+          await tx
+            .insert(savingsGoals)
+            .values({
+              userId: w.userId,
+              name: w.name,
+              targetCentavos: w.targetCentavos,
+              targetDate: w.targetDate,
+            })
+            .onConflictDoNothing();
+        } else if (w.type === "setBudget") {
+          await tx
+            .insert(budgets)
+            .values({
+              userId: w.userId,
+              category: w.category,
+              monthlyLimitCentavos: w.monthlyLimitCentavos,
+            })
+            .onConflictDoUpdate({
+              target: [budgets.userId, budgets.category],
+              set: { monthlyLimitCentavos: w.monthlyLimitCentavos, updatedAt: new Date() },
+            });
+        } else if (w.type === "deleteLast") {
+          // Same-turn target wins (correction after a log in one message); else the loop-start
+          // snapshot id. Scoped to the user, so a replayed/stale id can't touch another row.
+          const targetId = w.targetSameTurn ? lastInsertedTxId : (w.targetId ?? null);
+          if (targetId) {
+            const [row] = await tx
+              .select({ amountCentavos: transactions.amountCentavos, goalId: transactions.goalId })
+              .from(transactions)
               .where(and(eq(transactions.id, targetId), eq(transactions.userId, w.userId)));
-            if (w.targetSameTurn) lastInsertedTxId = null; // the just-logged row is gone
-          }
-        }
-      } else if (w.type === "editLast") {
-        const targetId = w.targetSameTurn ? lastInsertedTxId : (w.targetId ?? null);
-        if (targetId) {
-          const [row] = await tx
-            .select({ amountCentavos: transactions.amountCentavos, goalId: transactions.goalId })
-            .from(transactions)
-            .where(and(eq(transactions.id, targetId), eq(transactions.userId, w.userId)));
-          if (row) {
-            if (
-              row.goalId &&
-              w.patch.amountCentavos != null &&
-              w.patch.amountCentavos !== row.amountCentavos
-            ) {
-              const delta = w.patch.amountCentavos - row.amountCentavos;
+            if (row) {
+              if (row.goalId) {
+                await tx
+                  .update(savingsGoals)
+                  .set({
+                    savedCentavos: sql`${savingsGoals.savedCentavos} - ${row.amountCentavos}`,
+                    updatedAt: new Date(),
+                  })
+                  .where(and(eq(savingsGoals.id, row.goalId), eq(savingsGoals.userId, w.userId)));
+              }
               await tx
-                .update(savingsGoals)
-                .set({ savedCentavos: sql`${savingsGoals.savedCentavos} + ${delta}` })
-                .where(eq(savingsGoals.id, row.goalId));
+                .delete(transactions)
+                .where(and(eq(transactions.id, targetId), eq(transactions.userId, w.userId)));
+              if (w.targetSameTurn) lastInsertedTxId = null; // the just-logged row is gone
             }
+          }
+        } else if (w.type === "editLast") {
+          const targetId = w.targetSameTurn ? lastInsertedTxId : (w.targetId ?? null);
+          if (targetId) {
+            const [row] = await tx
+              .select({ amountCentavos: transactions.amountCentavos, goalId: transactions.goalId })
+              .from(transactions)
+              .where(and(eq(transactions.id, targetId), eq(transactions.userId, w.userId)));
+            if (row) {
+              if (
+                row.goalId &&
+                w.patch.amountCentavos != null &&
+                w.patch.amountCentavos !== row.amountCentavos
+              ) {
+                const delta = w.patch.amountCentavos - row.amountCentavos;
+                await tx
+                  .update(savingsGoals)
+                  .set({
+                    savedCentavos: sql`${savingsGoals.savedCentavos} + ${delta}`,
+                    updatedAt: new Date(),
+                  })
+                  .where(and(eq(savingsGoals.id, row.goalId), eq(savingsGoals.userId, w.userId)));
+              }
+              const set: Record<string, unknown> = {};
+              if (w.patch.amountCentavos != null) set.amountCentavos = w.patch.amountCentavos;
+              if (w.patch.category != null) set.category = w.patch.category;
+              if (w.patch.note != null) set.note = w.patch.note;
+              if (Object.keys(set).length > 0) {
+                set.updatedAt = new Date();
+                await tx
+                  .update(transactions)
+                  .set(set)
+                  .where(and(eq(transactions.id, targetId), eq(transactions.userId, w.userId)));
+              }
+            }
+          }
+        } else if (w.type === "saveMemory") {
+          await tx.insert(memories).values({
+            userId: w.userId,
+            content: w.content.slice(0, 4000),
+            kind: w.kind ?? "fact",
+          });
+        } else if (w.type === "saveTurn") {
+          // Same content guard as the standalone saveTurn(): skip blanks, cap at 4000 chars.
+          const content = w.content.trim();
+          if (content) {
+            await tx
+              .insert(messages)
+              .values({ userId: w.userId, role: w.role, content: content.slice(0, 4000) });
+          }
+        } else if (w.type === "forgetMemory") {
+          // SQL-side best-match lookup (exact, else most-recent contains) on the same txn — no O(n)
+          // JS scan over a capped page.
+          const hit = await findMemoryToForget(tx, w.userId, w.match);
+          if (hit) {
+            await tx
+              .delete(memories)
+              .where(and(eq(memories.id, hit.id), eq(memories.userId, w.userId)));
+          }
+        } else if (w.type === "addRecurring") {
+          const r = w.recurring;
+          // Upsert on the (user_id, lower(label)) expression index so re-adding an existing bill
+          // updates it in place rather than aborting the flush txn. drizzle's typed builder can't target
+          // an expression index, so this is raw parameterized SQL (values are bound, no injection).
+          await tx.execute(sql`
+          INSERT INTO ${recurringItems}
+            (user_id, label, kind, amount_centavos, category, cadence, day_of_month, day_of_week)
+          VALUES (${w.userId}, ${r.label}, ${r.kind}, ${r.amountCentavos}, ${r.category},
+                  ${r.cadence}, ${r.dayOfMonth ?? null}, ${r.dayOfWeek ?? null})
+          ON CONFLICT (user_id, lower(label)) DO UPDATE SET
+            label = excluded.label, kind = excluded.kind,
+            amount_centavos = excluded.amount_centavos, category = excluded.category,
+            cadence = excluded.cadence, day_of_month = excluded.day_of_month,
+            day_of_week = excluded.day_of_week, updated_at = now()
+        `);
+        } else if (w.type === "removeRecurring") {
+          // Fuzzy label match (case-insensitive exact, then contains), user-scoped. Delete only the
+          // single best match so "cancel netflix" can't wipe several bills at once.
+          const rows = await tx
+            .select({ id: recurringItems.id, label: recurringItems.label })
+            .from(recurringItems)
+            .where(eq(recurringItems.userId, w.userId));
+          const hit = pickRecurringMatch(rows, w.match);
+          if (hit) {
+            await tx
+              .delete(recurringItems)
+              .where(and(eq(recurringItems.id, hit.id), eq(recurringItems.userId, w.userId)));
+          }
+        } else if (w.type === "editRecurring") {
+          // Same fuzzy match as removeRecurring; patch only the provided fields on the one best row.
+          const rows = await tx
+            .select({ id: recurringItems.id, label: recurringItems.label })
+            .from(recurringItems)
+            .where(eq(recurringItems.userId, w.userId));
+          const hit = pickRecurringMatch(rows, w.match);
+          if (hit) {
             const set: Record<string, unknown> = {};
             if (w.patch.amountCentavos != null) set.amountCentavos = w.patch.amountCentavos;
             if (w.patch.category != null) set.category = w.patch.category;
-            if (w.patch.note != null) set.note = w.patch.note;
+            if (w.patch.cadence != null) set.cadence = w.patch.cadence;
+            if (w.patch.dayOfMonth !== undefined) set.dayOfMonth = w.patch.dayOfMonth;
+            if (w.patch.dayOfWeek !== undefined) set.dayOfWeek = w.patch.dayOfWeek;
             if (Object.keys(set).length > 0) {
+              set.updatedAt = new Date();
               await tx
-                .update(transactions)
+                .update(recurringItems)
                 .set(set)
-                .where(and(eq(transactions.id, targetId), eq(transactions.userId, w.userId)));
+                .where(and(eq(recurringItems.id, hit.id), eq(recurringItems.userId, w.userId)));
             }
           }
-        }
-      } else if (w.type === "saveMemory") {
-        await tx.insert(memories).values({
-          userId: w.userId,
-          content: w.content,
-          kind: w.kind ?? "fact",
-        });
-      } else if (w.type === "saveTurn") {
-        // Same content guard as the standalone saveTurn(): skip blanks, cap at 4000 chars.
-        const content = w.content.trim();
-        if (content) {
+        } else if (w.type === "removeBudget") {
           await tx
-            .insert(messages)
-            .values({ userId: w.userId, role: w.role, content: content.slice(0, 4000) });
-        }
-      } else if (w.type === "forgetMemory") {
-        // SQL-side best-match lookup (exact, else most-recent contains) on the same txn — no O(n)
-        // JS scan over a capped page.
-        const hit = await findMemoryToForget(tx, w.userId, w.match);
-        if (hit) {
-          await tx
-            .delete(memories)
-            .where(and(eq(memories.id, hit.id), eq(memories.userId, w.userId)));
-        }
-      } else if (w.type === "addRecurring") {
-        const r = w.recurring;
-        await tx.insert(recurringItems).values({
-          userId: w.userId,
-          label: r.label,
-          kind: r.kind,
-          amountCentavos: r.amountCentavos,
-          category: r.category,
-          cadence: r.cadence,
-          dayOfMonth: r.dayOfMonth ?? null,
-          dayOfWeek: r.dayOfWeek ?? null,
-        });
-      } else if (w.type === "removeRecurring") {
-        // Fuzzy label match (case-insensitive exact, then contains), user-scoped. Delete only the
-        // single best match so "cancel netflix" can't wipe several bills at once.
-        const rows = await tx
-          .select({ id: recurringItems.id, label: recurringItems.label })
-          .from(recurringItems)
-          .where(eq(recurringItems.userId, w.userId));
-        const hit = pickRecurringMatch(rows, w.match);
-        if (hit) {
-          await tx
-            .delete(recurringItems)
-            .where(and(eq(recurringItems.id, hit.id), eq(recurringItems.userId, w.userId)));
-        }
-      } else if (w.type === "editRecurring") {
-        // Same fuzzy match as removeRecurring; patch only the provided fields on the one best row.
-        const rows = await tx
-          .select({ id: recurringItems.id, label: recurringItems.label })
-          .from(recurringItems)
-          .where(eq(recurringItems.userId, w.userId));
-        const hit = pickRecurringMatch(rows, w.match);
-        if (hit) {
+            .delete(budgets)
+            .where(and(eq(budgets.userId, w.userId), eq(budgets.category, w.category)));
+        } else if (w.type === "editGoal") {
           const set: Record<string, unknown> = {};
-          if (w.patch.amountCentavos != null) set.amountCentavos = w.patch.amountCentavos;
-          if (w.patch.category != null) set.category = w.patch.category;
-          if (w.patch.cadence != null) set.cadence = w.patch.cadence;
-          if (w.patch.dayOfMonth !== undefined) set.dayOfMonth = w.patch.dayOfMonth;
-          if (w.patch.dayOfWeek !== undefined) set.dayOfWeek = w.patch.dayOfWeek;
+          if (w.patch.name != null) set.name = w.patch.name;
+          if (w.patch.targetCentavos != null) set.targetCentavos = w.patch.targetCentavos;
+          if (w.patch.targetDate !== undefined) set.targetDate = w.patch.targetDate;
           if (Object.keys(set).length > 0) {
+            set.updatedAt = new Date();
             await tx
-              .update(recurringItems)
+              .update(savingsGoals)
               .set(set)
-              .where(and(eq(recurringItems.id, hit.id), eq(recurringItems.userId, w.userId)));
+              .where(and(eq(savingsGoals.id, w.goalId), eq(savingsGoals.userId, w.userId)));
           }
-        }
-      } else if (w.type === "removeBudget") {
-        await tx
-          .delete(budgets)
-          .where(and(eq(budgets.userId, w.userId), eq(budgets.category, w.category)));
-      } else if (w.type === "editGoal") {
-        const set: Record<string, unknown> = {};
-        if (w.patch.name != null) set.name = w.patch.name;
-        if (w.patch.targetCentavos != null) set.targetCentavos = w.patch.targetCentavos;
-        if (w.patch.targetDate !== undefined) set.targetDate = w.patch.targetDate;
-        if (Object.keys(set).length > 0) {
+        } else if (w.type === "deleteGoal") {
+          // Detach contribution transactions first (goalId FK → savings_goals) so deleting the goal
+          // can't orphan-violate the constraint. The money facts stay logged as plain Savings/Goals
+          // expenses; only the goal link is removed. Then delete the goal itself, user-scoped.
           await tx
-            .update(savingsGoals)
-            .set(set)
+            .update(transactions)
+            .set({ goalId: null, updatedAt: new Date() })
+            .where(and(eq(transactions.goalId, w.goalId), eq(transactions.userId, w.userId)));
+          await tx
+            .delete(savingsGoals)
             .where(and(eq(savingsGoals.id, w.goalId), eq(savingsGoals.userId, w.userId)));
         }
-      } else if (w.type === "deleteGoal") {
-        // Detach contribution transactions first (goalId FK → savings_goals) so deleting the goal
-        // can't orphan-violate the constraint. The money facts stay logged as plain Savings/Goals
-        // expenses; only the goal link is removed. Then delete the goal itself, user-scoped.
-        await tx
-          .update(transactions)
-          .set({ goalId: null })
-          .where(and(eq(transactions.goalId, w.goalId), eq(transactions.userId, w.userId)));
-        await tx
-          .delete(savingsGoals)
-          .where(and(eq(savingsGoals.id, w.goalId), eq(savingsGoals.userId, w.userId)));
       }
-    }
-    if (messageId) {
-      await tx
-        .update(processedMessages)
-        .set({ status: "completed", completedAt: new Date() })
-        .where(eq(processedMessages.messageId, messageId));
-    }
-  });
+      if (messageId) {
+        // Complete the marker as an UPSERT so callers that don't pre-claim (crons, tests, db-stress)
+        // still work: a missing marker is inserted straight as 'completed'. When the marker already
+        // exists, flip 'claimed' → 'completed' only WHERE it is still 'claimed' (the self-fence). The
+        // RETURNING yields a row when we inserted fresh OR won the claimed→completed transition, and
+        // 0 rows ONLY when the conflict hit an already-'completed' marker — i.e. a concurrent worker
+        // that stole our stale slot finished first. Then we roll the whole flush back → "superseded",
+        // so the two workers can never both apply the same writes.
+        const completed = await tx
+          .insert(processedMessages)
+          .values({ messageId, status: "completed", completedAt: new Date() })
+          .onConflictDoUpdate({
+            target: processedMessages.messageId,
+            set: { status: "completed", completedAt: new Date() },
+            setWhere: eq(processedMessages.status, "claimed"),
+          })
+          .returning({ messageId: processedMessages.messageId });
+        if (completed.length === 0) throw new MarkerSupersededError();
+      }
+    });
+    return "committed";
+  } catch (err) {
+    if (err instanceof MarkerSupersededError) return "superseded";
+    throw err;
+  }
 }
 
 /** AC4 — correct PHP sum from SQL, never chat history. */
@@ -598,28 +673,61 @@ export async function listGoals(userId: string): Promise<
   }[]
 > {
   const db = getDb();
-  return db
-    .select({
-      id: savingsGoals.id,
-      name: savingsGoals.name,
-      targetCentavos: savingsGoals.targetCentavos,
-      savedCentavos: savingsGoals.savedCentavos,
-      createdAt: savingsGoals.createdAt,
-      targetDate: savingsGoals.targetDate,
-    })
-    .from(savingsGoals)
-    .where(eq(savingsGoals.userId, userId));
+  return (
+    db
+      .select({
+        id: savingsGoals.id,
+        name: savingsGoals.name,
+        targetCentavos: savingsGoals.targetCentavos,
+        savedCentavos: savingsGoals.savedCentavos,
+        createdAt: savingsGoals.createdAt,
+        targetDate: savingsGoals.targetDate,
+      })
+      .from(savingsGoals)
+      .where(eq(savingsGoals.userId, userId))
+      // Deterministic order (oldest first, id tiebreak) so fuzzy matching/listing is stable.
+      .orderBy(sql`${savingsGoals.createdAt} asc`, sql`${savingsGoals.id} asc`)
+  );
 }
 
-/** Find a goal by fuzzy name match (case-insensitive contains). */
-export async function findGoalByName(userId: string, name: string) {
-  const goals = await listGoals(userId);
+type GoalRow = Awaited<ReturnType<typeof listGoals>>[number];
+
+/**
+ * Pure goal matcher (exported for unit testing). Case-insensitive. Returns a result that
+ * distinguishes none / exactly-one / ambiguous so destructive callers (deleteGoal) can ask the user
+ * which goal instead of silently hitting an arbitrary row:
+ *   - an EXACT (case-insensitive) name match always wins and is unambiguous (names are unique per
+ *     user via goals_user_name_uniq);
+ *   - otherwise, goals whose name CONTAINS the query. One → that goal; several → ambiguous.
+ * The old `query.includes(goalName)` direction is dropped — it was so broad that "trip" matched
+ * "my trip to japan savings", letting a short query delete the wrong goal.
+ */
+export function matchGoals<T extends { name: string }>(
+  goals: T[],
+  name: string,
+): { kind: "none" } | { kind: "one"; goal: T } | { kind: "ambiguous"; goals: T[] } {
   const q = name.trim().toLowerCase();
-  return (
-    goals.find((g) => g.name.toLowerCase() === q) ??
-    goals.find((g) => g.name.toLowerCase().includes(q) || q.includes(g.name.toLowerCase())) ??
-    null
-  );
+  if (!q) return { kind: "none" };
+  const exact = goals.find((g) => g.name.toLowerCase() === q);
+  if (exact) return { kind: "one", goal: exact };
+  const contains = goals.filter((g) => g.name.toLowerCase().includes(q));
+  if (contains.length === 0) return { kind: "none" };
+  if (contains.length === 1) return { kind: "one", goal: contains[0] as T };
+  return { kind: "ambiguous", goals: contains };
+}
+
+/** Resolve a fuzzy goal-name query to all matches (exact-first), for callers that disambiguate. */
+export async function findGoalsByName(userId: string, name: string): Promise<GoalRow[]> {
+  const m = matchGoals(await listGoals(userId), name);
+  if (m.kind === "one") return [m.goal];
+  if (m.kind === "ambiguous") return m.goals;
+  return [];
+}
+
+/** Find the single best goal by fuzzy name, or null on no/ambiguous match (non-destructive callers). */
+export async function findGoalByName(userId: string, name: string): Promise<GoalRow | null> {
+  const m = matchGoals(await listGoals(userId), name);
+  return m.kind === "one" ? m.goal : null;
 }
 
 /** Save a memory (optionally typed). */
@@ -629,7 +737,7 @@ export async function saveMemory(
   kind: MemoryKind = "fact",
 ): Promise<void> {
   const db = getDb();
-  await db.insert(memories).values({ userId, content, kind });
+  await db.insert(memories).values({ userId, content: content.slice(0, 4000), kind });
 }
 
 /** Recall recent memories (most recent first). */
@@ -832,16 +940,20 @@ export interface RecurringInput {
 
 export async function addRecurring(userId: string, r: RecurringInput) {
   const db = getDb();
-  await db.insert(recurringItems).values({
-    userId,
-    label: r.label,
-    kind: r.kind,
-    amountCentavos: r.amountCentavos,
-    category: r.category,
-    cadence: r.cadence,
-    dayOfMonth: r.dayOfMonth ?? null,
-    dayOfWeek: r.dayOfWeek ?? null,
-  });
+  // Upsert on the (user_id, lower(label)) expression index — mirrors the flush-path addRecurring so a
+  // re-add updates in place instead of violating recurring_user_label_uniq. Raw parameterized SQL
+  // because drizzle's typed builder can't target an expression index.
+  await db.execute(sql`
+    INSERT INTO ${recurringItems}
+      (user_id, label, kind, amount_centavos, category, cadence, day_of_month, day_of_week)
+    VALUES (${userId}, ${r.label}, ${r.kind}, ${r.amountCentavos}, ${r.category},
+            ${r.cadence}, ${r.dayOfMonth ?? null}, ${r.dayOfWeek ?? null})
+    ON CONFLICT (user_id, lower(label)) DO UPDATE SET
+      label = excluded.label, kind = excluded.kind,
+      amount_centavos = excluded.amount_centavos, category = excluded.category,
+      cadence = excluded.cadence, day_of_month = excluded.day_of_month,
+      day_of_week = excluded.day_of_week, updated_at = now()
+  `);
 }
 
 export async function listRecurring(userId: string) {
@@ -875,13 +987,32 @@ export async function dueRecurringToday(userId: string, at: Date = new Date()) {
   });
 }
 
-/** Mark a recurring item reminded for today (call only after the reminder was actually sent). */
-export async function markReminded(id: string, at: Date = new Date()) {
+/**
+ * Atomically CLAIM today's reminder slot for a recurring item BEFORE sending (record-before-send,
+ * matching recordNudge/recordSummary). Sets last_reminded_date=today only WHERE it is not already
+ * today, and returns true iff this call won the claim — the caller sends only then. A cron double-fire
+ * (at-least-once) or a kill between claim and send means at worst a missed reminder that day, never a
+ * duplicate. user-scoped as defense-in-depth even though ids come from dueRecurringToday(userId).
+ */
+export async function claimReminder(
+  id: string,
+  userId: string,
+  at: Date = new Date(),
+): Promise<boolean> {
   const db = getDb();
-  await db
+  const today = localDate(at);
+  const rows = await db
     .update(recurringItems)
-    .set({ lastRemindedDate: localDate(at) })
-    .where(eq(recurringItems.id, id));
+    .set({ lastRemindedDate: today, updatedAt: new Date() })
+    .where(
+      and(
+        eq(recurringItems.id, id),
+        eq(recurringItems.userId, userId),
+        sql`${recurringItems.lastRemindedDate} is distinct from ${today}`,
+      ),
+    )
+    .returning({ id: recurringItems.id });
+  return rows.length > 0;
 }
 
 /** Budgets vs month-to-date spend. LEFT JOIN + GROUP BY (the prior correlated subquery that
@@ -995,8 +1126,14 @@ export async function reapProcessedMessages(
   staleClaimedHours = 24,
 ): Promise<number> {
   const db = getDb();
-  const completedCutoff = new Date(at.getTime() - keepCompletedDays * 24 * 3600 * 1000);
-  const claimedCutoff = new Date(at.getTime() - staleClaimedHours * 3600 * 1000);
+  // ISO strings, not bare Date objects: the postgres-js driver can't serialize a Date interpolated
+  // into a raw sql`` template (it throws ERR_INVALID_ARG_TYPE). toISOString() is unambiguous UTC and
+  // parses cleanly as timestamptz. (The drizzle query-builder eq()/lt() helpers DO accept Dates — it's
+  // only this raw-sql OR-clause that needs the explicit conversion.)
+  const completedCutoff = new Date(
+    at.getTime() - keepCompletedDays * 24 * 3600 * 1000,
+  ).toISOString();
+  const claimedCutoff = new Date(at.getTime() - staleClaimedHours * 3600 * 1000).toISOString();
   const deleted = await db
     .delete(processedMessages)
     .where(
@@ -1005,6 +1142,60 @@ export async function reapProcessedMessages(
     )
     .returning({ messageId: processedMessages.messageId });
   return deleted.length;
+}
+
+/**
+ * Hygiene: bound the short-term conversation log. recentTurns only ever reads the last few turns, so
+ * older rows are pure growth. Keep the most recent `keep` rows per user (by seq) and drop the rest.
+ * Called from the daily cron. Returns the number of rows deleted.
+ */
+export async function reapMessages(userId: string, keep = 200): Promise<number> {
+  const db = getDb();
+  const deleted = await db
+    .delete(messages)
+    .where(
+      and(
+        eq(messages.userId, userId),
+        sql`${messages.seq} <= (
+          SELECT COALESCE(MAX(seq), 0) - ${keep}
+          FROM ${messages} WHERE ${messages.userId} = ${userId}
+        )`,
+      ),
+    )
+    .returning({ id: messages.id });
+  return deleted.length;
+}
+
+/**
+ * Self-heal the denormalized savings_goals.saved_centavos against the source of truth — the SUM of
+ * its live (non-detached) contribution transactions. App arithmetic keeps these in lockstep on the
+ * happy path, so this is a safety net: any drift from a raw write or a partial failure is corrected
+ * within a day. Called from the daily cron. Returns the number of goals whose stored total was wrong.
+ */
+export async function reconcileGoalBalances(userId: string): Promise<number> {
+  const db = getDb();
+  const corrected = await db
+    .update(savingsGoals)
+    .set({
+      savedCentavos: sql`COALESCE((
+        SELECT SUM(${transactions.amountCentavos})
+        FROM ${transactions}
+        WHERE ${transactions.goalId} = ${savingsGoals.id}
+      ), 0)`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(savingsGoals.userId, userId),
+        sql`${savingsGoals.savedCentavos} <> COALESCE((
+          SELECT SUM(${transactions.amountCentavos})
+          FROM ${transactions}
+          WHERE ${transactions.goalId} = ${savingsGoals.id}
+        ), 0)`,
+      ),
+    )
+    .returning({ id: savingsGoals.id });
+  return corrected.length;
 }
 
 export { localDate };

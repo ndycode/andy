@@ -71,6 +71,37 @@ d("queries.ts — integration (real Postgres)", () => {
       // A fresh claim now finds the prior 'claimed' is stale → steals it.
       expect(await q.claimSlot("m3")).toBe("process");
     });
+
+    test("H3: after a stale-claim steal, only ONE flush commits — no double-log", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      // Worker A claimed long ago (stale). Worker B redelivery steals the slot — both now believe
+      // they own it ("process"), the exact race that could double-log the same expense.
+      const old = new Date(Date.now() - q.CLAIM_TTL_MS - 60_000);
+      expect(await q.claimSlot("steal1", old)).toBe("process"); // A (stale)
+      expect(await q.claimSlot("steal1")).toBe("process"); // B steals
+
+      const expense = {
+        type: "expense" as const,
+        userId,
+        amountCentavos: 50000,
+        category: "Food" as const,
+        note: "lunch",
+        localDate: "2026-06-11",
+      };
+      // Both flush the same buffered expense. The self-fence completes the marker only WHERE
+      // status='claimed'; B's steal reset it to 'claimed', so whichever flush wins flips it to
+      // 'completed' and the other matches 0 rows → rolls back → "superseded".
+      const results = await Promise.all([
+        q.flushWrites("steal1", [expense]),
+        q.flushWrites("steal1", [expense]),
+      ]);
+      const committed = results.filter((r) => r === "committed").length;
+      const superseded = results.filter((r) => r === "superseded").length;
+      expect(committed).toBe(1);
+      expect(superseded).toBe(1);
+      // The money was logged exactly once, not twice.
+      expect(await q.sumByCategory(userId, "Food", new Date("2026-06-11T03:00:00Z"))).toBe(50000);
+    });
   });
 
   describe("flushWrites — transactional apply + marker completion", () => {
@@ -145,5 +176,144 @@ d("queries.ts — integration (real Postgres)", () => {
     expect(o.income).toBe(2_500_000);
     expect(o.expense).toBe(18000);
     expect(o.net).toBe(2_482_000);
+  });
+
+  describe("0009 — per-user uniqueness, reapers, reconcile", () => {
+    test("createGoal is case-insensitively unique per user; a dup name no-ops the flush", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      await q.flushWrites("g1", [
+        { type: "createGoal", userId, name: "Japan", targetCentavos: 100000, targetDate: null },
+      ]);
+      // Same name, different case + a same-message expense: the dup createGoal must NOT abort the txn.
+      await q.flushWrites("g2", [
+        { type: "createGoal", userId, name: "japan", targetCentavos: 999999, targetDate: null },
+        {
+          type: "expense",
+          userId,
+          amountCentavos: 5000,
+          category: "Food",
+          localDate: "2026-06-11",
+        },
+      ]);
+      const goals = await q.listGoals(userId);
+      expect(goals.length).toBe(1); // the second create was a no-op
+      expect(goals[0]?.targetCentavos).toBe(100000); // original kept, not overwritten
+      // The sibling expense still committed (the flush did not roll back).
+      expect(await q.sumByCategory(userId, "Food", new Date("2026-06-11T03:00:00Z"))).toBe(5000);
+    });
+
+    test("addRecurring upserts on (user, lower(label)) instead of duplicating", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      await q.addRecurring(userId, {
+        label: "Rent",
+        kind: "expense",
+        amountCentavos: 800000,
+        category: "Bills",
+        cadence: "monthly",
+        dayOfMonth: 1,
+      });
+      // Re-add with different case + new amount → updates in place, no second row.
+      await q.addRecurring(userId, {
+        label: "rent",
+        kind: "expense",
+        amountCentavos: 900000,
+        category: "Bills",
+        cadence: "monthly",
+        dayOfMonth: 1,
+      });
+      const items = await q.listRecurring(userId);
+      expect(items.length).toBe(1);
+      expect(items[0]?.amountCentavos).toBe(900000);
+    });
+
+    test("flush-path addRecurring also upserts (no duplicate, no txn abort)", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      const mk = (amt: number) => ({
+        type: "addRecurring" as const,
+        userId,
+        recurring: {
+          label: "Netflix",
+          kind: "expense" as const,
+          amountCentavos: amt,
+          category: "Entertainment" as const,
+          cadence: "monthly" as const,
+          dayOfMonth: 15,
+          dayOfWeek: null,
+        },
+      });
+      await q.flushWrites("r1", [mk(54900)]);
+      await q.flushWrites("r2", [mk(64900)]);
+      const items = await q.listRecurring(userId);
+      expect(items.length).toBe(1);
+      expect(items[0]?.amountCentavos).toBe(64900);
+    });
+
+    test("reapMessages keeps only the most recent N turns per user", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      for (let i = 0; i < 6; i++) {
+        await q.flushWrites(`t${i}`, [
+          { type: "saveTurn", userId, role: "user", content: `m${i}` },
+        ]);
+      }
+      const deleted = await q.reapMessages(userId, 2);
+      expect(deleted).toBe(4);
+      const turns = await q.recentTurns(userId, 50);
+      expect(turns.map((t) => t.content)).toEqual(["m4", "m5"]); // newest 2, chronological
+    });
+
+    test("reconcileGoalBalances corrects a drifted saved_centavos to the contribution sum", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      await q.flushWrites("c1", [
+        { type: "createGoal", userId, name: "Laptop", targetCentavos: 5_000_000, targetDate: null },
+      ]);
+      const goal = (await q.listGoals(userId))[0];
+      const goalId = goal?.id as string;
+      // A real contribution of 1000, then corrupt the denormalized total to simulate drift.
+      await q.flushWrites("c2", [
+        { type: "goalContribution", userId, goalId, amountCentavos: 1000, localDate: "2026-06-11" },
+      ]);
+      await sql`update savings_goals set saved_centavos = 999999 where id = ${goalId}`;
+      const fixed = await q.reconcileGoalBalances(userId);
+      expect(fixed).toBe(1);
+      const after = (await q.listGoals(userId)).find((g) => g.id === goalId);
+      expect(after?.savedCentavos).toBe(1000); // back in sync with SUM(contributions)
+      // Idempotent: a second run finds nothing to fix.
+      expect(await q.reconcileGoalBalances(userId)).toBe(0);
+    });
+
+    test("amount upper-bound CHECK rejects an over-safe-integer write", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      let rejected = false;
+      try {
+        await sql`insert into transactions (user_id, kind, amount_centavos, category, local_date)
+          values (${userId}, 'expense', 9007199254740992, 'Food', '2026-06-11')`;
+      } catch {
+        rejected = true;
+      }
+      expect(rejected).toBe(true);
+    });
+
+    test("M4: claimReminder is an atomic once-per-day claim (record-before-send)", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      await q.addRecurring(userId, {
+        label: "Rent",
+        kind: "expense",
+        amountCentavos: 800000,
+        category: "Bills",
+        cadence: "monthly",
+        dayOfMonth: 1,
+      });
+      const [item] = await q.listRecurring(userId);
+      const id = item?.id as string;
+      const at = new Date("2026-06-11T03:00:00Z");
+      // First claim wins; a second claim the same day loses (so the cron sends exactly once).
+      expect(await q.claimReminder(id, userId, at)).toBe(true);
+      expect(await q.claimReminder(id, userId, at)).toBe(false);
+      // A different user can't claim someone else's reminder (user-scoped).
+      const other = await q.resolveUserId("+639170000000");
+      expect(await q.claimReminder(id, other, at)).toBe(false);
+      // Next day → claimable again.
+      expect(await q.claimReminder(id, userId, new Date("2026-06-12T03:00:00Z"))).toBe(true);
+    });
   });
 });

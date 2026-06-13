@@ -64,6 +64,13 @@
       "when": 1781341514463,
       "tag": "0008_messages_seq_ordering",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1781352375409,
+      "tag": "0009_schema_audit_0009",
+      "breakpoints": true
     }
   ]
 }

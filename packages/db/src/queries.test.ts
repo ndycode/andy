@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { escapeLike, findMemoryToForget } from "./queries";
+import { escapeLike, findMemoryToForget, matchGoals } from "./queries";
 
 // Pure LIKE/ILIKE metacharacter escaping for searchTransactions. The DB query itself is
 // integration-tested (no unit harness), but this escaping is pure and must be exact: without it,
@@ -88,5 +88,39 @@ describe("findMemoryToForget (SQL-side selection contract)", () => {
   test("returns null when neither query matches", async () => {
     const { exec } = stubExec([[], []]);
     expect(await findMemoryToForget(exec, "u1", "nonexistent")).toBeNull();
+  });
+});
+
+// matchGoals is the pure fuzzy goal resolver (M1 fix). It must NOT use the old over-broad
+// query.includes(goalName) direction (which let "trip" match "my trip to japan savings"), it must
+// prefer an exact case-insensitive match, and it must signal ambiguity so destructive callers can
+// disambiguate instead of hitting an arbitrary row.
+describe("matchGoals", () => {
+  const g = (name: string) => ({ name });
+
+  test("exact case-insensitive match wins and is unambiguous", () => {
+    const r = matchGoals([g("Japan"), g("Japan Trip")], "japan");
+    expect(r).toEqual({ kind: "one", goal: g("Japan") });
+  });
+
+  test("single substring match resolves to that goal", () => {
+    const r = matchGoals([g("Emergency Fund"), g("Laptop")], "laptop");
+    expect(r).toEqual({ kind: "one", goal: g("Laptop") });
+  });
+
+  test("multiple substring matches are AMBIGUOUS (no arbitrary pick)", () => {
+    const r = matchGoals([g("Car Fund"), g("Car Insurance")], "car");
+    expect(r.kind).toBe("ambiguous");
+    if (r.kind === "ambiguous") expect(r.goals).toHaveLength(2);
+  });
+
+  test("does NOT match on the reverse direction (query contains the goal name)", () => {
+    // "trip" must NOT match "my trip to japan savings" via query.includes(name) — only name.includes(query).
+    expect(matchGoals([g("trip")], "my trip to japan savings")).toEqual({ kind: "none" });
+  });
+
+  test("no match → none; empty query → none", () => {
+    expect(matchGoals([g("Laptop")], "house")).toEqual({ kind: "none" });
+    expect(matchGoals([g("Laptop")], "  ")).toEqual({ kind: "none" });
   });
 });
