@@ -71,11 +71,24 @@ export async function sendReaction(
 }
 
 async function post(path: string, payload: Record<string, unknown>): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify(payload),
-  });
+  // Bound the outbound call: without a timeout a hung connection to Sendblue would block until the
+  // platform's wall-clock limit hard-kills the function (skipping the handler's catch and stranding
+  // the 'claimed' marker). 10s is far above Sendblue's normal sub-second response, so a trip means
+  // it's genuinely stuck — surface it as a normal error the caller can handle/retry.
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (err) {
+    if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+      throw new Error(`Sendblue ${path} timed out after 10s`);
+    }
+    throw err;
+  }
   if (!res.ok)
     throw new Error(`Sendblue ${path} ${res.status}: ${await res.text().catch(() => "")}`);
 }
