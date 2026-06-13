@@ -241,8 +241,10 @@ function synthesizeReply(
   return "got it.";
 }
 
-/** Best-effort one-liner from a read tool's structured output, for the no-final-text path. */
-function summarizeReadResult(output: unknown): string {
+/** Best-effort one-liner from a read tool's structured output, for the no-final-text path.
+ *  Exported for unit testing — this is what Andy says when the model goes silent after a read,
+ *  so each branch maps to a real user-facing reply and is worth pinning. */
+export function summarizeReadResult(output: unknown): string {
   if (output && typeof output === "object") {
     const o = output as Record<string, unknown>;
     if (typeof o.total === "string" && typeof o.category === "string") {

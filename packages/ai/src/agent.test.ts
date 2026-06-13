@@ -21,7 +21,7 @@ mock.module("@repo/db", () => ({
 }));
 
 import { MockLanguageModelV3 } from "ai/test";
-import { runAgent } from "./agent";
+import { runAgent, summarizeReadResult } from "./agent";
 
 // Provider-level usage shape (AI SDK 6 GA: inputTokens/outputTokens are objects, not bare numbers).
 const usage = {
@@ -230,5 +230,138 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     const { reply, writes } = await runAgent("grab 180", base, [tier0, tier1b]);
     expect(writes).toHaveLength(1);
     expect(reply).toBe("logged ✅");
+  });
+});
+
+describe("summarizeReadResult — no-final-text fallback (what Andy says when the model goes silent)", () => {
+  test("getSpending shape → category total", () => {
+    expect(summarizeReadResult({ category: "Food", total: "₱2,300.00" })).toBe(
+      "Food: ₱2,300.00 so far this month.",
+    );
+  });
+
+  test("getOverview shape → in/out/net", () => {
+    expect(
+      summarizeReadResult({ income: "₱25,000.00", expenses: "₱8,000.00", net: "₱17,000.00" }),
+    ).toBe("in ₱25,000.00, out ₱8,000.00, net ₱17,000.00 this month.");
+  });
+
+  test("category breakdown → top 3", () => {
+    const out = summarizeReadResult({
+      breakdown: [
+        { category: "Food", total: "₱5,000.00" },
+        { category: "Transport", total: "₱2,000.00" },
+        { category: "Bills", total: "₱1,000.00" },
+        { category: "Shopping", total: "₱500.00" },
+      ],
+    });
+    expect(out).toBe("top categories: Food ₱5,000.00, Transport ₱2,000.00, Bills ₱1,000.00.");
+  });
+
+  test("empty breakdown → nothing-logged message", () => {
+    expect(summarizeReadResult({ breakdown: [] })).toBe("nothing logged yet this month.");
+  });
+
+  test("goals array → joined, and empty → no-goals message", () => {
+    expect(summarizeReadResult({ goals: ["Laptop 40%", "Trip 10%"] })).toBe(
+      "Laptop 40% · Trip 10%",
+    );
+    expect(summarizeReadResult({ goals: [] })).toBe("no savings goals yet.");
+  });
+
+  test("remembered (listMemory) → bulleted, and empty → nothing-saved", () => {
+    expect(summarizeReadResult({ remembered: ["payday 15th", "likes milk tea"] })).toBe(
+      "here's what i know:\n- payday 15th\n- likes milk tea",
+    );
+    expect(summarizeReadResult({ remembered: [] })).toBe("nothing saved yet.");
+  });
+
+  test("recent transactions → top 5, note preferred over category", () => {
+    expect(
+      summarizeReadResult({
+        transactions: [
+          { amount: "₱180.00", category: "Transport", note: "grab" },
+          { amount: "₱250.00", category: "Food", note: undefined },
+        ],
+      }),
+    ).toBe("recent: ₱180.00 grab, ₱250.00 Food.");
+    expect(summarizeReadResult({ transactions: [] })).toBe("nothing logged yet.");
+  });
+
+  test("recurring list, and empty → none-set-up", () => {
+    expect(summarizeReadResult({ recurring: [{ label: "rent", amount: "₱8,000.00" }] })).toBe(
+      "recurring: rent ₱8,000.00.",
+    );
+    expect(summarizeReadResult({ recurring: [] })).toBe("no recurring bills set up.");
+  });
+
+  test("budgets list with pct", () => {
+    expect(
+      summarizeReadResult({
+        budgets: [{ category: "Food", spent: "₱4,100.00", limit: "₱5,000.00", pct: 82 }],
+      }),
+    ).toBe("budgets: Food ₱4,100.00/₱5,000.00 (82%).");
+  });
+
+  test("compareSpending direction + signed pct", () => {
+    expect(
+      summarizeReadResult({
+        scope: "Food",
+        current: "₱5,000.00",
+        previous: "₱4,000.00",
+        direction: "up",
+        pctChange: 25,
+      }),
+    ).toBe("Food: ₱5,000.00 now vs ₱4,000.00 before, up (+25%).");
+  });
+
+  test("getSpendingPace — over budget vs within budget vs no budget", () => {
+    expect(
+      summarizeReadResult({
+        category: "Food",
+        spentSoFar: "₱4,000.00",
+        projectedMonthEnd: "₱8,000.00",
+        budget: "₱5,000.00",
+        onTrackToExceed: true,
+        projectedOver: "₱3,000.00",
+      }),
+    ).toContain("over your ₱5,000.00 budget");
+    expect(
+      summarizeReadResult({
+        category: "Food",
+        spentSoFar: "₱1,000.00",
+        projectedMonthEnd: "₱2,000.00",
+        budget: "₱5,000.00",
+        onTrackToExceed: false,
+      }),
+    ).toContain("within your ₱5,000.00 budget");
+    expect(
+      summarizeReadResult({
+        category: "Food",
+        spentSoFar: "₱1,000.00",
+        projectedMonthEnd: "₱2,000.00",
+        budget: null,
+        onTrackToExceed: false,
+      }),
+    ).toBe("Food: ₱1,000.00 so far, on pace for ₱2,000.00 by month end.");
+  });
+
+  test("insights weekday/weekend with and without a leak", () => {
+    expect(
+      summarizeReadResult({
+        weekday: "₱3,000.00",
+        weekend: "₱2,000.00",
+        topLeak: { what: "grab", total: "₱900.00" },
+      }),
+    ).toBe("weekday ₱3,000.00, weekend ₱2,000.00. biggest leak: grab ₱900.00.");
+    expect(summarizeReadResult({ weekday: "₱3,000.00", weekend: "₱0.00", topLeak: null })).toBe(
+      "weekday ₱3,000.00, weekend ₱0.00.",
+    );
+  });
+
+  test("unknown shape / non-object → generic fallback", () => {
+    expect(summarizeReadResult({ surprise: true })).toBe("here's what i found.");
+    expect(summarizeReadResult(null)).toBe("here's what i found.");
+    expect(summarizeReadResult("a string")).toBe("here's what i found.");
   });
 });
