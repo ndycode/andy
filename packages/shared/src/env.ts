@@ -28,6 +28,8 @@ type Env = {
   AI_GATEWAY_API_KEY?: string;
   GOOGLE_GENERATIVE_AI_API_KEY?: string;
   GROQ_API_KEY?: string;
+  APP_TIMEZONE?: string;
+  APP_TIMEZONE_OFFSET_MINUTES?: string;
 };
 
 let _env: Env | null = null;
@@ -47,6 +49,11 @@ function build(): Env {
       // account-wide free-tier rate limit. Each enables a fallback tier when present.
       GOOGLE_GENERATIVE_AI_API_KEY: z.string().min(1).optional(),
       GROQ_API_KEY: z.string().min(1).optional(),
+      // Timezone config (fixed-offset model). APP_TIMEZONE is a display label for the agent prompt;
+      // APP_TIMEZONE_OFFSET_MINUTES is minutes east of UTC for the date math. Both default to Manila
+      // (read directly in @repo/shared/time at module load; declared here for validation + docs).
+      APP_TIMEZONE: z.string().min(1).optional(),
+      APP_TIMEZONE_OFFSET_MINUTES: z.string().optional(),
     },
     runtimeEnv: process.env,
     emptyStringAsUndefined: true,

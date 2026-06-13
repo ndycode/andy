@@ -10,6 +10,7 @@
     "./allowlist": "./src/allowlist.ts",
     "./goals": "./src/goals.ts",
     "./budget": "./src/budget.ts",
+    "./analytics": "./src/analytics.ts",
     "./dedup": "./src/dedup.ts",
     "./errors": "./src/errors.ts",
     "./env": "./src/env.ts",

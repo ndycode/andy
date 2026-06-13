@@ -10,6 +10,20 @@ export interface BudgetSnapshot {
 export const BUDGET_NEAR_RATIO = 0.8;
 
 /**
+ * Whether a just-logged expense should count toward the in-the-moment budget reaction. The reaction
+ * compares against the CURRENT month's spend, so a backdated expense (localDate outside this month)
+ * must be excluded — otherwise its amount is subtracted from this month's total, yielding a wrong
+ * (possibly negative) priorSpent and a bogus "you're over budget" line. Pure + tested because the
+ * handler relies on it to gate that user-facing message.
+ */
+export function countsTowardBudgetReaction(
+  localDate: string,
+  month: { start: string; end: string },
+): boolean {
+  return localDate >= month.start && localDate <= month.end;
+}
+
+/**
  * In-the-moment reaction (Wave 3): given the post-flush budget state for the categories the user
  * just logged into, return at most ONE short Andy-voiced line to append to the same reply — or
  * null if nothing crossed a threshold. Deterministic and free (no model call, no extra message).
@@ -36,4 +50,26 @@ export function budgetReactionLine(current: BudgetSnapshot, priorSpent: number):
     return `that's ${pct}% of your ${category} budget, ${formatPHP(left)} left for the month 👀`;
   }
   return null;
+}
+
+/**
+ * All in-the-moment budget lines for a message that logged into one OR MORE categories. For each
+ * budgeted category, `justLogged` is the centavos this message added to it; priorSpent = current
+ * spend minus that, so a line fires only on the crossing transaction. Returns one line per category
+ * that crossed (most callers join with "\n"), preserving the input order of `statuses`.
+ *
+ * Pure + tested: this is the multi-category decision the handler relies on, separated from the DB
+ * fetch so it can be exercised directly.
+ */
+export function budgetReactionLines(
+  statuses: readonly BudgetSnapshot[],
+  justLoggedByCategory: ReadonlyMap<string, number>,
+): string[] {
+  const lines: string[] = [];
+  for (const s of statuses) {
+    const justLogged = justLoggedByCategory.get(s.category) ?? 0;
+    const line = budgetReactionLine(s, s.spent - justLogged);
+    if (line) lines.push(line);
+  }
+  return lines;
 }
