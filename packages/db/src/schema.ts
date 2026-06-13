@@ -1,7 +1,9 @@
 import { CATEGORIES } from "@repo/shared/categories";
+import { sql } from "drizzle-orm";
 import {
   bigint,
   bigserial,
+  check,
   date,
   index,
   pgEnum,
@@ -63,7 +65,13 @@ export const savingsGoals = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     targetDate: date("target_date"),
   },
-  (t) => [index("goals_user_idx").on(t.userId)],
+  (t) => [
+    index("goals_user_idx").on(t.userId),
+    // Belt-and-suspenders: app logic keeps savedCentavos == sum(live contributions) via txn-scoped
+    // SQL arithmetic, so this can't currently go negative — the constraint just makes the invariant
+    // enforced by the DB rather than only by convention.
+    check("saved_centavos_non_negative", sql`${t.savedCentavos} >= 0`),
+  ],
 );
 
 export const budgets = pgTable(
@@ -187,5 +195,8 @@ export const nudges = pgTable(
     weekStartLocalDate: date("week_start_local_date").notNull(),
     sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("nudges_user_kind_week_idx").on(t.userId, t.kind, t.weekStartLocalDate)],
+  // UNIQUE (not just an index) so recordNudge can claim a slot atomically via
+  // onConflictDoNothing().returning() — record-before-send: only the claim winner texts, so a
+  // record failure can't lead to a duplicate nudge on the next cron tick.
+  (t) => [primaryKey({ columns: [t.userId, t.kind, t.weekStartLocalDate] })],
 );

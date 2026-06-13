@@ -1,8 +1,15 @@
 import { normalizePhone } from "@repo/shared/allowlist";
 import type { Category } from "@repo/shared/categories";
-import { currentWeekStart, localDate, monthRange } from "@repo/shared/time";
-import { and, eq, gte, lte, sql } from "drizzle-orm";
-import { getDb } from "./client";
+import {
+  currentWeekStart,
+  daysInLocalMonth,
+  localDate,
+  localDayOfMonth,
+  localDayOfWeek,
+  monthRange,
+} from "@repo/shared/time";
+import { and, eq, gte, ilike, lte, sql } from "drizzle-orm";
+import { type DB, getDb } from "./client";
 import {
   budgets,
   habits,
@@ -27,12 +34,18 @@ export async function resolveUserId(phone: string): Promise<string> {
     .from(users)
     .where(eq(users.phone, normalized));
   if (existing) return existing.id;
+  // Insert idempotently: two concurrent first-ever messages from the same new phone both miss the
+  // SELECT above; without onConflict the loser violates the phone UNIQUE constraint and surfaces a
+  // spurious failure reply. DO NOTHING + re-select returns the winner's row instead of throwing.
   const [created] = await db
     .insert(users)
     .values({ phone: normalized })
+    .onConflictDoNothing({ target: users.phone })
     .returning({ id: users.id });
-  if (!created) throw new Error("failed to create user");
-  return created.id;
+  if (created) return created.id;
+  const [winner] = await db.select({ id: users.id }).from(users).where(eq(users.phone, normalized));
+  if (!winner) throw new Error("failed to create user");
+  return winner.id;
 }
 
 /** A buffered write produced by the agent's tools (no DB connection held during the agent run). */
@@ -70,7 +83,38 @@ export type WriteIntent =
     }
   | { type: "saveMemory"; userId: string; content: string; kind?: MemoryKind }
   | { type: "forgetMemory"; userId: string; match: string }
-  | { type: "addRecurring"; userId: string; recurring: RecurringInput };
+  | {
+      // Conversation turn (user/assistant text). Flushed INSIDE the marker txn so a turn can't be
+      // silently lost: if the insert fails, the whole flush rolls back, the marker stays 'claimed',
+      // and the redelivery retries — instead of the old post-commit allSettled path where a failed
+      // turn insert was swallowed and the completed marker made the redelivery a no-op.
+      type: "saveTurn";
+      userId: string;
+      role: "user" | "assistant";
+      content: string;
+    }
+  | { type: "addRecurring"; userId: string; recurring: RecurringInput }
+  | { type: "removeRecurring"; userId: string; match: string }
+  | {
+      type: "editRecurring";
+      userId: string;
+      match: string;
+      patch: {
+        amountCentavos?: number;
+        category?: Category;
+        cadence?: "weekly" | "monthly";
+        dayOfMonth?: number | null;
+        dayOfWeek?: number | null;
+      };
+    }
+  | { type: "removeBudget"; userId: string; category: Category }
+  | {
+      type: "editGoal";
+      userId: string;
+      goalId: string;
+      patch: { name?: string; targetCentavos?: number; targetDate?: string | null };
+    }
+  | { type: "deleteGoal"; userId: string; goalId: string };
 
 /** "process" = we own this message (fresh, or stole a crashed claim); "skip" = dup or in-flight sibling. */
 export type ClaimResult = "process" | "skip";
@@ -107,6 +151,21 @@ export async function claimSlot(messageId: string, now: Date = new Date()): Prom
     .returning({ messageId: processedMessages.messageId });
 
   return rows.length > 0 ? "process" : "skip";
+}
+
+/**
+ * Pick the single best recurring-item match for a fuzzy label query: case-insensitive exact first,
+ * then a contains match. Returns the row or null. Pure (operates on already-fetched rows) so both
+ * the remove and edit flush paths share identical selection — the reply names exactly what changes.
+ */
+function pickRecurringMatch<T extends { label: string }>(rows: T[], match: string): T | null {
+  const q = match.trim().toLowerCase();
+  if (!q) return null;
+  return (
+    rows.find((it) => it.label.toLowerCase() === q) ??
+    rows.find((it) => it.label.toLowerCase().includes(q)) ??
+    null
+  );
 }
 
 /**
@@ -148,7 +207,7 @@ export async function flushWrites(messageId: string | null, intents: WriteIntent
         await tx
           .update(savingsGoals)
           .set({ savedCentavos: sql`${savingsGoals.savedCentavos} + ${w.amountCentavos}` })
-          .where(eq(savingsGoals.id, w.goalId));
+          .where(and(eq(savingsGoals.id, w.goalId), eq(savingsGoals.userId, w.userId)));
       } else if (w.type === "createGoal") {
         await tx.insert(savingsGoals).values({
           userId: w.userId,
@@ -227,24 +286,22 @@ export async function flushWrites(messageId: string | null, intents: WriteIntent
           content: w.content,
           kind: w.kind ?? "fact",
         });
+      } else if (w.type === "saveTurn") {
+        // Same content guard as the standalone saveTurn(): skip blanks, cap at 4000 chars.
+        const content = w.content.trim();
+        if (content) {
+          await tx
+            .insert(messages)
+            .values({ userId: w.userId, role: w.role, content: content.slice(0, 4000) });
+        }
       } else if (w.type === "forgetMemory") {
-        const q = w.match.trim().toLowerCase();
-        if (q) {
-          const rows = await tx
-            .select({ id: memories.id, content: memories.content })
-            .from(memories)
-            .where(eq(memories.userId, w.userId))
-            .orderBy(sql`${memories.createdAt} desc`)
-            .limit(200);
-          const hit =
-            rows.find((m) => m.content.toLowerCase() === q) ??
-            rows.find((m) => m.content.toLowerCase().includes(q)) ??
-            null;
-          if (hit) {
-            await tx
-              .delete(memories)
-              .where(and(eq(memories.id, hit.id), eq(memories.userId, w.userId)));
-          }
+        // SQL-side best-match lookup (exact, else most-recent contains) on the same txn — no O(n)
+        // JS scan over a capped page.
+        const hit = await findMemoryToForget(tx, w.userId, w.match);
+        if (hit) {
+          await tx
+            .delete(memories)
+            .where(and(eq(memories.id, hit.id), eq(memories.userId, w.userId)));
         }
       } else if (w.type === "addRecurring") {
         const r = w.recurring;
@@ -258,6 +315,66 @@ export async function flushWrites(messageId: string | null, intents: WriteIntent
           dayOfMonth: r.dayOfMonth ?? null,
           dayOfWeek: r.dayOfWeek ?? null,
         });
+      } else if (w.type === "removeRecurring") {
+        // Fuzzy label match (case-insensitive exact, then contains), user-scoped. Delete only the
+        // single best match so "cancel netflix" can't wipe several bills at once.
+        const rows = await tx
+          .select({ id: recurringItems.id, label: recurringItems.label })
+          .from(recurringItems)
+          .where(eq(recurringItems.userId, w.userId));
+        const hit = pickRecurringMatch(rows, w.match);
+        if (hit) {
+          await tx
+            .delete(recurringItems)
+            .where(and(eq(recurringItems.id, hit.id), eq(recurringItems.userId, w.userId)));
+        }
+      } else if (w.type === "editRecurring") {
+        // Same fuzzy match as removeRecurring; patch only the provided fields on the one best row.
+        const rows = await tx
+          .select({ id: recurringItems.id, label: recurringItems.label })
+          .from(recurringItems)
+          .where(eq(recurringItems.userId, w.userId));
+        const hit = pickRecurringMatch(rows, w.match);
+        if (hit) {
+          const set: Record<string, unknown> = {};
+          if (w.patch.amountCentavos != null) set.amountCentavos = w.patch.amountCentavos;
+          if (w.patch.category != null) set.category = w.patch.category;
+          if (w.patch.cadence != null) set.cadence = w.patch.cadence;
+          if (w.patch.dayOfMonth !== undefined) set.dayOfMonth = w.patch.dayOfMonth;
+          if (w.patch.dayOfWeek !== undefined) set.dayOfWeek = w.patch.dayOfWeek;
+          if (Object.keys(set).length > 0) {
+            await tx
+              .update(recurringItems)
+              .set(set)
+              .where(and(eq(recurringItems.id, hit.id), eq(recurringItems.userId, w.userId)));
+          }
+        }
+      } else if (w.type === "removeBudget") {
+        await tx
+          .delete(budgets)
+          .where(and(eq(budgets.userId, w.userId), eq(budgets.category, w.category)));
+      } else if (w.type === "editGoal") {
+        const set: Record<string, unknown> = {};
+        if (w.patch.name != null) set.name = w.patch.name;
+        if (w.patch.targetCentavos != null) set.targetCentavos = w.patch.targetCentavos;
+        if (w.patch.targetDate !== undefined) set.targetDate = w.patch.targetDate;
+        if (Object.keys(set).length > 0) {
+          await tx
+            .update(savingsGoals)
+            .set(set)
+            .where(and(eq(savingsGoals.id, w.goalId), eq(savingsGoals.userId, w.userId)));
+        }
+      } else if (w.type === "deleteGoal") {
+        // Detach contribution transactions first (goalId FK → savings_goals) so deleting the goal
+        // can't orphan-violate the constraint. The money facts stay logged as plain Savings/Goals
+        // expenses; only the goal link is removed. Then delete the goal itself, user-scoped.
+        await tx
+          .update(transactions)
+          .set({ goalId: null })
+          .where(and(eq(transactions.goalId, w.goalId), eq(transactions.userId, w.userId)));
+        await tx
+          .delete(savingsGoals)
+          .where(and(eq(savingsGoals.id, w.goalId), eq(savingsGoals.userId, w.userId)));
       }
     }
     if (messageId) {
@@ -302,12 +419,19 @@ export async function hasSummaryForWeek(at: Date = new Date()): Promise<boolean>
   return !!row;
 }
 
-export async function recordSummary(at: Date = new Date()): Promise<void> {
+/**
+ * Atomically CLAIM this week's summary slot. Returns true iff this call inserted the row (won the
+ * claim) — caller sends only then. record-before-send: a send failure after a successful claim means
+ * at worst a missed recap that week, never a duplicate recap on a later daily tick.
+ */
+export async function recordSummary(at: Date = new Date()): Promise<boolean> {
   const db = getDb();
-  await db
+  const rows = await db
     .insert(summaryRuns)
     .values({ weekStartLocalDate: currentWeekStart(at) })
-    .onConflictDoNothing();
+    .onConflictDoNothing()
+    .returning({ wk: summaryRuns.weekStartLocalDate });
+  return rows.length > 0;
 }
 
 /** Income, expenses, and net for the current Manila month (all centavos). */
@@ -390,6 +514,78 @@ export async function getRecentTransactions(
   return rows;
 }
 
+/**
+ * Search a user's transactions by free text (note ILIKE), category, date range, and/or amount
+ * range — for "find that grab last week", "my biggest expense", "anything over 1k in may". Every
+ * filter is optional and ANDed; results are user-scoped and parameterized (no injection). Ordered
+ * by amount desc when `byAmount` (for "biggest"), else most-recent first. Capped at `limit`.
+ */
+/**
+ * Escape LIKE/ILIKE metacharacters (% _ and the \ escape char) so user search text is matched
+ * literally. Drizzle binds the value (no injection), but Postgres still interprets wildcards inside
+ * the bound parameter — without this, "grab_2" matches "grabx2" and "50%" matches everything.
+ * Exported pure so it can be unit-tested without a live DB.
+ */
+export function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, "\\$&");
+}
+
+export async function searchTransactions(
+  userId: string,
+  opts: {
+    text?: string;
+    category?: Category;
+    startDate?: string;
+    endDate?: string;
+    minCentavos?: number;
+    maxCentavos?: number;
+    kind?: "income" | "expense";
+    byAmount?: boolean;
+    limit?: number;
+  } = {},
+): Promise<
+  {
+    kind: "income" | "expense";
+    amountCentavos: number;
+    category: Category;
+    note: string | null;
+    localDate: string;
+  }[]
+> {
+  const db = getDb();
+  const filters = [eq(transactions.userId, userId)];
+  if (opts.text?.trim()) {
+    // Contains-match on the note (case-insensitive). Drizzle binds the value so there's no
+    // injection surface — but LIKE/ILIKE metacharacters in the BOUND value are still interpreted by
+    // Postgres, so escape %, _ and the \ escape-char first. Otherwise "grab_2" matches "grabx2" and
+    // "50%" matches everything after "50". We add our own surrounding % for the contains semantics.
+    const escaped = escapeLike(opts.text.trim());
+    filters.push(ilike(transactions.note, `%${escaped}%`));
+  }
+  if (opts.category) filters.push(eq(transactions.category, opts.category));
+  if (opts.kind) filters.push(eq(transactions.kind, opts.kind));
+  if (opts.startDate) filters.push(gte(transactions.localDate, opts.startDate));
+  if (opts.endDate) filters.push(lte(transactions.localDate, opts.endDate));
+  if (opts.minCentavos != null) filters.push(gte(transactions.amountCentavos, opts.minCentavos));
+  if (opts.maxCentavos != null) filters.push(lte(transactions.amountCentavos, opts.maxCentavos));
+
+  const rows = await db
+    .select({
+      kind: transactions.kind,
+      amountCentavos: transactions.amountCentavos,
+      category: transactions.category,
+      note: transactions.note,
+      localDate: transactions.localDate,
+    })
+    .from(transactions)
+    .where(and(...filters))
+    .orderBy(
+      opts.byAmount ? sql`${transactions.amountCentavos} desc` : sql`${transactions.seq} desc`,
+    )
+    .limit(Math.min(Math.max(opts.limit ?? 10, 1), 50));
+  return rows;
+}
+
 /** All of the user's savings goals with current progress. */
 export async function listGoals(userId: string): Promise<
   {
@@ -462,16 +658,45 @@ export async function listMemories(
     .limit(limit);
 }
 
-/** Delete the memory whose content best matches `query` (case-insensitive contains). Returns it or null. */
+/**
+ * Find the single memory to forget for a fuzzy query, entirely in SQL (no O(n) JS scan over a
+ * capped page). Prefers a case-insensitive EXACT content match, falling back to the most-recent
+ * CONTAINS match — both user-scoped and LIKE-escaped. Returns its id+content or null.
+ *
+ * Runs against either the pooled db or an open transaction (the flush path passes `tx`), so the
+ * delete that follows can share the same connection/txn. Exported for unit testing the selection
+ * contract (exact-wins-over-contains, user-scoping, empty-query guard) against a stub executor.
+ */
+export async function findMemoryToForget(
+  exec: Pick<DB, "select">,
+  userId: string,
+  query: string,
+): Promise<{ id: string; content: string } | null> {
+  const q = query.trim();
+  if (!q) return null;
+  const lowered = q.toLowerCase();
+  // Exact (case-insensitive) wins; lower(content) = lower(query) is an equality, not a scan pattern.
+  const [exact] = await exec
+    .select({ id: memories.id, content: memories.content })
+    .from(memories)
+    .where(and(eq(memories.userId, userId), sql`lower(${memories.content}) = ${lowered}`))
+    .orderBy(sql`${memories.createdAt} desc`)
+    .limit(1);
+  if (exact) return exact;
+  // Otherwise the most-recent CONTAINS match (ILIKE with escaped wildcards).
+  const [contains] = await exec
+    .select({ id: memories.id, content: memories.content })
+    .from(memories)
+    .where(and(eq(memories.userId, userId), ilike(memories.content, `%${escapeLike(q)}%`)))
+    .orderBy(sql`${memories.createdAt} desc`)
+    .limit(1);
+  return contains ?? null;
+}
+
+/** Delete the memory whose content best matches `query` (case-insensitive exact, else contains). Returns it or null. */
 export async function forgetMemory(userId: string, query: string): Promise<string | null> {
   const db = getDb();
-  const q = query.trim().toLowerCase();
-  if (!q) return null;
-  const rows = await listMemories(userId, 200);
-  const hit =
-    rows.find((m) => m.content.toLowerCase() === q) ??
-    rows.find((m) => m.content.toLowerCase().includes(q)) ??
-    null;
+  const hit = await findMemoryToForget(db, userId, query);
   if (!hit) return null;
   await db.delete(memories).where(and(eq(memories.id, hit.id), eq(memories.userId, userId)));
   return hit.content;
@@ -481,13 +706,6 @@ export async function forgetMemory(userId: string, query: string): Promise<strin
 export interface ChatTurn {
   role: "user" | "assistant";
   content: string;
-}
-
-/** Append one turn to the conversation log. */
-export async function saveTurn(userId: string, role: "user" | "assistant", content: string) {
-  const db = getDb();
-  if (!content.trim()) return;
-  await db.insert(messages).values({ userId, role, content: content.slice(0, 4000) });
 }
 
 /** Load the last N turns in chronological order (oldest first) for agent context. */
@@ -631,17 +849,28 @@ export async function listRecurring(userId: string) {
   return db.select().from(recurringItems).where(eq(recurringItems.userId, userId));
 }
 
+/** Find a recurring item by fuzzy label (case-insensitive exact, then contains). For removal UX. */
+export async function findRecurringByLabel(userId: string, label: string) {
+  const items = await listRecurring(userId);
+  return pickRecurringMatch(items, label);
+}
+
 /** Recurring items due today (Manila). READ-ONLY — caller marks reminded only after a successful send. */
 export async function dueRecurringToday(userId: string, at: Date = new Date()) {
   const db = getDb();
   const today = localDate(at);
-  const m = new Date(at.getTime() + 8 * 3600 * 1000); // Manila
-  const dom = m.getUTCDate();
-  const dow = m.getUTCDay();
+  const dom = localDayOfMonth(at);
+  const dow = localDayOfWeek(at);
+  const lastDom = daysInLocalMonth(at);
   const items = await db.select().from(recurringItems).where(eq(recurringItems.userId, userId));
   return items.filter((it) => {
     if (it.lastRemindedDate === today) return false;
-    if (it.cadence === "monthly") return it.dayOfMonth === dom;
+    if (it.cadence === "monthly") {
+      if (it.dayOfMonth == null) return false;
+      // Clamp a too-high target day to the month's last day, so a bill set for the 31st still
+      // fires on Feb 28/29 or 30-day months instead of silently never reminding.
+      return Math.min(it.dayOfMonth, lastDom) === dom;
+    }
     return it.dayOfWeek === dow;
   });
 }
@@ -697,22 +926,24 @@ export async function budgetStatusesFor(
   return all.filter((b) => wanted.has(b.category));
 }
 
-/** Has this exact nudge already fired this Manila week? */
-export async function alreadyNudged(userId: string, kind: string, at: Date = new Date()) {
+/**
+ * Atomically CLAIM this week's nudge slot. Returns true iff this call inserted the row (i.e. won the
+ * claim) — the caller should then send. record-before-send: claiming before the send means a send
+ * failure leaves the slot taken (rare missed nudge) instead of an unclaimed slot that re-nudges next
+ * tick (duplicate). Relies on the (userId, kind, weekStartLocalDate) primary key.
+ */
+export async function recordNudge(
+  userId: string,
+  kind: string,
+  at: Date = new Date(),
+): Promise<boolean> {
   const db = getDb();
-  const wk = currentWeekStart(at);
-  const [row] = await db
-    .select({ kind: nudges.kind })
-    .from(nudges)
-    .where(
-      and(eq(nudges.userId, userId), eq(nudges.kind, kind), eq(nudges.weekStartLocalDate, wk)),
-    );
-  return !!row;
-}
-
-export async function recordNudge(userId: string, kind: string, at: Date = new Date()) {
-  const db = getDb();
-  await db.insert(nudges).values({ userId, kind, weekStartLocalDate: currentWeekStart(at) });
+  const rows = await db
+    .insert(nudges)
+    .values({ userId, kind, weekStartLocalDate: currentWeekStart(at) })
+    .onConflictDoNothing()
+    .returning({ kind: nudges.kind });
+  return rows.length > 0;
 }
 
 /** Spending insights: weekday vs weekend, biggest merchant leak this month. */

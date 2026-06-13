@@ -43,6 +43,13 @@
       "when": 1781204774896,
       "tag": "0005_correctness_seq_budgets_memory",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781328885317,
+      "tag": "0006_correctness_nudges_pk_goal_check",
+      "breakpoints": true
     }
   ]
 }
