@@ -96,6 +96,15 @@ function run(t: { execute?: (a: never, o: never) => unknown }, args: unknown): P
   return Promise.resolve(t.execute(args as never, {} as never) as ToolResult);
 }
 
+describe("getGoalStatus", () => {
+  test("no goals → empty list + note (does not call goalProgressMessage)", async () => {
+    const { tools } = ctx();
+    const res = (await run(tools.getGoalStatus, {})) as { goals: unknown[]; note?: string };
+    expect(res.goals).toEqual([]);
+    expect(res.note).toBe("no savings goals yet.");
+  });
+});
+
 describe("getBudgets", () => {
   test("lists only real budgets with spent/limit/pct/left/over", async () => {
     const { tools } = ctx();
