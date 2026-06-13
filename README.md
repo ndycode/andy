@@ -72,7 +72,13 @@ bun run typecheck   # tsc --noEmit across all packages
 bun run lint        # Biome
 bun test            # 240+ tests
 bun run build       # production Vercel bundle (Build Output API)
+bun run ci:local    # full gate incl. DB integration tests vs ephemeral Postgres (needs Docker)
 ```
+
+> `ci:local` mirrors `.github/workflows/ci.yml` exactly and additionally runs the gated DB-layer
+> integration suite against a throwaway Postgres container. Use it as the dependable local
+> green-checkmark; the GitHub Actions workflow runs the same steps when Actions is enabled for the
+> repo.
 
 ## License
 

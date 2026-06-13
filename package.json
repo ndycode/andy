@@ -9,6 +9,7 @@
   "scripts": {
     "build": "./build-vercel.sh",
     "build:turbo": "turbo build",
+    "ci:local": "./scripts/ci-local.sh",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
     "lint": "biome check .",
