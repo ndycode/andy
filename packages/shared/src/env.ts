@@ -61,9 +61,23 @@ function build(): Env {
   }) as Env;
 }
 
-/** Lazy, memoized: validates on first property access, never at import. */
+/** True when env validation is skipped (test, or an explicit opt-out like drizzle-kit generate). */
+const validationSkipped = (): boolean =>
+  process.env.NODE_ENV === "test" || process.env.SKIP_ENV_VALIDATION === "1";
+
+/**
+ * Lazy, memoized: validates on first property access, never at import.
+ *
+ * When validation is skipped (tests), read LIVE from process.env instead of memoizing — otherwise the
+ * first access would freeze the first-seen values for the whole (process-global) test run, so a test
+ * that sets process.env.X in a beforeEach would see a stale value. Live reads mirror emptyStringAsUndefined.
+ */
 export const env: Env = new Proxy({} as Env, {
   get(_t, prop: string) {
+    if (validationSkipped()) {
+      const v = process.env[prop];
+      return (v === undefined || v === "" ? undefined : v) as never;
+    }
     if (!_env) _env = build();
     return _env[prop as keyof Env];
   },

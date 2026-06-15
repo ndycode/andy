@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { formatPHP, MAX_ENTRY_CENTAVOS, parseAmount, sumCentavos } from "./money";
+import {
+  formatPHP,
+  MAX_AGGREGATE_CENTAVOS,
+  MAX_ENTRY_CENTAVOS,
+  parseAmount,
+  sumCentavos,
+  toSafeCentavos,
+} from "./money";
 
 describe("parseAmount", () => {
   const ok: [string, number][] = [
@@ -28,6 +35,26 @@ describe("parseAmount", () => {
       expect(parseAmount(input).ok).toBe(false);
     });
   }
+
+  test("rejects malformed/foreign digit grouping instead of silently mangling it", () => {
+    for (const g of ["1,00,000", "1,2,3", "12,34", "1,23"]) {
+      const r = parseAmount(g);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toMatch(/grouping/);
+    }
+  });
+
+  test("accepts valid thousands grouping", () => {
+    expect(parseAmount("1,000")).toEqual({ ok: true, centavos: 100_000 });
+    expect(parseAmount("1,234,567.89")).toEqual({ ok: true, centavos: 123_456_789 });
+  });
+
+  test("sub-centavo precision rounds half-up via integer math (no float drift)", () => {
+    // 1.005 * 100 in float is 100.4999… → the old Math.round gave 100c; exact decimal gives 101c.
+    expect(parseAmount("1.005")).toEqual({ ok: true, centavos: 101 });
+    expect(parseAmount("0.005")).toEqual({ ok: true, centavos: 1 });
+    expect(parseAmount("2.004")).toEqual({ ok: true, centavos: 200 });
+  });
 
   test("rejects over per-entry cap", () => {
     expect(parseAmount(String(MAX_ENTRY_CENTAVOS / 100 + 1)).ok).toBe(false);
@@ -112,5 +139,28 @@ describe("sumCentavos (AC8 — no float drift)", () => {
     });
     // 18000 + 2_500_000 + 150_000 + 18050 + 1
     expect(sumCentavos(parsed)).toBe(2_686_051);
+  });
+});
+
+describe("toSafeCentavos (DB aggregate → safe JS integer)", () => {
+  test("passes through a valid number or bigint string unchanged", () => {
+    expect(toSafeCentavos(2_500_000)).toBe(2_500_000);
+    expect(toSafeCentavos("2500000")).toBe(2_500_000);
+    expect(toSafeCentavos(0)).toBe(0);
+  });
+
+  test("null/undefined coerce to 0 (coalesced empty aggregate)", () => {
+    expect(toSafeCentavos(null)).toBe(0);
+    expect(toSafeCentavos(undefined)).toBe(0);
+  });
+
+  test("throws above the aggregate cap rather than returning a quietly-wrong total", () => {
+    expect(() => toSafeCentavos(MAX_AGGREGATE_CENTAVOS + 1)).toThrow(/safe cap/);
+    expect(() => toSafeCentavos(String(MAX_AGGREGATE_CENTAVOS + 1))).toThrow(/safe cap/);
+  });
+
+  test("throws on non-integer / non-finite", () => {
+    expect(() => toSafeCentavos(1.5)).toThrow();
+    expect(() => toSafeCentavos("not a number")).toThrow();
   });
 });

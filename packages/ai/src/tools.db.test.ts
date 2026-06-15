@@ -101,7 +101,6 @@ function ctx() {
     timezone: "Asia/Manila",
     today: "2026-06-11",
     lastTransaction: null,
-    memories: [],
     addWrite,
     peekWrites: peek,
   });

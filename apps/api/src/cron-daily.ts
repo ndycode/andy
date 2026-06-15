@@ -6,14 +6,16 @@ import {
   dueRecurringToday,
   listGoals,
   reapMessages,
+  reapNudges,
   reapProcessedMessages,
+  reapSummaryRuns,
   reconcileGoalBalances,
   recordNudge,
   resolveUserId,
 } from "@repo/db";
 import { shouldWarnPace, spendingPace } from "@repo/shared/analytics";
 import { env } from "@repo/shared/env";
-import { goalProgressMessage } from "@repo/shared/goals";
+import { goalPace, goalProgressMessage } from "@repo/shared/goals";
 import { errInfo, log } from "@repo/shared/log";
 import { formatPHP } from "@repo/shared/money";
 import { daysInLocalMonth, localDate, localDayOfMonth } from "@repo/shared/time";
@@ -23,18 +25,80 @@ import { sendMessage } from "./sendblue";
 const NUDGE_THRESHOLD = 0.8; // warn at 80% of a category budget
 
 /**
+ * Injectable collaborators (DB reads/claims, the proactive LLM composer, the outbound send, the
+ * weekly-recap step). Production passes nothing (DEFAULT_CRON_DEPS, the real imports); tests inject
+ * fakes so the orchestration — record-before-send gating, per-item try/catch isolation, and the
+ * hygiene reapers — is exercised deterministically with no DB, LLM, or network. Testability only;
+ * the production path is unchanged.
+ */
+export interface CronDeps {
+  resolveUserId: typeof resolveUserId;
+  budgetStatuses: typeof budgetStatuses;
+  categoryAmountsThisMonth: typeof categoryAmountsThisMonth;
+  recordNudge: typeof recordNudge;
+  claimReminder: typeof claimReminder;
+  dueRecurringToday: typeof dueRecurringToday;
+  listGoals: typeof listGoals;
+  reapProcessedMessages: typeof reapProcessedMessages;
+  reapMessages: typeof reapMessages;
+  reconcileGoalBalances: typeof reconcileGoalBalances;
+  reapNudges: typeof reapNudges;
+  reapSummaryRuns: typeof reapSummaryRuns;
+  composeProactive: typeof composeProactive;
+  sendMessage: typeof sendMessage;
+  runWeeklySummary: typeof runWeeklySummary;
+}
+
+const DEFAULT_CRON_DEPS: CronDeps = {
+  resolveUserId,
+  budgetStatuses,
+  categoryAmountsThisMonth,
+  recordNudge,
+  claimReminder,
+  dueRecurringToday,
+  listGoals,
+  reapProcessedMessages,
+  reapMessages,
+  reconcileGoalBalances,
+  reapNudges,
+  reapSummaryRuns,
+  composeProactive,
+  sendMessage,
+  runWeeklySummary,
+};
+
+/**
  * Daily cron entry: proactive budget nudges + recurring reminders (every day),
  * plus the weekly recap (self-gated to once per Manila week). All idempotent.
  * Each item is isolated in try/catch so one Sendblue/LLM hiccup can't skip the rest.
  */
-export async function runDailyChecks(): Promise<{
+export async function runDailyChecks(deps: CronDeps = DEFAULT_CRON_DEPS): Promise<{
   nudges: number;
   paceWarnings: number;
   reminders: number;
   goalNudges: number;
   recapSent: boolean;
   reaped: number;
+  reapedNudges: number;
+  reapedSummaries: number;
 }> {
+  const {
+    resolveUserId,
+    budgetStatuses,
+    categoryAmountsThisMonth,
+    recordNudge,
+    claimReminder,
+    dueRecurringToday,
+    listGoals,
+    reapProcessedMessages,
+    reapMessages,
+    reconcileGoalBalances,
+    reapNudges,
+    reapSummaryRuns,
+    composeProactive,
+    sendMessage,
+    runWeeklySummary,
+  } = deps;
   const phone = env.ALLOWED_PHONE;
   const userId = await resolveUserId(phone);
   const now = new Date();
@@ -118,15 +182,18 @@ export async function runDailyChecks(): Promise<{
   const goalToday = new Date(`${localDate(now)}T00:00:00Z`);
   for (const g of await listGoals(userId)) {
     if (!g.targetDate) continue; // no deadline → no pace to be behind on
-    const progress = goalProgressMessage({
+    const paceInput = {
       name: g.name,
       savedCentavos: g.savedCentavos,
       targetCentavos: g.targetCentavos,
       createdAt: g.createdAt,
       today: goalToday,
       targetDate: new Date(g.targetDate),
-    });
-    if (!progress.includes("Behind pace")) continue; // on track → don't nag
+    };
+    // Read the structured verdict directly — no fragile substring match on the human message string
+    // (which silently broke goal nudges if the "Behind pace" wording ever changed).
+    if (goalPace(paceInput).onTrack) continue; // on track → don't nag
+    const progress = goalProgressMessage(paceInput);
     const kind = `goalpace:${g.id}`;
     try {
       if (!(await recordNudge(userId, kind))) continue; // already nudged this goal this week
@@ -167,6 +234,29 @@ export async function runDailyChecks(): Promise<{
   } catch (err) {
     log.error("cron.goal_reconcile.error", errInfo(err));
   }
+  // Bound the two append-only dedup logs (nudges, summary_runs) too — previously the only growth
+  // tables with no reaper. Each in its own try/catch so one failing can't skip the other.
+  let reapedNudges = 0;
+  try {
+    reapedNudges = await reapNudges();
+  } catch (err) {
+    log.error("cron.reap_nudges.error", errInfo(err));
+  }
+  let reapedSummaries = 0;
+  try {
+    reapedSummaries = await reapSummaryRuns();
+  } catch (err) {
+    log.error("cron.reap_summaries.error", errInfo(err));
+  }
 
-  return { nudges, paceWarnings, reminders, goalNudges, recapSent, reaped };
+  return {
+    nudges,
+    paceWarnings,
+    reminders,
+    goalNudges,
+    recapSent,
+    reaped,
+    reapedNudges,
+    reapedSummaries,
+  };
 }

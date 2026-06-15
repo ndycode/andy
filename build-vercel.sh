@@ -40,7 +40,7 @@ cat > "$OUT/config.json" <<'JSON'
     { "src": "/(.*)", "dest": "/api" }
   ],
   "crons": [
-    { "path": "/api/cron/weekly-summary", "schedule": "7 0 * * *" }
+    { "path": "/api/cron/daily", "schedule": "7 0 * * *" }
   ]
 }
 JSON

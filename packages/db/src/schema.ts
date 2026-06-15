@@ -41,7 +41,7 @@ export const transactions = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     kind: txKindEnum("kind").notNull(),
     amountCentavos: bigint("amount_centavos", { mode: "number" }).notNull(),
     category: categoryEnum("category").notNull(),
@@ -58,6 +58,12 @@ export const transactions = pgTable(
   },
   (t) => [
     index("tx_user_date_idx").on(t.userId, t.localDate),
+    // Category-scoped month aggregation (sumByCategory, categoryAmountsThisMonth, the budgetStatuses
+    // join, getSpendingByCategory) filters by (user, category) over a local_date range — the most
+    // common read. A covering (user_id, category, local_date) index turns those from a user-date scan
+    // + filter into an index range. The hot insert path already maintains 3 indexes; a 4th is
+    // negligible at single-user volume and removes the only repeated full-category-scan reads.
+    index("tx_user_cat_date_idx").on(t.userId, t.category, t.localDate),
     // Live reply loop (recent / edit-last / delete-last) sorts by recency per user.
     index("tx_user_seq_idx").on(t.userId, t.seq),
     // Goal deletion detaches by goal_id (UPDATE ... SET goal_id = NULL) and the ON DELETE SET NULL
@@ -76,7 +82,7 @@ export const savingsGoals = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     targetCentavos: bigint("target_centavos", { mode: "number" }).notNull(),
     savedCentavos: bigint("saved_centavos", { mode: "number" }).notNull().default(0),
@@ -105,7 +111,7 @@ export const budgets = pgTable(
   {
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     category: categoryEnum("category").notNull(),
     monthlyLimitCentavos: bigint("monthly_limit_centavos", { mode: "number" }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -152,7 +158,7 @@ export const memories = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     content: text("content").notNull(),
     kind: memoryKindEnum("kind").notNull().default("fact"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -175,7 +181,7 @@ export const messages = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     role: messageRoleEnum("role").notNull(),
     content: text("content").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -194,7 +200,7 @@ export const habits = pgTable(
   {
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     merchant: text("merchant").notNull(), // lowercased note/keyword, e.g. "grab"
     category: categoryEnum("category").notNull(),
     count: bigint("count", { mode: "number" }).notNull().default(1),
@@ -220,7 +226,7 @@ export const recurringItems = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     label: text("label").notNull(),
     kind: txKindEnum("kind").notNull().default("expense"),
     amountCentavos: bigint("amount_centavos", { mode: "number" }).notNull(),
@@ -260,7 +266,7 @@ export const nudges = pgTable(
   {
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(), // e.g. "budget:Food"
     weekStartLocalDate: date("week_start_local_date").notNull(),
     sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),

@@ -361,4 +361,130 @@ d("queries.ts — integration (real Postgres)", () => {
       ).not.toBeNull();
     });
   });
+
+  describe("0010 — cascade delete, reapers, recurring self-heal, edit guard", () => {
+    test("resolveUserId is race-safe: concurrent first messages resolve to one id", async () => {
+      const [a, b] = await Promise.all([
+        q.resolveUserId("+639171234567"),
+        q.resolveUserId("+639171234567"),
+      ]);
+      expect(a).toBe(b);
+      const [row] = await sql<{ n: number }[]>`select count(*)::int n from users`;
+      expect(row?.n).toBe(1);
+    });
+
+    test("deleteUser cascades every child table (GDPR erase via ON DELETE CASCADE)", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      await q.flushWrites("del1", [
+        {
+          type: "expense",
+          userId,
+          amountCentavos: 18000,
+          category: "Transport",
+          note: "grab",
+          localDate: "2026-06-11",
+        },
+        { type: "createGoal", userId, name: "Trip", targetCentavos: 100000, targetDate: null },
+        { type: "saveMemory", userId, content: "payday 15th", kind: "payday" },
+        { type: "saveTurn", userId, role: "user", content: "hi" },
+        { type: "setBudget", userId, category: "Food", monthlyLimitCentavos: 500000 },
+      ]);
+      await q.addRecurring(userId, {
+        label: "Rent",
+        kind: "expense",
+        amountCentavos: 800000,
+        category: "Bills",
+        cadence: "monthly",
+        dayOfMonth: 1,
+      });
+      await q.recordNudge(userId, "budget:Food");
+      await q.learnHabit(userId, "grab", "Transport");
+
+      expect(await q.deleteUser(userId)).toBe(true);
+      for (const t of [
+        "transactions",
+        "savings_goals",
+        "budgets",
+        "memories",
+        "messages",
+        "recurring_items",
+        "nudges",
+        "habits",
+      ]) {
+        const [row] = await sql<{ n: number }[]>`
+          select count(*)::int n from ${sql(t)} where user_id = ${userId}`;
+        expect(row?.n).toBe(0);
+      }
+      const [u] = await sql<
+        { n: number }[]
+      >`select count(*)::int n from users where id = ${userId}`;
+      expect(u?.n).toBe(0);
+      // Deleting an already-gone user → false.
+      expect(await q.deleteUser(userId)).toBe(false);
+    });
+
+    test("reapNudges / reapSummaryRuns drop only rows older than the keep window", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      const old = new Date(Date.now() - 10 * 7 * 86_400_000); // 10 weeks ago
+      await q.recordNudge(userId, "budget:Food", old);
+      await q.recordNudge(userId, "budget:Food", new Date());
+      expect(await q.reapNudges(new Date(), 8)).toBe(1); // only the 10-week-old row
+      await q.recordSummary(old);
+      await q.recordSummary(new Date());
+      expect(await q.reapSummaryRuns(new Date(), 8)).toBe(1);
+    });
+
+    test("dueRecurringToday self-heals a missed day, then fires exactly once per cycle", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      await q.addRecurring(userId, {
+        label: "Rent",
+        kind: "expense",
+        amountCentavos: 800000,
+        category: "Bills",
+        cadence: "monthly",
+        dayOfMonth: 5,
+      });
+      const [item] = await q.listRecurring(userId);
+      const id = item?.id as string;
+      // Before the due day → not due.
+      expect((await q.dueRecurringToday(userId, new Date("2026-06-03T03:00:00Z"))).length).toBe(0);
+      // The 5th was missed (cron didn't run); on the 8th it STILL fires (the old equality check dropped it).
+      const eighth = new Date("2026-06-08T03:00:00Z");
+      expect((await q.dueRecurringToday(userId, eighth)).length).toBe(1);
+      // Claim it today, then it's no longer due — exactly once per cycle.
+      expect(await q.claimReminder(id, userId, eighth)).toBe(true);
+      expect((await q.dueRecurringToday(userId, eighth)).length).toBe(0);
+    });
+
+    test("editLast cannot move a goal contribution off Savings/Goals; amount edit still applies", async () => {
+      const userId = await q.resolveUserId("+639171234567");
+      await q.flushWrites("ec1", [
+        { type: "createGoal", userId, name: "Trip", targetCentavos: 100000, targetDate: null },
+      ]);
+      const goalId = (await q.listGoals(userId))[0]?.id as string;
+      await q.flushWrites("ec2", [
+        { type: "goalContribution", userId, goalId, amountCentavos: 5000, localDate: "2026-06-11" },
+      ]);
+      const [tx] = await sql<{ id: string }[]>`
+        select id from transactions where user_id = ${userId} order by seq desc limit 1`;
+      // Try to change the contribution's category to Food AND bump the amount in one edit.
+      await q.flushWrites("ec3", [
+        {
+          type: "editLast",
+          userId,
+          targetId: tx?.id as string,
+          patch: { category: "Food", amountCentavos: 6000 },
+        },
+      ]);
+      const [after] = await sql<
+        { category: string; goal_id: string | null; amount_centavos: number }[]
+      >`select category, goal_id, amount_centavos from transactions where id = ${tx?.id as string}`;
+      expect(after?.category).toBe("Savings/Goals"); // category patch ignored on a goal-linked row
+      expect(after?.goal_id).toBe(goalId); // still linked
+      expect(Number(after?.amount_centavos)).toBe(6000); // amount patch DID apply (bigint → string)
+      // saved_centavos tracked the amount delta (5000 → 6000).
+      const g = (await q.listGoals(userId)).find((x) => x.id === goalId);
+      expect(g?.savedCentavos).toBe(6000);
+    });
+  });
 });

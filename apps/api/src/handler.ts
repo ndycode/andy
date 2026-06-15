@@ -18,17 +18,60 @@ import { APP_TIMEZONE, monthRange } from "@repo/shared/time";
 import { sendMessage, sendReaction, sendTyping } from "./sendblue";
 
 /**
+ * Injectable collaborators for the handler — the DB/agent/messaging side effects. Production passes
+ * nothing (DEFAULT_DEPS, the real imports); tests inject fakes so the three-phase ORCHESTRATION
+ * (claim/skip/superseded branches, the post-flush send-failure boundary, the reaction append) can be
+ * exercised deterministically without a live DB, a real LLM, the network, or process-global module
+ * mocks. This is purely for testability — the production code path is unchanged.
+ */
+export interface InboundDeps {
+  claimSlot: typeof claimSlot;
+  resolveUserId: typeof resolveUserId;
+  runAgent: typeof runAgent;
+  flushWrites: typeof flushWrites;
+  budgetStatusesFor: typeof budgetStatusesFor;
+  learnHabit: typeof learnHabit;
+  sendMessage: typeof sendMessage;
+  sendReaction: typeof sendReaction;
+  sendTyping: typeof sendTyping;
+}
+
+const DEFAULT_DEPS: InboundDeps = {
+  claimSlot,
+  resolveUserId,
+  runAgent,
+  flushWrites,
+  budgetStatusesFor,
+  learnHabit,
+  sendMessage,
+  sendReaction,
+  sendTyping,
+};
+
+/**
  * Three-phase inbound handler (verification C1 — no DB connection held across the LLM run):
- *   0. allowlist gate (caller already token-checked) + sendTyping (no DB)
+ *   0. allowlist gate (caller already token-checked)
  *   1. claim — atomic marker (closes the concurrent-redelivery double-log race)
- *   2. agent — buffers writes, no connection held
+ *   2. agent — buffers writes, no connection held (typing indicator fires here, post-claim)
  *   3. flush — short txn applies writes + completes marker, then reply (+ in-the-moment reaction)
  */
 export async function handleInbound(
   phone: string,
   text: string,
   messageId?: string,
+  deps: InboundDeps = DEFAULT_DEPS,
 ): Promise<void> {
+  const {
+    claimSlot,
+    resolveUserId,
+    runAgent,
+    flushWrites,
+    budgetStatusesFor,
+    learnHabit,
+    sendMessage,
+    sendReaction,
+    sendTyping,
+  } = deps;
   if (!isAllowed(phone, env.ALLOWED_PHONE)) return; // AC10: drop unknown silently
 
   // Prefer the channel's stable id (Sendblue `message_handle`). If absent, synthesize a
@@ -36,7 +79,6 @@ export async function handleInbound(
   // double-logging unconditionally. Either way we hold a marker for the whole flow.
   const dedupId = messageId ?? contentDedupKey(phone, text);
   const corr = dedupId;
-  void sendTyping(phone);
 
   // Phase 1 — atomic claim. "skip" = true duplicate or an in-flight sibling.
   const claim = await claimSlot(dedupId);
@@ -44,6 +86,11 @@ export async function handleInbound(
     log.info("inbound.skip", { corr });
     return;
   }
+
+  // Typing indicator AFTER the claim — a duplicate redelivery (skip) returns above with no reply, so
+  // firing typing before the claim showed a phantom "Andy is typing…" bubble that never resolved.
+  // Fire-and-forget (self-catching); the very next thing we do is await the multi-second agent run.
+  void sendTyping(phone);
 
   try {
     // Phase 2 — agent (no DB connection held). Loads recent turns for conversation flow.
@@ -76,7 +123,7 @@ export async function handleInbound(
 
     // In-the-moment reaction (Wave 3): if a just-logged expense crossed a budget threshold,
     // append one Andy line to the SAME reply — zero extra messages, the data's already here.
-    const reaction = await budgetReaction(userId, writes).catch(() => null);
+    const reaction = await budgetReaction(userId, writes, budgetStatusesFor).catch(() => null);
     // The writes are already COMMITTED at this point. A send failure here must NOT fall into the
     // generic-failure catch below — that would tell the user "something went wrong" about data that
     // was actually saved, prompting a resend (the marker now dedups the data, but the reply is a lie).
@@ -128,6 +175,7 @@ export async function handleInbound(
 async function budgetReaction(
   userId: string,
   writes: Awaited<ReturnType<typeof runAgent>>["writes"],
+  budgetStatusesForFn: typeof budgetStatusesFor,
 ): Promise<string | null> {
   const thisMonth = monthRange();
   const loggedByCategory = new Map<Category, number>();
@@ -138,7 +186,7 @@ async function budgetReaction(
   }
   if (loggedByCategory.size === 0) return null;
 
-  const statuses = await budgetStatusesFor(userId, [...loggedByCategory.keys()]);
+  const statuses = await budgetStatusesForFn(userId, [...loggedByCategory.keys()]);
   const lines = budgetReactionLines(statuses, loggedByCategory);
   return lines.length > 0 ? lines.join("\n") : null;
 }

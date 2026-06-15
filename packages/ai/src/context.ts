@@ -16,8 +16,6 @@ export interface ToolContext {
    * and use it to report the projected result without a DB read mid-loop.
    */
   lastTransaction: LastTransaction | null;
-  /** Memories recalled at loop start, so listMemory answers without a DB read mid-loop. */
-  memories: string[];
   addWrite: (intent: WriteIntent) => void;
   /**
    * Read the writes buffered so far THIS turn. edit/delete tools use this so a correction that
@@ -36,7 +34,9 @@ export function createWriteBuffer(): {
   const buffer: WriteIntent[] = [];
   return {
     addWrite: (intent) => buffer.push(intent),
-    peek: () => buffer,
+    // Hand back a copy, not the live array — a tool reading peekWrites() must not be able to mutate
+    // the buffer the flush will replay.
+    peek: () => buffer.slice(),
     drain: () => buffer.slice(),
   };
 }

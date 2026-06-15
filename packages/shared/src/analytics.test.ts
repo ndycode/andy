@@ -77,6 +77,18 @@ describe("spendingDelta", () => {
   test("both zero → flat, null pct", () => {
     expect(spendingDelta(0, 0)).toMatchObject({ delta: 0, pctChange: null, direction: "flat" });
   });
+
+  test("sub-₱1 baseline → null pct (no absurd multi-million-percent), direction still meaningful", () => {
+    // 1c baseline vs ₱1,000 would otherwise render +9,999,900%. Below the ₱1 floor we report null.
+    const r = spendingDelta(100_000, 1);
+    expect(r.pctChange).toBeNull();
+    expect(r.direction).toBe("up");
+    expect(r.delta).toBe(99_999);
+  });
+
+  test("a real ₱1+ baseline still produces a percent", () => {
+    expect(spendingDelta(150, 100).pctChange).toBe(50);
+  });
 });
 
 describe("projectMonthEnd (linear run-rate)", () => {

@@ -1,5 +1,6 @@
 /** Sendblue adapter. Inbound parsing + outbound REST. Verified header/field names (C5). */
 
+import { constantTimeEqual } from "@repo/shared/allowlist";
 import { env } from "@repo/shared/env";
 
 const BASE = "https://api.sendblue.com/api";
@@ -25,7 +26,11 @@ export interface InboundMessage {
  * Returns null if the token is missing/wrong, or if this isn't a received inbound text.
  */
 export function parseInbound(urlToken: string | null, body: unknown): InboundMessage | null {
-  const expected = process.env.WEBHOOK_URL_TOKEN ?? "";
+  // Read the token through the validated `env` (not raw process.env) so a missing/empty value fails
+  // LOUDLY via env validation rather than silently coercing to "" and 401-ing every inbound request —
+  // the exact silent-degradation bug env.ts was built to eliminate, and consistent with every other
+  // secret (CRON_SECRET, SENDBLUE_*). emptyStringAsUndefined makes a blank value a validation error.
+  const expected = env.WEBHOOK_URL_TOKEN;
   if (!expected || !urlToken || !constantTimeEqual(urlToken, expected)) return null;
 
   const b = (body ?? {}) as Record<string, unknown>;
@@ -91,11 +96,4 @@ async function post(path: string, payload: Record<string, unknown>): Promise<voi
   }
   if (!res.ok)
     throw new Error(`Sendblue ${path} ${res.status}: ${await res.text().catch(() => "")}`);
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
 }

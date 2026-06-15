@@ -2,8 +2,7 @@
   "$schema": "https://turbo.build/schema.json",
   "globalEnv": ["NODE_ENV", "VERCEL", "VERCEL_ENV"],
   "tasks": {
-    "build": { "dependsOn": ["^build"], "outputs": ["dist/**", ".output/**"] },
-    "typecheck": { "dependsOn": ["^build"] },
+    "typecheck": {},
     "test": {},
     "clean": { "cache": false }
   }

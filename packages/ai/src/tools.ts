@@ -10,6 +10,7 @@ import {
   getRecentTransactions,
   getSpendingByCategory,
   listGoals,
+  listMemories,
   listRecurring,
   searchTransactions,
   sumByCategory,
@@ -208,6 +209,9 @@ export function buildTools(ctx: ToolContext) {
       targetDate: z.string().optional().describe("Deadline YYYY-MM-DD, omit if none."),
     }),
     execute: ({ name, target, targetDate }) => {
+      // A blank/whitespace name is unreachable afterward (findGoalByName trims+lowercases, matchGoals
+      // returns none for an empty query) — an orphan the user can't contribute to or delete by name.
+      if (!name.trim()) return { ok: false, error: "what should i call this goal?" };
       const r = parseAmount(target);
       if (!r.ok) return { ok: false, error: r.reason };
       // Harden the deadline: the LLM must resolve "december" → YYYY-MM-DD; reject anything else so a
@@ -283,10 +287,14 @@ export function buildTools(ctx: ToolContext) {
       // Use the request's Manila "today" (not server-UTC) so pace math is consistent with how
       // dates were resolved when goals/deadlines were created.
       const today = new Date(`${ctx.today}T00:00:00Z`);
-      const chosen = goalName
-        ? [await findGoalByName(ctx.userId, goalName)].filter(Boolean)
-        : goals;
-      const list = (chosen.length ? chosen : goals) as typeof goals;
+      // When the user names a specific goal that doesn't resolve, say so — don't silently dump ALL
+      // goals as if that were the answer to "how's my japan fund".
+      let list = goals;
+      if (goalName) {
+        const match = await findGoalByName(ctx.userId, goalName);
+        if (!match) return { goals: [], note: `no goal matching "${goalName}".` };
+        list = [match];
+      }
       return {
         goals: list.map((g) =>
           goalProgressMessage({
@@ -315,7 +323,11 @@ export function buildTools(ctx: ToolContext) {
       const goal = await findGoalByName(ctx.userId, goalName);
       if (!goal) return { ok: false, error: `no goal matching "${goalName}".` };
       const patch: { name?: string; targetCentavos?: number; targetDate?: string | null } = {};
-      if (newName) patch.name = newName;
+      if (newName !== undefined) {
+        const nm = newName.trim();
+        if (!nm) return { ok: false, error: "the new name can't be empty" };
+        patch.name = nm;
+      }
       if (target !== undefined) {
         const r = parseAmount(target);
         if (!r.ok) return { ok: false, error: r.reason };
@@ -398,8 +410,13 @@ export function buildTools(ctx: ToolContext) {
   const listMemory = tool({
     description: "List what you remember about the user. For 'what do you know about me'.",
     inputSchema: z.object({}),
-    execute: () => {
-      return { remembered: ctx.memories };
+    // Read the FULL memory set fresh (a short user-scoped query), not the small recall snapshot the
+    // prompt is seeded with. The prompt deliberately injects only the top few memories every step to
+    // bound tokens; "what do you know about me" should still surface everything, so this reads the
+    // complete list on demand. Identity is server-side (ctx.userId), never from the model.
+    execute: async () => {
+      const rows = await listMemories(ctx.userId);
+      return { remembered: rows.map((m) => m.content) };
     },
   });
 
@@ -415,13 +432,29 @@ export function buildTools(ctx: ToolContext) {
     amountCentavos: number;
     category: Category;
     note: string | null;
+    goalLinked: boolean;
   } | null => {
-    let last: { amountCentavos: number; category: Category; note: string | null } | null = null;
+    let last: {
+      amountCentavos: number;
+      category: Category;
+      note: string | null;
+      goalLinked: boolean;
+    } | null = null;
     for (const w of ctx.peekWrites()) {
       if (w.type === "expense" || w.type === "income") {
-        last = { amountCentavos: w.amountCentavos, category: w.category, note: w.note ?? null };
+        last = {
+          amountCentavos: w.amountCentavos,
+          category: w.category,
+          note: w.note ?? null,
+          goalLinked: false,
+        };
       } else if (w.type === "goalContribution") {
-        last = { amountCentavos: w.amountCentavos, category: "Savings/Goals", note: null };
+        last = {
+          amountCentavos: w.amountCentavos,
+          category: "Savings/Goals",
+          note: null,
+          goalLinked: true,
+        };
       } else if (w.type === "editLast" && w.targetSameTurn && last) {
         // A same-turn edit of the just-logged row: apply the patch so a following "delete that"
         // confirmation echoes the post-edit values, not the original ones. flushWrites applies the
@@ -490,6 +523,10 @@ export function buildTools(ctx: ToolContext) {
       const snapshot = turnLoggedSomething() ? null : ctx.lastTransaction;
       const target = sameTurn ?? snapshot;
       if (!target) return { ok: false, error: "nothing to edit" };
+      // A goal contribution's category is fixed at Savings/Goals (its savedCentavos + tx_goal_idx
+      // assume that). Editing its category would desync the ledger, so we ignore a category patch on
+      // a goal-linked row here — matching the same guard in flushWrites — and tell the user.
+      const targetGoalLinked = sameTurn ? sameTurn.goalLinked : Boolean(snapshot?.goalId);
       const patch: {
         amountCentavos?: number;
         category?: (typeof CATEGORIES)[number];
@@ -500,7 +537,14 @@ export function buildTools(ctx: ToolContext) {
         if (!r.ok) return { ok: false, error: r.reason };
         patch.amountCentavos = r.centavos;
       }
-      if (category) patch.category = coerceCategory(category);
+      if (category && !targetGoalLinked) patch.category = coerceCategory(category);
+      if (category && targetGoalLinked) {
+        return {
+          ok: false,
+          error:
+            "that's a goal contribution — its category stays Savings/Goals. edit the amount instead.",
+        };
+      }
       // Use `!== undefined` (not truthiness) so an explicit empty string clears the note;
       // the schema marks note optional, so an omitted field stays undefined and is ignored.
       if (note !== undefined) patch.note = note;
@@ -634,7 +678,10 @@ export function buildTools(ctx: ToolContext) {
     inputSchema: z.object({ category }),
     execute: async ({ category }) => {
       const cat = coerceCategory(category);
-      const now = new Date();
+      // Anchor to the request's Manila "today" (pinned once at handler entry), like getGoalStatus and
+      // the weekly recap — not a fresh server instant — so the day-of-month and month window can't
+      // drift if the Manila day flips between handler entry and this tool running.
+      const now = new Date(`${ctx.today}T12:00:00Z`);
       const [spent, statuses, amounts] = await Promise.all([
         sumByCategory(ctx.userId, cat, now),
         budgetStatuses(ctx.userId, now),

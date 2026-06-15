@@ -34,7 +34,7 @@ const READ_TOOLS = new Set([
  */
 export async function runAgent(
   text: string,
-  base: Omit<ToolContext, "addWrite" | "lastTransaction" | "memories" | "peekWrites">,
+  base: Omit<ToolContext, "addWrite" | "lastTransaction" | "peekWrites">,
   model: LanguageModel | LanguageModel[] = MODEL_ID,
   // Hard wall-clock budget for the whole retry/fallback chain. Must stay well under the function's
   // maxDuration so a slow run aborts CLEANLY into the handler's catch (marker stays 'claimed',
@@ -47,7 +47,8 @@ export async function runAgent(
   // snapshotted here so edit/delete tools pin a stable target id across any 429 retry.
   // Counts are deliberately small: every item is injected into EVERY step of the tool loop, so
   // over-injecting multiplies input tokens (and burns the free-tier rate/quota) for little gain.
-  // listMemory reads the full set separately when the user actually asks.
+  // The listMemory tool reads the FULL set fresh from the DB when the user actually asks, so this
+  // small recall is only the prompt-context seed, not a cap on what "what do you know about me" shows.
   const [mems, habitList, history, lastTransaction] = await Promise.all([
     recallMemories(base.userId, 5).catch(() => [] as string[]),
     topHabits(base.userId, 8).catch(() => []),
@@ -98,7 +99,6 @@ export async function runAgent(
       const ctx: ToolContext = {
         ...base,
         lastTransaction,
-        memories: mems,
         addWrite,
         peekWrites: peek,
       };
@@ -151,11 +151,25 @@ export async function runAgent(
   return { reply, writes: result.writes };
 }
 
+/**
+ * Flatten an error into searchable text. Beyond `message`, AI SDK / fetch errors carry the real
+ * signal in STRUCTURED fields — an APICallError's numeric `statusCode`/`status`, and a wrapped
+ * transport fault in `cause`. Matching only `err.message` (the old behavior) missed a 503 whose
+ * message was generic and a transient error nested under `cause`. We fold all of them into one
+ * string so the classifiers below see the status code and the underlying cause too.
+ */
+function errText(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const e = err as Error & { statusCode?: number; status?: number; cause?: unknown };
+  const status = e.statusCode ?? e.status ?? "";
+  const cause = e.cause instanceof Error ? e.cause.message : "";
+  return `${e.message} ${status} ${cause}`;
+}
+
 /** Errors worth RETRYING the same tier (with backoff): free-tier rate limits + transient faults. */
 function isTransient(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /429|rate.?limit|too many requests|50[0-4]|timeout|timed out|abort|aborted|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|fetch failed|network/i.test(
-    msg,
+  return /429|rate.?limit|too many requests|50[0-4]|\boverloaded\b|service unavailable|temporarily unavailable|context deadline exceeded|timeout|timed out|abort|aborted|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network/i.test(
+    errText(err),
   );
 }
 
@@ -167,9 +181,11 @@ function isTransient(err: unknown): boolean {
  * healthy tier.
  */
 function isTierFatal(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /\b401\b|\b403\b|unauthorized|forbidden|invalid.*api.?key|api.?key.*invalid|permission denied|failed to call a function|no such tool|invalid tool|tool.?call/i.test(
-    msg,
+  // NOTE: the bare `tool.?call` catch-all was removed — it tagged ANY error whose text merely
+  // mentioned "tool call" (including transient transport faults wrapping a tool-call description) as
+  // fatal, abandoning a usable tier with no retry. Only the SPECIFIC known-fatal phrases remain.
+  return /\b401\b|\b403\b|unauthorized|forbidden|invalid.*api.?key|api.?key.*invalid|permission denied|failed to call a function|no such tool|invalid tool name?/i.test(
+    errText(err),
   );
 }
 
@@ -193,6 +209,10 @@ async function withRetry<T>(
   const unit = process.env.NODE_ENV === "test" ? 1 : 500;
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
+    // Don't launch an attempt with no budget left. The backoff path already guards its sleep, but the
+    // immediate tier-jump path (a slow tier that ate the whole budget, then `continue`) could
+    // otherwise fire a doomed AbortSignal.timeout(1) call — surface the last real error instead.
+    if (Date.now() >= deadline) throw lastErr ?? new Error("deadline exceeded before model call");
     try {
       return await fn(i);
     } catch (err) {
@@ -226,18 +246,23 @@ function synthesizeReply(
   gen: { steps?: Array<{ toolResults?: Array<{ toolName: string; output?: unknown }> }> },
   writes: import("@repo/db").WriteIntent[],
 ): string {
-  if (writes.length > 0) {
-    return `logged ${writes.length} ${writes.length === 1 ? "entry" : "entries"} ✅`;
-  }
-  // Did a read tool run? If so, the user asked a question — render a terse answer from its result
-  // rather than a write-style ack.
+  // Did a read tool also run this turn? Render a terse answer from its result.
   const readResults = (gen.steps ?? [])
     .flatMap((s) => s.toolResults ?? [])
     .filter((r) => READ_TOOLS.has(r.toolName));
-  if (readResults.length > 0) {
-    const last = readResults[readResults.length - 1];
-    return summarizeReadResult(last?.output);
+  const lastRead =
+    readResults.length > 0
+      ? summarizeReadResult(readResults[readResults.length - 1]?.output)
+      : null;
+
+  if (writes.length > 0) {
+    const ack = `logged ${writes.length} ${writes.length === 1 ? "entry" : "entries"} ✅`;
+    // A mixed "log these AND how am i doing" turn that exhausted the step cap with no final text would
+    // otherwise confirm the logs but silently drop the answer. Append the read summary so the
+    // question isn't lost.
+    return lastRead ? `${ack} — ${lastRead}` : ack;
   }
+  if (lastRead) return lastRead;
   return "got it.";
 }
 
@@ -247,15 +272,19 @@ function synthesizeReply(
 export function summarizeReadResult(output: unknown): string {
   if (output && typeof output === "object") {
     const o = output as Record<string, unknown>;
+    // When the read was scoped to a past month, attribute the figure to THAT month, not "this month".
+    const period = typeof o.month === "string" && o.month ? `in ${o.month}` : "so far this month";
     if (typeof o.total === "string" && typeof o.category === "string") {
-      return `${o.category}: ${o.total} so far this month.`;
+      return `${o.category}: ${o.total} ${period}.`;
     }
     if (
       typeof o.income === "string" &&
       typeof o.expenses === "string" &&
       typeof o.net === "string"
     ) {
-      return `in ${o.income}, out ${o.expenses}, net ${o.net} this month.`;
+      const overviewPeriod =
+        typeof o.month === "string" && o.month ? `in ${o.month}` : "this month";
+      return `in ${o.income}, out ${o.expenses}, net ${o.net} ${overviewPeriod}.`;
     }
     if (Array.isArray(o.breakdown)) {
       const top = (o.breakdown as Array<{ category?: string; total?: string }>)

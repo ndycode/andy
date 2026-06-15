@@ -10,19 +10,23 @@ import * as realDb from "@repo/db";
 mock.module("@repo/db", () => ({
   ...realDb,
   findRecentDuplicate: async () => null,
+  // listMemory now reads the full set fresh from the DB; stub it so the no-DB unit test can assert it.
+  listMemories: async () => [
+    { id: "m1", content: "likes milk tea", kind: "other" },
+    { id: "m2", content: "payday 15th", kind: "payday" },
+  ],
 }));
 
 const { createWriteBuffer } = await import("./context");
 const { buildTools } = await import("./tools");
 
-function ctxWithBuffer(opts?: { lastTransaction?: LastTransaction | null; memories?: string[] }) {
+function ctxWithBuffer(opts?: { lastTransaction?: LastTransaction | null }) {
   const { addWrite, peek, drain } = createWriteBuffer();
   const tools = buildTools({
     userId: "user-1",
     timezone: "Asia/Manila",
     today: "2026-06-11",
     lastTransaction: opts?.lastTransaction ?? null,
-    memories: opts?.memories ?? [],
     addWrite,
     peekWrites: peek,
   });
@@ -349,7 +353,6 @@ describe("same-message log-then-correct targets the just-logged entry (Risk 1)",
       timezone: "Asia/Manila",
       today: "2026-06-11",
       lastTransaction: sampleLast, // older historical row that must NOT be touched
-      memories: [],
       addWrite,
       peekWrites: peek,
     });
@@ -478,9 +481,10 @@ describe("memory tools buffer intents / read from context", () => {
     expect(drain()).toEqual([{ type: "forgetMemory", userId: "user-1", match: "payday" }]);
   });
 
-  test("listMemory reads from context without buffering", async () => {
-    const { tools, drain } = ctxWithBuffer({ memories: ["likes milk tea", "payday 15th"] });
+  test("listMemory reads the full set fresh from the DB without buffering", async () => {
+    const { tools, drain } = ctxWithBuffer();
     const res = (await run(tools.listMemory, {})) as unknown as { remembered: string[] };
+    // Returns the DB-backed content (the mocked listMemories), not a capped prompt snapshot.
     expect(res.remembered).toEqual(["likes milk tea", "payday 15th"]);
     expect(drain()).toHaveLength(0);
   });

@@ -123,6 +123,45 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     await expect(runAgent("grab 180", base, model)).rejects.toThrow(/429/);
   });
 
+  test("fresh write buffer per attempt: a mid-loop 429 after a buffered write does NOT double-log", async () => {
+    // Attempt 1 logs an expense (buffers a write) THEN 429s mid-loop; the retry logs again. If the
+    // buffer leaked across attempts we'd flush 2 expenses for one "grab 180". Assert exactly 1.
+    let phase = 0;
+    const logCall = {
+      type: "tool-call" as const,
+      toolCallId: "c1",
+      toolName: "logExpense",
+      input: JSON.stringify({ amount: "180", category: "Transport", note: "grab" }),
+    };
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        phase++;
+        if (phase === 1) return result([logCall], "tool-calls"); // attempt 1: buffer a write
+        if (phase === 2) throw new Error("429 rate limit"); // …then 429 mid-loop → attempt fails
+        if (phase === 3) return result([logCall], "tool-calls"); // retry (fresh buffer): buffer again
+        return result([{ type: "text", text: "logged ✅" }], "stop");
+      },
+    });
+    const { writes, reply } = await runAgent("grab 180", base, model);
+    expect(writes).toHaveLength(1); // NOT 2 — the first attempt's buffer was discarded
+    expect(reply).toBe("logged ✅");
+  });
+
+  test("hard deadline aborts the retry chain fast instead of running all attempts", async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        calls++;
+        throw new Error("429 rate limit"); // always transient → would otherwise back off + retry 5x
+      },
+    });
+    // A 1ms budget: it must give up almost immediately. Depending on exact timing it either runs one
+    // attempt and surfaces the 429, OR the loop-top deadline guard trips before the first call and
+    // surfaces "deadline exceeded" — both are valid "aborted fast" outcomes (and neither burns all 5).
+    await expect(runAgent("grab 180", base, model, 1)).rejects.toThrow(/429|deadline/);
+    expect(calls).toBeLessThanOrEqual(2); // did NOT burn all 5 attempts
+  });
+
   test("multi-tier chain: rate-limit on tier 0 falls through to tier 1 (a DIFFERENT model)", async () => {
     let tier0Calls = 0;
     let tier1Calls = 0;

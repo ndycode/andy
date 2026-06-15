@@ -1,14 +1,8 @@
 import { normalizePhone } from "@repo/shared/allowlist";
 import type { Category } from "@repo/shared/categories";
-import {
-  currentWeekStart,
-  daysInLocalMonth,
-  localDate,
-  localDayOfMonth,
-  localDayOfWeek,
-  monthRange,
-} from "@repo/shared/time";
-import { and, eq, gte, ilike, lte, sql } from "drizzle-orm";
+import { toSafeCentavos } from "@repo/shared/money";
+import { currentWeekStart, daysInLocalMonth, localDate, monthRange } from "@repo/shared/time";
+import { and, eq, gte, ilike, lt, lte, sql } from "drizzle-orm";
 import { type DB, getDb } from "./client";
 import {
   budgets,
@@ -140,6 +134,17 @@ export const CLAIM_TTL_MS = 2 * 60 * 1000;
 const FLUSH_STATEMENT_TIMEOUT_MS = 30_000;
 
 /**
+ * Length caps for free-text money-ledger fields. memories/messages already cap at 4000 chars
+ * (row-bloat + context-window protection); the note, goal name, and recurring label had NO cap, so
+ * an over-long LLM output could bloat a row and the prompt context that re-reads it. These are
+ * generous for real labels ("jollibee with the team") but bound the worst case. Applied as a
+ * defensive slice in the flush (the zod schemas also .max() these, so this is belt-and-suspenders).
+ */
+const NOTE_MAX = 500;
+const NAME_MAX = 100;
+const LABEL_MAX = 100;
+
+/**
  * Phase 1 — single atomic statement (closes the concurrent-redelivery double-log race).
  *
  *   INSERT ... ON CONFLICT DO UPDATE SET claimed_at = now()
@@ -222,7 +227,7 @@ export async function flushWrites(
               kind: w.type,
               amountCentavos: w.amountCentavos,
               category: w.category,
-              note: w.note,
+              note: w.note?.slice(0, NOTE_MAX),
               localDate: w.localDate,
             })
             .returning({ id: transactions.id });
@@ -254,7 +259,7 @@ export async function flushWrites(
             .insert(savingsGoals)
             .values({
               userId: w.userId,
-              name: w.name,
+              name: w.name.slice(0, NAME_MAX),
               targetCentavos: w.targetCentavos,
               targetDate: w.targetDate,
             })
@@ -320,7 +325,11 @@ export async function flushWrites(
               }
               const set: Record<string, unknown> = {};
               if (w.patch.amountCentavos != null) set.amountCentavos = w.patch.amountCentavos;
-              if (w.patch.category != null) set.category = w.patch.category;
+              // A goal contribution's category is FIXED at Savings/Goals — its savedCentavos and the
+              // tx_goal_idx/reconcile path all assume that. Silently moving it to e.g. Food would leave
+              // the row goal-linked but counted under Food in the breakdown (a ledger desync). Ignore a
+              // category patch on a goal-linked row; amount/note edits still apply.
+              if (w.patch.category != null && !row.goalId) set.category = w.patch.category;
               if (w.patch.note != null) set.note = w.patch.note;
               if (Object.keys(set).length > 0) {
                 set.updatedAt = new Date();
@@ -362,7 +371,7 @@ export async function flushWrites(
           await tx.execute(sql`
           INSERT INTO ${recurringItems}
             (user_id, label, kind, amount_centavos, category, cadence, day_of_month, day_of_week)
-          VALUES (${w.userId}, ${r.label}, ${r.kind}, ${r.amountCentavos}, ${r.category},
+          VALUES (${w.userId}, ${r.label.slice(0, LABEL_MAX)}, ${r.kind}, ${r.amountCentavos}, ${r.category},
                   ${r.cadence}, ${r.dayOfMonth ?? null}, ${r.dayOfWeek ?? null})
           ON CONFLICT (user_id, lower(label)) DO UPDATE SET
             label = excluded.label, kind = excluded.kind,
@@ -411,7 +420,7 @@ export async function flushWrites(
             .where(and(eq(budgets.userId, w.userId), eq(budgets.category, w.category)));
         } else if (w.type === "editGoal") {
           const set: Record<string, unknown> = {};
-          if (w.patch.name != null) set.name = w.patch.name;
+          if (w.patch.name != null) set.name = w.patch.name.slice(0, NAME_MAX);
           if (w.patch.targetCentavos != null) set.targetCentavos = w.patch.targetCentavos;
           if (w.patch.targetDate !== undefined) set.targetDate = w.patch.targetDate;
           if (Object.keys(set).length > 0) {
@@ -481,7 +490,7 @@ export async function sumByCategory(
         lte(transactions.localDate, end),
       ),
     );
-  return Number(row?.total ?? 0);
+  return toSafeCentavos(row?.total ?? 0);
 }
 
 /**
@@ -588,8 +597,8 @@ export async function getMonthOverview(
         lte(transactions.localDate, end),
       ),
     );
-  const income = Number(row?.income ?? 0);
-  const expense = Number(row?.expense ?? 0);
+  const income = toSafeCentavos(row?.income ?? 0);
+  const expense = toSafeCentavos(row?.expense ?? 0);
   return { income, expense, net: income - expense };
 }
 
@@ -615,8 +624,10 @@ export async function getSpendingByCategory(
       ),
     )
     .groupBy(transactions.category)
-    .orderBy(sql`sum(${transactions.amountCentavos}) desc`);
-  return rows.map((r) => ({ category: r.category, total: Number(r.total) }));
+    // Stable secondary sort so two categories with an identical total don't surface in a
+    // run-to-run-arbitrary order (Postgres makes no ordering guarantee on ties).
+    .orderBy(sql`sum(${transactions.amountCentavos}) desc`, sql`${transactions.category} asc`);
+  return rows.map((r) => ({ category: r.category, total: toSafeCentavos(r.total) }));
 }
 
 /** Most recent transactions (default 10). Ordered by insertion seq so multi-entry ties are stable. */
@@ -1054,23 +1065,47 @@ export async function findRecurringByLabel(userId: string, label: string) {
   return pickRecurringMatch(items, label);
 }
 
-/** Recurring items due today (Manila). READ-ONLY — caller marks reminded only after a successful send. */
+/** Add `n` whole calendar days to a YYYY-MM-DD string (UTC-midnight arithmetic; no tz drift). */
+function addDaysToLocalDate(dateStr: string, n: number): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Recurring items due today (Manila), WITH missed-day self-heal. READ-ONLY — the caller atomically
+ * claims the day's slot (claimReminder) only right before a successful send, so this can over-return
+ * safely: claimReminder makes the actual send exactly-once per cycle.
+ *
+ * The old logic fired only when the target day EXACTLY equalled today. Vercel Cron is best-effort
+ * (a platform incident, a deploy landing on the due minute, or a 504 can skip a tick), so a single
+ * missed day silently dropped the reminder for the WHOLE cycle. Now an item is "due" once its due
+ * date THIS cycle has arrived (or passed) and it hasn't already been reminded on/after that due date
+ * — so a late cron run still catches it, exactly once, while it never fires before the due day or
+ * re-fires a cycle it already handled.
+ */
 export async function dueRecurringToday(userId: string, at: Date = new Date()) {
   const db = getDb();
   const today = localDate(at);
-  const dom = localDayOfMonth(at);
-  const dow = localDayOfWeek(at);
   const lastDom = daysInLocalMonth(at);
+  const weekStart = currentWeekStart(at); // Monday of this Manila week (YYYY-MM-DD)
   const items = await db.select().from(recurringItems).where(eq(recurringItems.userId, userId));
   return items.filter((it) => {
-    if (it.lastRemindedDate === today) return false;
+    if (it.lastRemindedDate === today) return false; // already handled today
+    let dueStr: string;
     if (it.cadence === "monthly") {
       if (it.dayOfMonth == null) return false;
-      // Clamp a too-high target day to the month's last day, so a bill set for the 31st still
-      // fires on Feb 28/29 or 30-day months instead of silently never reminding.
-      return Math.min(it.dayOfMonth, lastDom) === dom;
+      // Clamp a too-high target day (e.g. the 31st) to the month's last day, so a bill set for the
+      // 31st still fires on Feb 28/29 or a 30-day month instead of silently never reminding.
+      const effectiveDue = Math.min(it.dayOfMonth, lastDom);
+      dueStr = `${today.slice(0, 7)}-${String(effectiveDue).padStart(2, "0")}`;
+    } else {
+      if (it.dayOfWeek == null) return false;
+      // Due date within THIS Manila week: offset from Monday for the target day-of-week (0=Sun..6=Sat).
+      dueStr = addDaysToLocalDate(weekStart, (it.dayOfWeek + 6) % 7);
     }
-    return it.dayOfWeek === dow;
+    // Fire once the due day has arrived/passed this cycle, unless already reminded on/after it.
+    return today >= dueStr && (it.lastRemindedDate == null || it.lastRemindedDate < dueStr);
   });
 }
 
@@ -1129,7 +1164,11 @@ export async function budgetStatuses(
     )
     .where(eq(budgets.userId, userId))
     .groupBy(budgets.category, budgets.monthlyLimitCentavos);
-  return rows.map((r) => ({ category: r.category, limit: r.limit, spent: Number(r.spent) }));
+  return rows.map((r) => ({
+    category: r.category,
+    limit: toSafeCentavos(r.limit),
+    spent: toSafeCentavos(r.spent),
+  }));
 }
 
 /** Budget status for ONLY the given categories (post-flush in-the-moment reaction). */
@@ -1192,12 +1231,14 @@ export async function getInsights(userId: string, at: Date = new Date()) {
     .from(transactions)
     .where(and(base, sql`${transactions.note} is not null and trim(${transactions.note}) <> ''`))
     .groupBy(transactions.note)
-    .orderBy(sql`sum(${transactions.amountCentavos}) desc`)
+    // Stable tiebreaker (note asc) so two notes with the same summed total don't make the "biggest
+    // leak" nondeterministic across runs.
+    .orderBy(sql`sum(${transactions.amountCentavos}) desc`, sql`${transactions.note} asc`)
     .limit(1);
   return {
-    weekendCentavos: Number(we?.weekend ?? 0),
-    weekdayCentavos: Number(we?.weekday ?? 0),
-    topLeak: leak ? { note: leak.note, centavos: Number(leak.total) } : null,
+    weekendCentavos: toSafeCentavos(we?.weekend ?? 0),
+    weekdayCentavos: toSafeCentavos(we?.weekday ?? 0),
+    topLeak: leak ? { note: leak.note, centavos: toSafeCentavos(leak.total) } : null,
   };
 }
 
@@ -1283,6 +1324,47 @@ export async function reconcileGoalBalances(userId: string): Promise<number> {
     )
     .returning({ id: savingsGoals.id });
   return corrected.length;
+}
+
+/**
+ * Hygiene: bound the append-only `nudges` dedup log. Only the current Manila week's rows gate
+ * proactive sends; older rows are pure growth. Drop anything older than `keepWeeks`. Mirrors the
+ * other reapers so every growth table is bounded, not just most of them. Called from the daily cron.
+ */
+export async function reapNudges(at: Date = new Date(), keepWeeks = 8): Promise<number> {
+  const db = getDb();
+  const cutoff = addDaysToLocalDate(currentWeekStart(at), -keepWeeks * 7);
+  const deleted = await db
+    .delete(nudges)
+    .where(lt(nudges.weekStartLocalDate, cutoff))
+    .returning({ kind: nudges.kind });
+  return deleted.length;
+}
+
+/**
+ * Hygiene: bound the append-only `summary_runs` idempotency log. Only the current week's row gates
+ * the weekly recap; older rows are pure growth. Keep a generous window for debugging, drop the rest.
+ */
+export async function reapSummaryRuns(at: Date = new Date(), keepWeeks = 12): Promise<number> {
+  const db = getDb();
+  const cutoff = addDaysToLocalDate(currentWeekStart(at), -keepWeeks * 7);
+  const deleted = await db
+    .delete(summaryRuns)
+    .where(lt(summaryRuns.weekStartLocalDate, cutoff))
+    .returning({ wk: summaryRuns.weekStartLocalDate });
+  return deleted.length;
+}
+
+/**
+ * Erase a user and ALL their data. Every child FK is ON DELETE CASCADE (migration 0010), so deleting
+ * the single users row removes their transactions, goals, budgets, memories, messages, habits,
+ * recurring items, and nudges in one statement. Returns true iff a user row was actually deleted.
+ * (processed_messages and summary_runs are not user-scoped — they're global dedup logs reaped by TTL.)
+ */
+export async function deleteUser(userId: string): Promise<boolean> {
+  const db = getDb();
+  const rows = await db.delete(users).where(eq(users.id, userId)).returning({ id: users.id });
+  return rows.length > 0;
 }
 
 export { localDate };

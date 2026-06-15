@@ -8,15 +8,24 @@ export interface SpendingComparison {
   current: number; // centavos
   previous: number; // centavos
   delta: number; // current - previous (signed)
-  /** Percent change vs previous, rounded; null when previous is 0 (no baseline to divide by). */
+  /**
+   * Percent change vs previous, rounded; null when there is no meaningful baseline to divide by —
+   * either previous is 0, or it's a sub-₱1 sliver where the percent is dominated by rounding noise
+   * (a ₱0.01 baseline vs ₱1,000 would otherwise render an absurd "+9,999,900%"). Callers fall back
+   * to showing the absolute delta when this is null. `direction` is always meaningful.
+   */
   pctChange: number | null;
   direction: "up" | "down" | "flat";
 }
 
+/** Below this baseline (₱1), a percent change is rounding noise rather than signal — report null. */
+const PCT_BASELINE_FLOOR_CENTAVOS = 100;
+
 /** Compare two centavos totals (current vs previous period). */
 export function spendingDelta(current: number, previous: number): SpendingComparison {
   const delta = current - previous;
-  const pctChange = previous === 0 ? null : Math.round((delta / previous) * 100);
+  const pctChange =
+    previous < PCT_BASELINE_FLOOR_CENTAVOS ? null : Math.round((delta / previous) * 100);
   const direction = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
   return { current, previous, delta, pctChange, direction };
 }

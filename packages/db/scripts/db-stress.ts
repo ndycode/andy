@@ -1,6 +1,9 @@
 // LIVE DB STRESS — runs the real db-layer functions against the real Neon DB on a THROWAWAY user,
 // with guaranteed cleanup in finally. Verifies claim/flush/dedup/concurrency/edit/delete/goal math
 // that unit tests can't (they have no Postgres). Never touches the real user's data.
+
+import { eq, inArray, sql } from "drizzle-orm";
+import { getDb } from "../src/client";
 import {
   addRecurring,
   budgetStatusesFor,
@@ -17,7 +20,6 @@ import {
   reconcileGoalBalances,
   resolveUserId,
 } from "../src/index";
-import { getDb } from "../src/client";
 import {
   budgets,
   habits,
@@ -30,7 +32,6 @@ import {
   transactions,
   users,
 } from "../src/schema";
-import { eq, inArray, sql } from "drizzle-orm";
 
 const PHONE = `+0000STRESS${Date.now()}`; // unique throwaway number
 const RUN = `stress-${Date.now()}`; // prefix for every processed_messages id we create
@@ -272,18 +273,22 @@ try {
       committedTotal += committed;
       supersededTotal += superseded;
       // Count how many rows actually landed for this race note — must be exactly 1.
-      const [{ c }] = await db
+      const [row] = await db
         .select({ c: sql<number>`count(*)::int` })
         .from(transactions)
         .where(eq(transactions.note, `race-${i}`));
-      if (Number(c) !== 1) doubleLogged++;
+      if (Number(row?.c) !== 1) doubleLogged++;
     }
     ok(
       `H3: ${ITER}x stale-steal race → exactly one commit each`,
       committedTotal === ITER && supersededTotal === ITER,
       `committed=${committedTotal} superseded=${supersededTotal} (want ${ITER}/${ITER})`,
     );
-    ok("H3: ZERO double-logged expenses across the race loop", doubleLogged === 0, `${doubleLogged} dupes`);
+    ok(
+      "H3: ZERO double-logged expenses across the race loop",
+      doubleLogged === 0,
+      `${doubleLogged} dupes`,
+    );
   }
 
   // 14. M1 — goals_user_name_uniq: a case-variant duplicate name must NOT create a second goal,
@@ -301,7 +306,11 @@ try {
       { type: "expense", userId, amountCentavos: 500, category: "Food", localDate: "2026-06-12" },
     ]);
     const japans = (await listGoals(userId)).filter((x) => x.name.toLowerCase() === "japan trip");
-    ok("M1: dup goal name (case-variant) did NOT create a 2nd goal", japans.length === 1, `${japans.length}`);
+    ok(
+      "M1: dup goal name (case-variant) did NOT create a 2nd goal",
+      japans.length === 1,
+      `${japans.length}`,
+    );
     ok("M1: original goal kept, not overwritten", japans[0]?.targetCentavos === 1000000);
     const matched = await findGoalsByName(userId, "japan");
     ok("M1: findGoalsByName resolves the single goal", matched.length === 1);
@@ -315,15 +324,34 @@ try {
       {
         type: "addRecurring",
         userId,
-        recurring: { label: "Rent", kind: "expense", amountCentavos: 800000, category: "Bills", cadence: "monthly", dayOfMonth: 1, dayOfWeek: null },
+        recurring: {
+          label: "Rent",
+          kind: "expense",
+          amountCentavos: 800000,
+          category: "Bills",
+          cadence: "monthly",
+          dayOfMonth: 1,
+          dayOfWeek: null,
+        },
       },
     ]);
     // standalone helper, different case + new amount → upsert, not a 2nd row
-    await addRecurring(userId, { label: "rent", kind: "expense", amountCentavos: 900000, category: "Bills", cadence: "monthly", dayOfMonth: 1 });
+    await addRecurring(userId, {
+      label: "rent",
+      kind: "expense",
+      amountCentavos: 900000,
+      category: "Bills",
+      cadence: "monthly",
+      dayOfMonth: 1,
+    });
     const rents = await db.select().from(recurringItems).where(eq(recurringItems.userId, userId));
     const onlyRent = rents.filter((x) => x.label.toLowerCase() === "rent");
     ok("schema: recurring label upsert (no dup)", onlyRent.length === 1, `${onlyRent.length}`);
-    ok("schema: recurring upsert updated amount in place", onlyRent[0]?.amountCentavos === 900000, `${onlyRent[0]?.amountCentavos}`);
+    ok(
+      "schema: recurring upsert updated amount in place",
+      onlyRent[0]?.amountCentavos === 900000,
+      `${onlyRent[0]?.amountCentavos}`,
+    );
   }
 
   // 16. M4 — claimReminder is an atomic once-per-day claim (record-before-send).
@@ -336,7 +364,11 @@ try {
     const at = new Date("2026-06-12T03:00:00Z");
     const first = await claimReminder(rent!.id, userId, at);
     const second = await claimReminder(rent!.id, userId, at);
-    ok("M4: first claimReminder wins, second loses (no dup send)", first === true && second === false, `${first}/${second}`);
+    ok(
+      "M4: first claimReminder wins, second loses (no dup send)",
+      first === true && second === false,
+      `${first}/${second}`,
+    );
     const nextDay = await claimReminder(rent!.id, userId, new Date("2026-06-13T03:00:00Z"));
     ok("M4: next day is claimable again", nextDay === true);
   }
@@ -347,12 +379,22 @@ try {
     const cm = mid();
     await claimSlot(cm);
     await flushWrites(cm, [
-      { type: "goalContribution", userId, goalId: jp!.id, amountCentavos: 7000, localDate: "2026-06-12" },
+      {
+        type: "goalContribution",
+        userId,
+        goalId: jp!.id,
+        amountCentavos: 7000,
+        localDate: "2026-06-12",
+      },
     ]);
     await db.update(savingsGoals).set({ savedCentavos: 999999 }).where(eq(savingsGoals.id, jp!.id));
     const fixed = await reconcileGoalBalances(userId);
     const [after] = await db.select().from(savingsGoals).where(eq(savingsGoals.id, jp!.id));
-    ok("reconcile corrects drift to SUM(contributions)", after!.savedCentavos === 7000, `got ${after!.savedCentavos}`);
+    ok(
+      "reconcile corrects drift to SUM(contributions)",
+      after!.savedCentavos === 7000,
+      `got ${after!.savedCentavos}`,
+    );
     ok("reconcile reported >=1 corrected", fixed >= 1, `${fixed}`);
     ok("reconcile idempotent (2nd run fixes 0)", (await reconcileGoalBalances(userId)) === 0);
   }
@@ -362,7 +404,9 @@ try {
     for (let i = 0; i < 6; i++) {
       const t = mid();
       await claimSlot(t);
-      await flushWrites(t, [{ type: "saveTurn", userId, role: "user", content: `stress-turn-${i}` }]);
+      await flushWrites(t, [
+        { type: "saveTurn", userId, role: "user", content: `stress-turn-${i}` },
+      ]);
     }
     const deleted = await reapMessages(userId, 2);
     const remaining = await db.select().from(messages).where(eq(messages.userId, userId));

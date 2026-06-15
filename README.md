@@ -16,7 +16,7 @@ andy ▸ you're at ₱2,408 net this month. you get paid the 15th, so you're fin
 
 Andy is a single-user, free-tier, serverless finance assistant. You talk to it like a friend; it turns natural language into typed financial transactions, persists them with exact integer-centavo money math, and answers questions from real SQL aggregation — never from chat history. It's built for the Philippines (PHP, Asia/Manila, GCash/sweldo idioms) and runs at ~$0/month.
 
-**240+ tests · TypeScript strict · typecheck + lint + test + build green in CI.**
+**300+ tests · TypeScript strict · typecheck + lint + test + build green in CI.**
 
 ---
 
@@ -50,7 +50,7 @@ iMessage ─▶ Sendblue webhook ─▶ Hono API (Vercel, sin1)
 
 This is a finance app, so the bar is *the numbers are never wrong and nothing double-logs.* Most of the engineering went into guaranteeing that under real-world failure modes.
 
-**Money correctness by construction.** All money is stored as integer centavos — there is no float anywhere in the money path. The LLM never computes amounts; it extracts a raw token (`"25k"`, `"1.5k"`, `"180.50"`) and a single parser converts it, with property tests proving sums stay exact. Division happens only at display time.
+**Money correctness by construction.** All money is stored and summed as integer centavos — there is no float in the money path. The LLM never computes amounts; it extracts a raw token (`"25k"`, `"1.5k"`, `"180.50"`) and a single parser converts it with exact integer math (property-tested, and SQL aggregates are range-checked back into JS via `toSafeCentavos`). Conversion to fractional pesos happens only at display (`formatPHP`); the internal pace/ratio analytics divide centavos but re-round to integer centavos.
 
 **Crash-safe, pooler-safe inbound handling.** The webhook runs a **three-phase handler that holds no database connection across the multi-second LLM call**: a short transaction claims a dedup marker, the agent runs while *buffering* its writes (no connection held), then a second short transaction flushes all writes and completes the marker atomically. Holding a pooled connection across an LLM round-trip is an anti-pattern that pins backends and risks idle-in-transaction termination — this design avoids it entirely.
 
@@ -70,7 +70,7 @@ This is a personal, single-user project. Running it live requires the author's o
 bun install
 bun run typecheck   # tsc --noEmit across all packages
 bun run lint        # Biome
-bun test            # 240+ tests
+bun test            # 300+ tests
 bun run build       # production Vercel bundle (Build Output API)
 bun run ci:local    # full gate incl. DB integration tests vs ephemeral Postgres (needs Docker)
 ```
