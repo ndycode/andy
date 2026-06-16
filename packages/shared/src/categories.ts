@@ -30,6 +30,10 @@ const SYNONYMS: Record<string, Category> = {
   grocery: "Food",
   meal: "Food",
   meals: "Food",
+  lunch: "Food",
+  dinner: "Food",
+  breakfast: "Food",
+  merienda: "Food",
   dining: "Food",
   restaurant: "Food",
   coffee: "Food",
@@ -106,4 +110,37 @@ export function coerceCategory(value: string | null | undefined): Category {
   const canonical = CATEGORIES.find((c) => c.toLowerCase() === key);
   if (canonical) return canonical;
   return SYNONYMS[key] ?? "Other";
+}
+
+/**
+ * Category for an EXPENSE write, hardened beyond coerceCategory with two finance-correctness rules:
+ *
+ *  1. Note-as-tiebreak: a weak free model sometimes picks a wrong bucket for an obvious merchant
+ *     ("groceries at sm" → Shopping). When the model's category is the vague "Other" (or empty) but
+ *     the NOTE contains a known synonym keyword, trust the note. We only OVERRIDE "Other" — a
+ *     confident non-Other category from the model is respected (the note is a hint, not a veto), so
+ *     this can't fight a deliberate categorization.
+ *  2. Income is not an expense category: an expense row must never land under "Income" (it would
+ *     corrupt the income/expense/net overview). If the model emits Income for an expense, fall back to
+ *     the note's bucket, else "Other".
+ */
+export function coerceExpenseCategory(
+  value: string | null | undefined,
+  note: string | null | undefined,
+): Category {
+  const fromNote = (): Category => {
+    if (!note) return "Other";
+    for (const word of note.toLowerCase().split(/[^a-z0-9]+/)) {
+      const hit = SYNONYMS[word];
+      if (hit && hit !== "Income") return hit; // never categorize an expense as Income
+    }
+    return "Other";
+  };
+  const cat = coerceCategory(value);
+  if (cat === "Income") return fromNote(); // rule 2
+  if (cat === "Other") {
+    const noteCat = fromNote(); // rule 1
+    return noteCat !== "Other" ? noteCat : "Other";
+  }
+  return cat;
 }

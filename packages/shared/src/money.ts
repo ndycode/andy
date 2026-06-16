@@ -20,8 +20,10 @@ export type ParseResult = { ok: true; centavos: number } | { ok: false; reason: 
 function decimalToCentavos(s: string, multiplier: number): number {
   const [intRaw, fracRaw = ""] = s.split(".");
   const k = multiplier === 1_000_000 ? 6 : multiplier === 1_000 ? 3 : 0;
-  let digits = `${intRaw}${fracRaw}`.replace(/^0+(?=\d)/, "");
-  if (digits === "") digits = "0";
+  // Do NOT strip leading zeros here: `digits` is sliced by position against `fracRaw.length` in the
+  // negative-exp branch below, so dropping characters off the front misaligns the keep/dropped split
+  // (it made "0.0005" round to 1 centavo instead of 0). Number() handles any leading zeros fine.
+  const digits = `${intRaw}${fracRaw}` || "0";
   const exp = 2 + k - fracRaw.length;
   if (exp >= 0) return Number(digits) * 10 ** exp;
   // Fewer centavo slots than fractional digits: drop the tail, rounding half-up on the first dropped.

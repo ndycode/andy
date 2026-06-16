@@ -14,13 +14,21 @@ import {
   listRecurring,
   searchTransactions,
   sumByCategory,
+  sumSpendBetween,
 } from "@repo/db";
 import { spendingDelta, spendingPace } from "@repo/shared/analytics";
-import { type CATEGORIES, type Category, coerceCategory } from "@repo/shared/categories";
+import {
+  type CATEGORIES,
+  type Category,
+  coerceCategory,
+  coerceExpenseCategory,
+} from "@repo/shared/categories";
 import { goalProgressMessage } from "@repo/shared/goals";
 import { formatPHP, parseAmount } from "@repo/shared/money";
 import {
+  currentWeekStart,
   daysInLocalMonth,
+  localDate,
   localDayOfMonth,
   monthAnchor,
   monthRange,
@@ -81,9 +89,11 @@ export function buildTools(ctx: ToolContext) {
       if (!r.ok) return { ok: false, error: r.reason };
       const d = resolveLogDate(date);
       if (!d.ok) return { ok: false, error: d.error };
-      // Coerce once and confirm the SAME value we store: a non-canonical token ("groceries", "Gas")
-      // is stored as "Other", so returning the raw arg would confirm a category the DB never saw.
-      const cat = coerceCategory(category);
+      // Coerce once and confirm the SAME value we store. coerceExpenseCategory adds two expense-only
+      // rules over coerceCategory: it consults the NOTE when the model's category is vague ("Other")
+      // — fixing observed misses like "groceries at sm" → Shopping — and it never lets an expense be
+      // stored under "Income" (which would corrupt the income/expense/net overview).
+      const cat = coerceExpenseCategory(category, note);
       // WARN (don't block) on a probable accidental re-log: same amount+note+day already exists.
       // We still log it (a real second "grab 250" same day is valid; never trap the user into
       // resending), but flag it so Andy can offer an undo in the reply.
@@ -150,6 +160,30 @@ export function buildTools(ctx: ToolContext) {
       const { at, label } = resolveMonthAt(month);
       const total = await sumByCategory(ctx.userId, cat, at ?? new Date());
       return { category: cat, total: formatPHP(total), month: label };
+    },
+  });
+
+  const getPeriodSpending = tool({
+    description:
+      "Total spending for TODAY or THIS WEEK (optionally one category). Use for 'how much did i spend today', 'what have i spent this week', 'how much on food today'. For a whole month use getSpending/getOverview instead.",
+    inputSchema: z.object({
+      period: z.enum(["today", "week"]).describe("'today' or 'week' (this week, Mon-based)."),
+      category: z
+        .string()
+        .optional()
+        .describe("Optional single category to scope to; omit for all spending."),
+    }),
+    execute: async ({ period, category }) => {
+      const today = localDate();
+      const start = period === "today" ? today : currentWeekStart();
+      const cat = category ? coerceCategory(category) : undefined;
+      const total = await sumSpendBetween(ctx.userId, start, today, cat);
+      return {
+        period,
+        category: cat ?? null,
+        total: formatPHP(total),
+        ...(period === "week" ? { weekStart: start } : { date: today }),
+      };
     },
   });
 
@@ -904,6 +938,7 @@ export function buildTools(ctx: ToolContext) {
     logExpense,
     logIncome,
     getSpending,
+    getPeriodSpending,
     getOverview,
     getCategoryBreakdown,
     getRecent,

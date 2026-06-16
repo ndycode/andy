@@ -14,6 +14,7 @@ export interface RunResult {
 /** Tool names that ANSWER a question (vs. log something). Used to pick the right empty-text fallback. */
 const READ_TOOLS = new Set([
   "getSpending",
+  "getPeriodSpending",
   "getOverview",
   "getCategoryBreakdown",
   "getRecent",
@@ -103,10 +104,14 @@ export async function runAgent(
         // mid-action. The cap still bounds worst-case token use (every step re-sends prompt + tool
         // schemas) and the wall-clock AbortSignal below is the real safety net against a runaway loop.
         stopWhen: stepCountIs(12),
-        // Output is 5x the price of input ($5 vs $1 /Mtok on Haiku). Andy sends 1-2 sentence texts,
-        // so cap worst-case generation. 512 (not lower) leaves room for a legit multi-item reply
-        // like "what do you remember" / "list my recurring bills" without truncating mid-message.
-        maxOutputTokens: 512,
+        // Output cap. On gpt-oss-* (reasoning models) this budget is SHARED by reasoning + visible
+        // text, so too low a cap starves the reply (reasoning eats it → empty/truncated turn). We set
+        // reasoning effort to 'low' in model.ts to bound the reasoning portion, and keep a generous
+        // 1024 cap so a legit multi-item reply ("list my recurring bills", "what do you remember") has
+        // room AFTER reasoning. Andy still sends 1-2 sentence texts; this caps worst-case generation
+        // without truncating mid-message. (The free models here are $0, so the old Haiku $/token
+        // rationale for a tight 512 cap no longer applies.)
+        maxOutputTokens: 1024,
         // Disable the SDK's built-in retry (default 2). We run our OWN retry+fallback chain
         // (withRetry: jittered backoff, tier fall-through, deadline-bounded). Leaving the SDK's on
         // means each of our attempts secretly fires up to 3 model calls — multiplying throttle hits
@@ -135,13 +140,27 @@ export async function runAgent(
     deadline,
   );
 
-  const reply = result.gen.text?.trim() || synthesizeReply(result.gen, result.writes);
+  const rawReply = result.gen.text?.trim();
+  let reply = rawReply || synthesizeReply(result.gen, result.writes);
+
+  // Truncation guard: finishReason 'length' means the model hit maxOutputTokens mid-generation, so a
+  // non-empty text reply is cut off mid-sentence. Rather than send a dangling fragment, append a brief
+  // honest marker so the user knows to ask for the rest. (Writes already buffered are unaffected — only
+  // the reply text was truncated.) A truncated turn with NO text falls through to synthesizeReply above.
+  if (result.gen.finishReason === "length" && rawReply) {
+    reply = `${reply} …(cut off — ask me to continue)`;
+  }
 
   // Cheap usage observability: one structured line per run (tokens + steps + tool calls).
   // Lets you watch the OpenRouter free-tier budget without any external tooling.
+  // servedModel = the model OpenRouter ACTUALLY used (response.modelId). With native cross-model
+  // fallback this can differ from MODEL_ID — logging it makes a silent degradation to a worse fallback
+  // visible instead of invisible.
   const usage = result.gen.totalUsage;
   log.info("agent.run", {
     userId: base.userId,
+    servedModel: result.gen.response?.modelId,
+    finishReason: result.gen.finishReason,
     steps: result.gen.steps?.length ?? 1,
     toolCalls: result.gen.steps?.reduce((n, s) => n + (s.toolCalls?.length ?? 0), 0) ?? 0,
     writes: result.writes.length,
@@ -278,6 +297,17 @@ export function summarizeReadResult(output: unknown): string {
     const o = output as Record<string, unknown>;
     // When the read was scoped to a past month, attribute the figure to THAT month, not "this month".
     const period = typeof o.month === "string" && o.month ? `in ${o.month}` : "so far this month";
+    // getPeriodSpending: { period: 'today'|'week', total, category|null }. Check BEFORE the
+    // getSpending branch below — its category can be null and it carries a `period` discriminator.
+    if (
+      typeof o.total === "string" &&
+      (o.period === "today" || o.period === "week") &&
+      (typeof o.category === "string" || o.category === null)
+    ) {
+      const span = o.period === "today" ? "today" : "this week";
+      const scope = typeof o.category === "string" ? `${o.category}: ` : "";
+      return `${scope}${o.total} ${span}.`;
+    }
     if (typeof o.total === "string" && typeof o.category === "string") {
       return `${o.category}: ${o.total} ${period}.`;
     }

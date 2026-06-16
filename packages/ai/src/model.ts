@@ -29,12 +29,35 @@ export const MODEL_ID = "openai/gpt-oss-120b:free";
  * Backup models OpenRouter falls through to, in order, when the primary errors/rate-limits — all
  * free + tool-capable. gpt-oss-20b (same family, lighter) → qwen3-coder (strong tool use, 1M ctx) →
  * gemini-2.5-flash free. NOT llama-3.3-70b (fails this tool schema; see note above).
+ *
+ * NOTE (single-throttle caveat): all four are `:free`, so they share ONE OpenRouter account's
+ * account-wide free-tier throttle — this native chain covers PER-MODEL faults (a model down/overloaded),
+ * NOT an account-wide rate limit (every entry hits the same limit). The old direct-provider design had
+ * separate quota pools; this does not. If account throttling becomes real, add a cheap PAID model as the
+ * last entry (its own pool) — a one-line change.
  */
 export const FALLBACK_MODELS = [
   "openai/gpt-oss-20b:free",
   "qwen/qwen3-coder:free",
   "google/gemini-2.5-flash:free",
 ];
+
+/**
+ * Per-request model settings shared by every model we build (primary + the proactive single-shot).
+ *  - reasoning.effort 'low': gpt-oss-* are REASONING models. Left unset they think at default depth on
+ *    EVERY tool-loop step — the dominant cause of the 8-25s latency tail, and (because reasoning shares
+ *    the output-token budget) the source of "empty" turns where reasoning ate the whole cap and left no
+ *    visible text. 'low' keeps enough reasoning for clean tool-calls while cutting latency and freeing
+ *    the budget for the actual reply. (We keep reasoning rather than 'none' because it measurably helps
+ *    multi-entry parsing and the edit-vs-relog decision.)
+ *  - provider.data_collection 'deny' + zdr: this is a personal-FINANCE app; prompts carry transaction
+ *    notes and durable memories. Route only to endpoints that don't retain/train on the data.
+ */
+const MODEL_SETTINGS = {
+  models: FALLBACK_MODELS,
+  reasoning: { effort: "low" as const },
+  provider: { data_collection: "deny" as const, zdr: true },
+};
 
 /**
  * Lazily-built OpenRouter provider. Built on first use (not at import) so loading this module never
@@ -49,10 +72,14 @@ function provider(): ReturnType<typeof createOpenRouter> {
 }
 
 /**
- * The default production model: the primary id plus its native fallback chain. agent.ts passes this
- * (a single LanguageModel) into the tool loop; OpenRouter handles cross-model fall-through server-side.
- * Built lazily via a getter so the provider is only constructed when a real run needs it.
+ * The default production model: the primary id plus its native fallback chain and the shared settings
+ * (reasoning effort + data-retention policy). agent.ts passes this single LanguageModel into the tool
+ * loop; OpenRouter handles cross-model fall-through server-side. Built lazily so the provider is only
+ * constructed when a real run needs it.
  */
 export function defaultModel(): LanguageModel {
-  return provider()(MODEL_ID, { models: FALLBACK_MODELS });
+  return provider()(MODEL_ID, MODEL_SETTINGS);
 }
+
+/** Settings object (exported for tests: asserts the fallback chain + reasoning + privacy policy are wired). */
+export const MODEL_SETTINGS_FOR_TEST = MODEL_SETTINGS;

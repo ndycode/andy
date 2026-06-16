@@ -494,6 +494,34 @@ export async function sumByCategory(
 }
 
 /**
+ * Total EXPENSE spend in an inclusive localDate range [start, end] (YYYY-MM-DD), optionally one
+ * category. Backs day/week-scoped questions ("how much did i spend today / this week") that the
+ * month-only read tools couldn't answer — the model otherwise had to sum formatted strings by hand.
+ * Same float-safe ::bigint + toSafeCentavos boundary as the month sums.
+ */
+export async function sumSpendBetween(
+  userId: string,
+  start: string,
+  end: string,
+  category?: Category,
+): Promise<number> {
+  const db = getDb();
+  const [row] = await db
+    .select({ total: sql<number>`coalesce(sum(${transactions.amountCentavos}), 0)::bigint` })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.userId, userId),
+        eq(transactions.kind, "expense"),
+        gte(transactions.localDate, start),
+        lte(transactions.localDate, end),
+        ...(category ? [eq(transactions.category, category)] : []),
+      ),
+    );
+  return toSafeCentavos(row?.total ?? 0);
+}
+
+/**
  * Detect a likely accidental re-log: a transaction of the same kind, SAME amount, on the same
  * localDate, with a matching note (case-insensitive — either side may be null/blank). Used to WARN
  * (not block) on a probable duplicate so Andy can offer an undo. Returns the most recent match's note
@@ -1010,16 +1038,25 @@ export async function learnHabit(userId: string, merchant: string, category: Cat
     });
 }
 
-/** Top learned merchant→category mappings for this user (most-used first). */
+/**
+ * Top learned merchant→category mappings for this user (most-used first).
+ *
+ * minCount (default 2): a habit must have been REINFORCED at least once before it's injected into the
+ * prompt. A keyword seen a single time is just one log — promoting it to a "usual category" hint after
+ * one occurrence let a single misclassification (e.g. an accidental groceries→Shopping) immediately
+ * train the model to repeat itself. Requiring a repeat means only genuinely recurring merchant→category
+ * patterns steer future logs; one-offs stay out until they actually recur.
+ */
 export async function topHabits(
   userId: string,
   limit = 30,
+  minCount = 2,
 ): Promise<{ merchant: string; category: Category }[]> {
   const db = getDb();
   const rows = await db
     .select({ merchant: habits.merchant, category: habits.category })
     .from(habits)
-    .where(eq(habits.userId, userId))
+    .where(and(eq(habits.userId, userId), sql`${habits.count} >= ${minCount}`))
     .orderBy(sql`${habits.count} desc`)
     .limit(limit);
   return rows;
@@ -1276,6 +1313,12 @@ export async function reapProcessedMessages(
  * Hygiene: bound the short-term conversation log. recentTurns only ever reads the last few turns, so
  * older rows are pure growth. Keep the most recent `keep` rows per user (by seq) and drop the rest.
  * Called from the daily cron. Returns the number of rows deleted.
+ *
+ * Keep-window is computed by ROW COUNT, not seq arithmetic. `seq` is a GLOBAL bigserial shared across
+ * all users, so the old `MAX(seq) - keep` cutoff assumed contiguous per-user seqs — with other users
+ * interleaving, a user's seqs are sparse, so `MAX-keep` landed far above their keep-th row and deleted
+ * almost everything (kept far fewer than `keep`). We instead take the seq of this user's keep-th most
+ * recent row (OFFSET keep-1) as the cutoff, so exactly the rows older than that are dropped.
  */
 export async function reapMessages(userId: string, keep = 200): Promise<number> {
   const db = getDb();
@@ -1284,9 +1327,11 @@ export async function reapMessages(userId: string, keep = 200): Promise<number> 
     .where(
       and(
         eq(messages.userId, userId),
-        sql`${messages.seq} <= (
-          SELECT COALESCE(MAX(seq), 0) - ${keep}
-          FROM ${messages} WHERE ${messages.userId} = ${userId}
+        sql`${messages.seq} < (
+          SELECT seq FROM ${messages}
+          WHERE ${messages.userId} = ${userId}
+          ORDER BY seq DESC
+          OFFSET ${keep - 1} LIMIT 1
         )`,
       ),
     )

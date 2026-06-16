@@ -56,6 +56,15 @@ describe("parseAmount", () => {
     expect(parseAmount("2.004")).toEqual({ ok: true, centavos: 200 });
   });
 
+  test("sub-centavo below half rounds DOWN to 0 (leading-zero slice alignment)", () => {
+    // Regression: stripping leading zeros before the positional keep/dropped slice misaligned the
+    // round, turning 0.0005 (half a millipeso, < 0.5 centavo) into 1c instead of 0. parseAmount then
+    // rejected it as non-positive — but the underlying round must floor these, not over-count.
+    expect(parseAmount("0.0005")).toEqual({ ok: false, reason: "must be positive" }); // rounds to 0c
+    expect(parseAmount("0.0049")).toEqual({ ok: false, reason: "must be positive" }); // 0.49c → 0c
+    expect(parseAmount("0.0051")).toEqual({ ok: true, centavos: 1 }); // 0.51c → 1c (half-up boundary)
+  });
+
   test("rejects over per-entry cap", () => {
     expect(parseAmount(String(MAX_ENTRY_CENTAVOS / 100 + 1)).ok).toBe(false);
   });

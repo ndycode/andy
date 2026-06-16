@@ -18,6 +18,9 @@ mock.module("@repo/db", () => ({
   getLastTransaction: async () => lastTx,
   // Read tools used by the smoke tests (so the agent loop runs with no live DB):
   getMonthOverview: async () => ({ income: 2_500_000, expense: 1_800_000, net: 700_000 }),
+  // logExpense calls this; include it so this file also passes when run in isolation (not only
+  // alongside agent.sample.test.ts, whose mock happened to provide it).
+  findRecentDuplicate: async () => null,
 }));
 
 import { MockLanguageModelV3 } from "ai/test";
@@ -100,6 +103,19 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     expect(writes).toHaveLength(0);
     expect(reply).not.toBe("got it.");
     expect(reply.toLowerCase()).toContain("net");
+  });
+
+  test("truncated reply (finishReason 'length') gets a continuation marker, not a dangling fragment", async () => {
+    const model = new MockLanguageModelV3({
+      doGenerate: async () =>
+        result(
+          [{ type: "text", text: "your top categories are food, transport, bills, shop" }],
+          "length",
+        ),
+    });
+    const { reply } = await runAgent("break down my spending", base, model);
+    expect(reply).toContain("food, transport");
+    expect(reply.toLowerCase()).toContain("cut off"); // honest truncation marker appended
   });
 
   test("C3: read tool with no final text does NOT reply 'got it.'", async () => {

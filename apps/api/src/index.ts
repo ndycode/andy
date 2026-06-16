@@ -23,11 +23,16 @@ const MAX_BODY_BYTES = 16_384;
 const RL_MAX = 60;
 const RL_WINDOW_MS = 60_000;
 const rlHits: number[] = [];
-function allowAuthedRequest(now = Date.now()): boolean {
+/** Exported for unit testing the burst-window logic directly (no HTTP / no handler involved). */
+export function allowAuthedRequest(now = Date.now()): boolean {
   while (rlHits.length > 0 && now - (rlHits[0] as number) >= RL_WINDOW_MS) rlHits.shift();
   if (rlHits.length >= RL_MAX) return false;
   rlHits.push(now);
   return true;
+}
+/** Test-only: reset the in-memory burst window so 429 behavior is deterministic across cases. */
+export function __resetRateLimitForTest(): void {
+  rlHits.length = 0;
 }
 
 // Global error boundary: any uncaught throw in a route returns a clean 500 with a logged trace
@@ -63,7 +68,10 @@ app.post("/webhooks/sendblue", async (c) => {
   // Burst guard on the authenticated path: cap how fast a caller can drive the (expensive) agent run.
   // 429 is retryable; a real redelivery still lands later and is deduped.
   if (!allowAuthedRequest()) {
-    log.warn("inbound.rate_limited", { phone: msg.phone });
+    // No phone here: the rate-limited path is the one most likely to be hit by an attacker-supplied
+    // body if the URL token leaks, so don't write a (PII) phone number to logs on it. The 429 count
+    // itself is the signal; correlate via the request, not the gated identity.
+    log.warn("inbound.rate_limited", {});
     return c.json({ ok: false }, 429);
   }
 
