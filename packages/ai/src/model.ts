@@ -26,24 +26,30 @@ import type { LanguageModel } from "ai";
 export const MODEL_ID = "openai/gpt-oss-120b:free";
 
 /**
- * Backup models OpenRouter falls through to, in order, when the primary errors/rate-limits — both
- * free + tool-capable. Deliberately SHORT (2 entries) so the chain fails FAST under account-wide
- * throttling: each hop costs a full request round-trip, and when the whole free pool is exhausted a
- * longer chain just adds latency (~19s for 3 hops, observed) before the inevitable rate-limit error.
- *  1. gpt-oss-20b (same family as the primary, lighter) — cleanest tool-caller for a same-shape retry.
- *  2. gemini-2.5-flash (DIFFERENT provider family) — the most useful hop: least likely to be throttled
- *     at the same moment as the gpt-oss models, so it actually covers a per-model outage.
- * Dropped qwen3-coder: same capacity tier as the others (little diversity) and the entry that most
- * often surfaced the upstream rate-limit in testing. NOT llama-3.3-70b (fails this tool schema).
+ * Backup models OpenRouter falls through to, in order, when the primary errors/rate-limits — all
+ * free + tool-capable, and DELIBERATELY SPREAD ACROSS DIFFERENT PROVIDER FAMILIES. A given free model
+ * is served by a specific upstream (e.g. gpt-oss free comes via Venice/Darkbloom, which run hot and
+ * rate-limit first); routing each fallback to a DIFFERENT family maximizes the odds that at least one
+ * has headroom when another's upstream is saturated. This is the meaningful free-only resilience lever
+ * (see the account-wide caveat below — diversity helps PER-MODEL/PER-UPSTREAM throttling, which is
+ * what actually bites in practice).
+ *  1. qwen/qwen3-next-80b-a3b-instruct (Qwen family, separate upstream, strong tool use)
+ *  2. nvidia/nemotron-3-super-120b-a12b (NVIDIA family, yet another upstream, large + capable)
+ * Verified live against the models endpoint: both EXIST and advertise `tools`. We dropped the previous
+ * chain because google/gemini-2.5-flash:free was REMOVED from OpenRouter (a dead fallback that left
+ * effectively one working hop), and gpt-oss-20b shares the primary's contended upstream. NOT
+ * llama-3.3-70b (fails this tool schema, proven live).
  *
- * NOTE (single-throttle caveat, free-only by design): all entries are `:free`, so they share ONE
- * OpenRouter account's account-wide free-tier throttle — this chain covers PER-MODEL faults (a model
- * down/overloaded), NOT an account-wide rate limit (every entry hits the same limit). That escape
- * would need a separate quota pool (a paid model / own provider key), which this project intentionally
- * forgoes. agent.ts's deadline-bounded retry + the handler's friendly-error path absorb a fully
- * throttled pool gracefully (clean retryable reply, never a crash or lost message).
+ * NOTE (single-throttle caveat, free-only by design): beyond per-upstream limits there is also ONE
+ * account-wide free-tier throttle shared across ALL free models — provider diversity does NOT escape
+ * that. When the whole account is throttled, every entry fails; agent.ts's deadline-bounded retry +
+ * the handler's friendly-error path absorb it (clean retryable reply, never a crash or lost message).
+ * The only escape from the account throttle is a separate paid quota pool, which this project forgoes.
  */
-export const FALLBACK_MODELS = ["openai/gpt-oss-20b:free", "google/gemini-2.5-flash:free"];
+export const FALLBACK_MODELS = [
+  "qwen/qwen3-next-80b-a3b-instruct:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+];
 
 /**
  * Per-request model settings shared by every model we build (primary + the proactive single-shot).
