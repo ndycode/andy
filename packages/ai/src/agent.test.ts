@@ -77,6 +77,31 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     expect(reply).toBe("logged grab ₱180 transport 🛵");
   });
 
+  test("empty no-op turn (no tool call + no text) retries instead of replying 'got it.'", async () => {
+    // A free model occasionally returns an empty turn — no tool call, no text. The first attempt is
+    // empty; the retry produces a real read answer. The guard must retry (not dead-end on the
+    // terminal "got it." fallback), and since the empty turn buffered nothing, no double-log risk.
+    let call = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        call++;
+        if (call === 1) return result([{ type: "text", text: "" }], "stop"); // empty no-op turn
+        if (call === 2) {
+          return result(
+            [{ type: "tool-call", toolCallId: "c1", toolName: "getOverview", input: "{}" }],
+            "tool-calls",
+          );
+        }
+        return result([{ type: "text", text: "in ₱25,000, out ₱8,000, net ₱17,000" }], "stop");
+      },
+    });
+    const { reply, writes } = await runAgent("how am i doing", base, model);
+    expect(call).toBeGreaterThanOrEqual(2); // first turn was empty → retried
+    expect(writes).toHaveLength(0);
+    expect(reply).not.toBe("got it.");
+    expect(reply.toLowerCase()).toContain("net");
+  });
+
   test("C3: read tool with no final text does NOT reply 'got it.'", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({

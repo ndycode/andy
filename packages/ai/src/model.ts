@@ -1,38 +1,58 @@
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { createGroq } from "@ai-sdk/groq";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { LanguageModel } from "ai";
 
 /**
- * Model strategy (see the fallback audit + migration plan). The Vercel AI Gateway free-tier rate
- * limit is ACCOUNT-WIDE — applied before model routing — so switching models *within* the gateway
- * (and even BYOK through it) does NOT escape a GatewayRateLimitError. The only $0 escape is calling
- * a provider DIRECTLY, which hits that provider's own separate free quota pool.
+ * Model strategy — OpenRouter.
  *
- *  Tier 0 — gateway: Haiku (preferred quality) with in-request fallbacks to Gemini/DeepSeek. Those
- *           cover PROVIDER outages (5xx/overload), not the account throttle.
- *  Tier 1 — direct Google Gemini (own free quota: ~10 RPM / 250 RPD on flash).
- *  Tier 2 — direct Groq (own free quota: ~30 RPM / 14,400 RPD, no card) — deepest burst headroom.
+ * Andy routes every model call through OpenRouter, a single aggregator that fronts hundreds of
+ * models behind one key (OPENROUTER_API_KEY) and one OpenAI-compatible endpoint. This replaced the
+ * old Vercel-AI-Gateway + direct-Google + direct-Groq three-tier scheme: that existed only to dodge
+ * the gateway's ACCOUNT-WIDE free-tier throttle by hopping to providers with separate quota pools.
+ * OpenRouter is itself a router with NATIVE cross-model fallback, so one provider now does what the
+ * three hand-rolled tiers did — with far less code.
  *
- * Each direct tier is null unless its key is set, so behavior is unchanged without the env var
- * (dev/test). agent.ts appends the non-null tiers to the retry chain in order; they fire only after
- * the gateway tier rate-limits + backs off.
+ * Fallback is native, not hand-rolled: the `models` setting (below) lists backup models OpenRouter
+ * tries IN ORDER, within a single request, when the primary errors or is rate-limited. agent.ts's
+ * retry/backoff loop still wraps this for transport faults and the hard deadline, but it no longer
+ * needs a multi-tier candidate array — one OpenRouter model carries the whole chain.
+ *
+ * Model picks: all FREE (`:free`) and all verified tool-callers. `openai/gpt-oss-120b` is primary
+ * because it was live-tested against Andy's real ~18-tool schema and tool-calls cleanly; the same
+ * test caught `meta-llama/llama-3.3-70b` failing with "Failed to call a function", so it is
+ * deliberately EXCLUDED from the chain. The fallbacks are other free, tool-capable instruct models.
  */
-export const MODEL_ID = "anthropic/claude-haiku-4.5";
+
+/** Primary model id. Exported (was the gateway model id before) so callers/tests can reference it. */
+export const MODEL_ID = "openai/gpt-oss-120b:free";
 
 /**
- * In-request gateway fallbacks for provider faults. gemini-2.5-flash (GA-stable; the 3-preview has
- * tool-call bugs) then deepseek-v3.2 (independent provider). Both cheaper than Haiku.
+ * Backup models OpenRouter falls through to, in order, when the primary errors/rate-limits — all
+ * free + tool-capable. gpt-oss-20b (same family, lighter) → qwen3-coder (strong tool use, 1M ctx) →
+ * gemini-2.5-flash free. NOT llama-3.3-70b (fails this tool schema; see note above).
  */
-export const GATEWAY_FALLBACKS = ["google/gemini-2.5-flash", "deepseek/deepseek-v3.2"];
+export const FALLBACK_MODELS = [
+  "openai/gpt-oss-20b:free",
+  "qwen/qwen3-coder:free",
+  "google/gemini-2.5-flash:free",
+];
 
-/** Tier 1: direct Google key → separate free quota pool that bypasses the gateway throttle. */
-export const directGoogle: LanguageModel | null = process.env.GOOGLE_GENERATIVE_AI_API_KEY
-  ? createGoogleGenerativeAI()("gemini-2.5-flash")
-  : null;
+/**
+ * Lazily-built OpenRouter provider. Built on first use (not at import) so loading this module never
+ * throws when OPENROUTER_API_KEY is unset — tests inject a mock model and never touch this path, and
+ * /health must keep answering without the AI key present. The provider reads OPENROUTER_API_KEY from
+ * the environment; `compatibility: "strict"` is the documented mode for the real OpenRouter API.
+ */
+let _provider: ReturnType<typeof createOpenRouter> | null = null;
+function provider(): ReturnType<typeof createOpenRouter> {
+  if (!_provider) _provider = createOpenRouter({ compatibility: "strict" });
+  return _provider;
+}
 
-/** Tier 2: direct Groq key → another separate free pool (highest daily headroom, no card).
- * gpt-oss-120b, NOT llama-3.3-70b: live-tested against the real 18-tool schema, llama failed with
- * "Failed to call a function" while gpt-oss-120b tool-calls cleanly (log, multi-entry, and reads). */
-export const directGroq: LanguageModel | null = process.env.GROQ_API_KEY
-  ? createGroq()("openai/gpt-oss-120b")
-  : null;
+/**
+ * The default production model: the primary id plus its native fallback chain. agent.ts passes this
+ * (a single LanguageModel) into the tool loop; OpenRouter handles cross-model fall-through server-side.
+ * Built lazily via a getter so the provider is only constructed when a real run needs it.
+ */
+export function defaultModel(): LanguageModel {
+  return provider()(MODEL_ID, { models: FALLBACK_MODELS });
+}

@@ -1,5 +1,5 @@
 import { generateText, type LanguageModel } from "ai";
-import { MODEL_ID } from "./model";
+import { defaultModel } from "./model";
 
 /**
  * Render a proactive message in Andy's voice from a structured brief.
@@ -18,7 +18,9 @@ Sound like a clever friend, supportive not preachy. Output only the message text
 export async function composeProactive(
   brief: string,
   fallback: string,
-  model: LanguageModel = MODEL_ID,
+  // Defaults to the production OpenRouter model (resolved lazily so an unset OPENROUTER_API_KEY never
+  // breaks import). Tests inject a mock model.
+  model: LanguageModel = defaultModel(),
 ): Promise<string> {
   try {
     const { text } = await generateText({

@@ -9,9 +9,8 @@ import { z } from "zod";
  *  - Presence-only checks (`min(1)`), NOT format assumptions. A `.url()` rule rejected valid
  *    Postgres connection strings, and `min(16)` could reject a working token — both would brick
  *    a healthy deploy. We only care that the secret is *present*.
- *  - AI_GATEWAY_API_KEY is OPTIONAL: on Vercel the AI Gateway authenticates via OIDC
- *    (VERCEL_OIDC_TOKEN) with no explicit key, so requiring it would crash a correctly-configured
- *    deployment.
+ *  - OPENROUTER_API_KEY is OPTIONAL here so /health and tests never crash when it is absent; the
+ *    OpenRouter provider reads it from the environment and a real model run fails loudly without it.
  *  - Validation is LAZY (first property access), not at import. `@t3-oss/env-core` validates when
  *    createEnv() runs, so calling it at module load would crash the whole function — including
  *    /health — if any var were missing. We defer it so a missing secret fails the specific request
@@ -25,9 +24,7 @@ type Env = {
   WEBHOOK_URL_TOKEN: string;
   CRON_SECRET: string;
   ALLOWED_PHONE: string;
-  AI_GATEWAY_API_KEY?: string;
-  GOOGLE_GENERATIVE_AI_API_KEY?: string;
-  GROQ_API_KEY?: string;
+  OPENROUTER_API_KEY?: string;
   APP_TIMEZONE?: string;
   APP_TIMEZONE_OFFSET_MINUTES?: string;
 };
@@ -44,11 +41,9 @@ function build(): Env {
       WEBHOOK_URL_TOKEN: z.string().min(1),
       CRON_SECRET: z.string().min(1),
       ALLOWED_PHONE: z.string().min(1),
-      AI_GATEWAY_API_KEY: z.string().min(1).optional(),
-      // Optional $0 throttle-escape keys: direct provider calls that bypass the gateway's
-      // account-wide free-tier rate limit. Each enables a fallback tier when present.
-      GOOGLE_GENERATIVE_AI_API_KEY: z.string().min(1).optional(),
-      GROQ_API_KEY: z.string().min(1).optional(),
+      // Single key for all model calls — Andy routes every request through OpenRouter. Optional so
+      // /health and tests run without it; the provider reads it from env and a real run fails loudly.
+      OPENROUTER_API_KEY: z.string().min(1).optional(),
       // Timezone config (fixed-offset model). APP_TIMEZONE is a display label for the agent prompt;
       // APP_TIMEZONE_OFFSET_MINUTES is minutes east of UTC for the date math. Both default to Manila
       // (read directly in @repo/shared/time at module load; declared here for validation + docs).

@@ -2,7 +2,7 @@ import { getLastTransaction, recallMemories, recentTurns, topHabits } from "@rep
 import { log } from "@repo/shared/log";
 import { type LanguageModel, type ModelMessage, stepCountIs, ToolLoopAgent } from "ai";
 import { createWriteBuffer, type ToolContext } from "./context";
-import { directGoogle, directGroq, GATEWAY_FALLBACKS, MODEL_ID } from "./model";
+import { defaultModel } from "./model";
 import { SYSTEM_PROMPT } from "./prompts";
 import { buildTools } from "./tools";
 
@@ -35,7 +35,10 @@ const READ_TOOLS = new Set([
 export async function runAgent(
   text: string,
   base: Omit<ToolContext, "addWrite" | "lastTransaction" | "peekWrites">,
-  model: LanguageModel | LanguageModel[] = MODEL_ID,
+  // Default is the production OpenRouter model (primary + native fallback chain, built lazily so an
+  // unset OPENROUTER_API_KEY never breaks import/tests). Tests inject a mock model, or an ARRAY of
+  // models to exercise the cross-model fall-through in the retry loop below.
+  model: LanguageModel | LanguageModel[] = defaultModel(),
   // Hard wall-clock budget for the whole retry/fallback chain. Must stay well under the function's
   // maxDuration so a slow run aborts CLEANLY into the handler's catch (marker stays 'claimed',
   // retryable, friendly reply) instead of being hard-killed by the platform (which skips the catch,
@@ -73,28 +76,17 @@ export async function runAgent(
   const priorMessages: ModelMessage[] = history.map((t) => ({ role: t.role, content: t.content }));
   const instructions = SYSTEM_PROMPT + dateBlock + memoryBlock + habitBlock;
 
-  // Build the per-attempt model chain. When the prod default is in use, attempt 0 is Haiku via the
-  // gateway (with in-request provider fallbacks), and attempt 1+ falls to the direct Google/Groq
-  // keys — SEPARATE rate-limit pools that escape the gateway's account-wide throttle. A test may
-  // inject a single model (one-element chain, reused on every retry) or an explicit array of models
-  // (one candidate each) to exercise the multi-tier fall-through.
-  type Candidate = { model: LanguageModel; providerOptions?: Record<string, unknown> };
-  const injected = Array.isArray(model) || model !== MODEL_ID;
-  const candidates: Candidate[] = Array.isArray(model)
-    ? model.map((m) => ({ model: m }))
-    : injected
-      ? [{ model }]
-      : [
-          { model: MODEL_ID, providerOptions: { gateway: { models: GATEWAY_FALLBACKS } } },
-          ...(directGoogle ? [{ model: directGoogle } satisfies Candidate] : []),
-          ...(directGroq ? [{ model: directGroq } satisfies Candidate] : []),
-        ];
+  // Build the per-attempt model chain. The production default is a SINGLE OpenRouter model that
+  // already carries its own native cross-model fallback (the `models` list), so there is no longer a
+  // hand-rolled multi-tier array for the default case. A test may still inject one model (reused on
+  // every retry) or an explicit array of models (one candidate each) to exercise fall-through.
+  const candidates: LanguageModel[] = Array.isArray(model) ? model : [model];
 
   // Each attempt gets a FRESH write buffer: a 429/fallback mid-tool-loop must not replay
   // already-buffered writes into the next attempt (that would double-log).
   const result = await withRetry(
     async (i: number) => {
-      const cand = candidates[Math.min(i, candidates.length - 1)] as Candidate; // clamp to last tier
+      const cand = candidates[Math.min(i, candidates.length - 1)] as LanguageModel; // clamp to last tier
       const { addWrite, peek, drain } = createWriteBuffer();
       const ctx: ToolContext = {
         ...base,
@@ -103,7 +95,7 @@ export async function runAgent(
         peekWrites: peek,
       };
       const agent = new ToolLoopAgent({
-        model: cand.model,
+        model: cand,
         instructions,
         tools: buildTools(ctx),
         // 12 steps: a busy message can log several entries AND run a follow-up read ("log these 5
@@ -125,8 +117,18 @@ export async function runAgent(
         messages: [...priorMessages, { role: "user", content: text }],
         // Abort this attempt if it would run past the overall budget — clean abort, not a hard kill.
         abortSignal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
-        ...(cand.providerOptions ? { providerOptions: cand.providerOptions } : {}),
       });
+      // Empty no-op turn guard: a free model occasionally returns NEITHER a tool call NOR any final
+      // text (seen ~1/80 live on gpt-oss-120b:free for a read like "how am i doing"). That would fall
+      // through to synthesizeReply's terminal "got it." — a confusing non-answer. Since the turn made
+      // zero tool calls, NOTHING was buffered, so retrying (fresh buffer, possibly the next fallback
+      // model) is safe and can't double-log. Throw a transient-classified error to reuse withRetry's
+      // backoff/fall-through; a turn that ran a read tool but went silent is NOT caught here (it has a
+      // tool call) and still flows to synthesizeReply, which surfaces that read's result.
+      const toolCallCount = gen.steps?.reduce((n, s) => n + (s.toolCalls?.length ?? 0), 0) ?? 0;
+      if (toolCallCount === 0 && !gen.text?.trim()) {
+        throw new Error("empty model response: no tool call and no text");
+      }
       return { gen, writes: drain() };
     },
     candidates.length,
@@ -136,7 +138,7 @@ export async function runAgent(
   const reply = result.gen.text?.trim() || synthesizeReply(result.gen, result.writes);
 
   // Cheap usage observability: one structured line per run (tokens + steps + tool calls).
-  // Lets you watch the free-tier AI Gateway budget without any external tooling.
+  // Lets you watch the OpenRouter free-tier budget without any external tooling.
   const usage = result.gen.totalUsage;
   log.info("agent.run", {
     userId: base.userId,
@@ -166,9 +168,11 @@ function errText(err: unknown): string {
   return `${e.message} ${status} ${cause}`;
 }
 
-/** Errors worth RETRYING the same tier (with backoff): free-tier rate limits + transient faults. */
+/** Errors worth RETRYING the same tier (with backoff): free-tier rate limits + transient faults.
+ *  Includes the empty-no-op-turn guard (no tool call + no text) — a free-model wobble that a retry
+ *  (fresh buffer, possibly the next fallback model) usually resolves, and which buffered no writes. */
 function isTransient(err: unknown): boolean {
-  return /429|rate.?limit|too many requests|50[0-4]|\boverloaded\b|service unavailable|temporarily unavailable|context deadline exceeded|timeout|timed out|abort|aborted|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network/i.test(
+  return /429|rate.?limit|too many requests|50[0-4]|\boverloaded\b|service unavailable|temporarily unavailable|context deadline exceeded|timeout|timed out|abort|aborted|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|network|empty model response/i.test(
     errText(err),
   );
 }

@@ -58,13 +58,13 @@ This is a finance app, so the bar is *the numbers are never wrong and nothing do
 
 **Same-message corrections that never clobber history.** "grab 180, no make it 200" in one message must edit the *just-logged* entry — not an unrelated historical row. The edit/delete path forward-replays the in-turn write buffer to target the correct row, and falls back to a stable snapshot id (replay-safe across retries) only when the turn logged nothing. Adversarially reviewed and regression-tested.
 
-**Resilient multi-model inference.** The agent runs on a tiered fallback chain — Claude Haiku via gateway, then direct Gemini and Groq pools — with jittered backoff, instant cross-pool failover on rate limits, a hard time budget so a slow run aborts *cleanly* (never a platform hard-kill that strands state), and error classification that skips a dead provider tier instead of dead-ending. The per-message token footprint was profiled and roughly halved.
+**Resilient multi-model inference.** The agent routes through OpenRouter on a free, tool-capable primary model (`openai/gpt-oss-120b`, verified against the full tool schema) with native cross-model fallback to other free models — wrapped in jittered backoff, a hard time budget so a slow run aborts *cleanly* (never a platform hard-kill that strands state), and error classification that skips a dead model instead of dead-ending. The per-message token footprint was profiled and roughly halved.
 
 **Observability + graceful degradation.** Every run emits one structured JSON line (tokens, steps, tool calls). Failures map to honest user replies ("too many at once, give me a sec" vs "out of credits") rather than a generic error, and a throttled message is always retryable, never silently dropped.
 
 ## Project status
 
-This is a personal, single-user project. Running it live requires the author's own Sendblue, Neon, and AI-Gateway accounts, so it's intended to be **read as an engineering showcase** rather than cloned and run. The correctness-critical core (money math, time/timezone, dedup logic, agent tool logic) is fully unit- and integration-tested without any of those accounts.
+This is a personal, single-user project. Running it live requires the author's own Sendblue, Neon, and OpenRouter accounts, so it's intended to be **read as an engineering showcase** rather than cloned and run. The correctness-critical core (money math, time/timezone, dedup logic, agent tool logic) is fully unit- and integration-tested without any of those accounts.
 
 ```bash
 bun install
