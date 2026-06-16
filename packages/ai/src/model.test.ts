@@ -39,6 +39,8 @@ describe("model wiring (OpenRouter)", () => {
       settings?: { provider?: { data_collection?: string; zdr?: boolean } };
     };
     expect(m.settings?.provider?.data_collection).toBe("deny");
-    expect(m.settings?.provider?.zdr).toBe(true);
+    // NOT zdr:true — the free pool has no Zero-Data-Retention endpoints, so it would 'No endpoints
+    // found matching your data policy' every request. data_collection:deny is the strongest free-safe policy.
+    expect(m.settings?.provider?.zdr).toBeUndefined();
   });
 });

@@ -53,13 +53,17 @@ export const FALLBACK_MODELS = ["openai/gpt-oss-20b:free", "google/gemini-2.5-fl
  *    visible text. 'low' keeps enough reasoning for clean tool-calls while cutting latency and freeing
  *    the budget for the actual reply. (We keep reasoning rather than 'none' because it measurably helps
  *    multi-entry parsing and the edit-vs-relog decision.)
- *  - provider.data_collection 'deny' + zdr: this is a personal-FINANCE app; prompts carry transaction
- *    notes and durable memories. Route only to endpoints that don't retain/train on the data.
+ *  - provider.data_collection 'deny': this is a personal-FINANCE app; prompts carry transaction notes
+ *    and durable memories. Route only to endpoints that don't retain/train on the data. (We do NOT set
+ *    `zdr: true` — that stricter Zero-Data-Retention flag has NO matching endpoints on the free pool,
+ *    so OpenRouter rejects every request with "No endpoints found matching your data policy". With
+ *    free-only models, `data_collection: deny` is the strongest policy that still has somewhere to
+ *    route; ZDR would need paid/ZDR-certified endpoints.)
  */
 const MODEL_SETTINGS = {
   models: FALLBACK_MODELS,
   reasoning: { effort: "low" as const },
-  provider: { data_collection: "deny" as const, zdr: true },
+  provider: { data_collection: "deny" as const },
 };
 
 /**
