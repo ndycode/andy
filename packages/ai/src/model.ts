@@ -26,21 +26,24 @@ import type { LanguageModel } from "ai";
 export const MODEL_ID = "openai/gpt-oss-120b:free";
 
 /**
- * Backup models OpenRouter falls through to, in order, when the primary errors/rate-limits — all
- * free + tool-capable. gpt-oss-20b (same family, lighter) → qwen3-coder (strong tool use, 1M ctx) →
- * gemini-2.5-flash free. NOT llama-3.3-70b (fails this tool schema; see note above).
+ * Backup models OpenRouter falls through to, in order, when the primary errors/rate-limits — both
+ * free + tool-capable. Deliberately SHORT (2 entries) so the chain fails FAST under account-wide
+ * throttling: each hop costs a full request round-trip, and when the whole free pool is exhausted a
+ * longer chain just adds latency (~19s for 3 hops, observed) before the inevitable rate-limit error.
+ *  1. gpt-oss-20b (same family as the primary, lighter) — cleanest tool-caller for a same-shape retry.
+ *  2. gemini-2.5-flash (DIFFERENT provider family) — the most useful hop: least likely to be throttled
+ *     at the same moment as the gpt-oss models, so it actually covers a per-model outage.
+ * Dropped qwen3-coder: same capacity tier as the others (little diversity) and the entry that most
+ * often surfaced the upstream rate-limit in testing. NOT llama-3.3-70b (fails this tool schema).
  *
- * NOTE (single-throttle caveat): all four are `:free`, so they share ONE OpenRouter account's
- * account-wide free-tier throttle — this native chain covers PER-MODEL faults (a model down/overloaded),
- * NOT an account-wide rate limit (every entry hits the same limit). The old direct-provider design had
- * separate quota pools; this does not. If account throttling becomes real, add a cheap PAID model as the
- * last entry (its own pool) — a one-line change.
+ * NOTE (single-throttle caveat, free-only by design): all entries are `:free`, so they share ONE
+ * OpenRouter account's account-wide free-tier throttle — this chain covers PER-MODEL faults (a model
+ * down/overloaded), NOT an account-wide rate limit (every entry hits the same limit). That escape
+ * would need a separate quota pool (a paid model / own provider key), which this project intentionally
+ * forgoes. agent.ts's deadline-bounded retry + the handler's friendly-error path absorb a fully
+ * throttled pool gracefully (clean retryable reply, never a crash or lost message).
  */
-export const FALLBACK_MODELS = [
-  "openai/gpt-oss-20b:free",
-  "qwen/qwen3-coder:free",
-  "google/gemini-2.5-flash:free",
-];
+export const FALLBACK_MODELS = ["openai/gpt-oss-20b:free", "google/gemini-2.5-flash:free"];
 
 /**
  * Per-request model settings shared by every model we build (primary + the proactive single-shot).
