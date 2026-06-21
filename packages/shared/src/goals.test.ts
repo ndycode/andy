@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { goalPace, goalProgressMessage } from "./goals";
 
 // Plan §5 shared constants
@@ -11,6 +12,13 @@ const base = {
 };
 
 describe("AC5 goal pace — exact plan fixtures", () => {
+  test("does not re-export internal goal input or verdict types", () => {
+    const source = readFileSync(new URL("./goals.ts", import.meta.url), "utf8");
+
+    expect(source).not.toContain("GoalProgressInput");
+    expect(source).not.toContain("GoalPaceVerdict");
+  });
+
   test("Behind pace (saved 0.20 < elapsed 0.27)", () => {
     expect(goalProgressMessage({ ...base, savedCentavos: 400_000 })).toBe(
       "Emergency Fund: ₱4,000.00 / ₱20,000.00 (20%). Behind pace — save about ₱1,000.00/week to hit Sep 30.",

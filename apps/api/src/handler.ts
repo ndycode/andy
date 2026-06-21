@@ -1,40 +1,18 @@
 import { runAgent } from "@repo/ai";
-import {
-  budgetStatusesFor,
-  claimSlot,
-  flushWrites,
-  learnHabit,
-  localDate,
-  resolveUserId,
-} from "@repo/db";
+import { budgetStatusesFor, claimSlot, flushWrites, learnHabit, resolveUserId } from "@repo/db";
 import { isAllowed } from "@repo/shared/allowlist";
-import { budgetReactionLines, countsTowardBudgetReaction } from "@repo/shared/budget";
-import type { Category } from "@repo/shared/categories";
 import { contentDedupKey } from "@repo/shared/dedup";
 import { env } from "@repo/shared/env";
 import { failureReply } from "@repo/shared/errors";
 import { errInfo, log } from "@repo/shared/log";
-import { APP_TIMEZONE, monthRange } from "@repo/shared/time";
-import { sendMessage, sendReaction, sendTyping } from "./sendblue";
+import { APP_TIMEZONE, localDate } from "@repo/shared/time";
+import { budgetReaction } from "./handler-budget-reaction";
+import { buildFlushIntents } from "./handler-flush-intents";
+import { runPostCommitEffects } from "./handler-post-commit-effects";
+import type { InboundDeps } from "./handler-types";
+import { sendMessage, sendReaction, sendTyping } from "./sendblue-outbound";
 
-/**
- * Injectable collaborators for the handler — the DB/agent/messaging side effects. Production passes
- * nothing (DEFAULT_DEPS, the real imports); tests inject fakes so the three-phase ORCHESTRATION
- * (claim/skip/superseded branches, the post-flush send-failure boundary, the reaction append) can be
- * exercised deterministically without a live DB, a real LLM, the network, or process-global module
- * mocks. This is purely for testability — the production code path is unchanged.
- */
-export interface InboundDeps {
-  claimSlot: typeof claimSlot;
-  resolveUserId: typeof resolveUserId;
-  runAgent: typeof runAgent;
-  flushWrites: typeof flushWrites;
-  budgetStatusesFor: typeof budgetStatusesFor;
-  learnHabit: typeof learnHabit;
-  sendMessage: typeof sendMessage;
-  sendReaction: typeof sendReaction;
-  sendTyping: typeof sendTyping;
-}
+export type { InboundDeps } from "./handler-types";
 
 const DEFAULT_DEPS: InboundDeps = {
   claimSlot,
@@ -67,9 +45,7 @@ export async function handleInbound(
     runAgent,
     flushWrites,
     budgetStatusesFor,
-    learnHabit,
     sendMessage,
-    sendReaction,
     sendTyping,
   } = deps;
   if (!isAllowed(phone, env.ALLOWED_PHONE)) return; // AC10: drop unknown silently
@@ -106,11 +82,7 @@ export async function handleInbound(
     // failed turn insert was silently swallowed while the completed marker turned the redelivery into
     // a no-op, permanently losing the turn. Now turn persistence is atomic with the marker — a failure
     // rolls the whole flush back, leaves the marker 'claimed', and the redelivery retries.
-    const flushIntents: typeof writes = [
-      ...writes,
-      { type: "saveTurn", userId, role: "user", content: text },
-      { type: "saveTurn", userId, role: "assistant", content: reply },
-    ];
+    const flushIntents = buildFlushIntents({ userId, inboundText: text, reply, writes });
     const flushed = await flushWrites(dedupId, flushIntents);
 
     // "superseded": a concurrent worker stole our slot under an infra stall and completed the marker
@@ -123,7 +95,14 @@ export async function handleInbound(
 
     // In-the-moment reaction (Wave 3): if a just-logged expense crossed a budget threshold,
     // append one Andy line to the SAME reply — zero extra messages, the data's already here.
-    const reaction = await budgetReaction(userId, writes, budgetStatusesFor).catch(() => null);
+    let reaction: string | null = null;
+    try {
+      reaction = await budgetReaction(userId, writes, budgetStatusesFor);
+    } catch (reactionErr) {
+      if (!(reactionErr instanceof Error)) throw reactionErr;
+      const reactionInfo = errInfo(reactionErr);
+      log.error("inbound.budget_reaction_failed", { corr, ...reactionInfo });
+    }
     // The writes are already COMMITTED at this point. A send failure here must NOT fall into the
     // generic-failure catch below — that would tell the user "something went wrong" about data that
     // was actually saved, prompting a resend (the marker now dedups the data, but the reply is a lie).
@@ -131,62 +110,27 @@ export async function handleInbound(
     try {
       await sendMessage(phone, reaction ? `${reply}\n\n${reaction}` : reply);
     } catch (sendErr) {
-      log.error("inbound.reply_send_failed", { corr, ...errInfo(sendErr) });
+      if (!(sendErr instanceof Error)) throw sendErr;
+      const info = errInfo(sendErr);
+      log.error("inbound.reply_send_failed", { corr, ...info });
     }
 
     log.info("inbound.done", { corr, writes: writes.length, reacted: Boolean(reaction) });
 
-    // Learn merchant→category habits. Best-effort (allSettled) and idempotent reinforcement, so —
-    // unlike the conversation turns above — it's fine for this to run post-commit; a miss just means
-    // one fewer reinforcement, not lost data. MUST await: serverless freezes the instance on return.
-    const after: Promise<unknown>[] = [];
-    for (const w of writes) {
-      if (w.type === "expense" && w.note) after.push(learnHabit(userId, w.note, w.category));
-    }
-    if (after.length > 0) await Promise.allSettled(after);
-
-    // Tapback requires the real inbound Apple GUID (a synthesized dedup key won't work), so only
-    // react when Sendblue actually gave us a message_handle. Best-effort (self-catching), but MUST
-    // be awaited: on serverless the instance can freeze on return and kill an unawaited POST.
-    if (writes.length > 0 && messageId) await sendReaction(phone, "love", messageId);
+    await runPostCommitEffects({ deps, phone, userId, writes, messageId });
   } catch (err) {
     // Only PRE-flush errors reach here (agent or flush threw): the marker stays 'claimed', so a
     // redelivery safely retries — nothing committed, nothing lost. The post-flush reply send catches
     // its own failure above, so a committed turn never produces this misleading failure reply.
-    log.error("inbound.error", { corr, ...errInfo(err) });
-    await sendMessage(phone, failureReply(err)).catch(() => {});
-  }
-}
-
-/**
- * Budget heads-up line(s) for the categories a just-logged expense crossed a threshold in, on THIS
- * message. priorSpent = current month-to-date spend minus what we just logged in that category, so a
- * line fires only on the crossing transaction (not on every later expense in the same category).
- *
- * A single message can log into several categories ("lunch 300, grab 150, shopping 2k"), each of
- * which may cross its own threshold — surface ALL of them (one line each), not just the first, so no
- * relevant signal is silently dropped. Returns the joined block, or null if nothing crossed.
- *
- * Only current-month expenses count: budgetStatusesFor sums the current Manila month, so a
- * backdated expense (localDate in a past month) is NOT part of `spent` and must be excluded from
- * `justLogged` too — otherwise we'd subtract it from this month's total and compute a wrong (even
- * negative) priorSpent, firing a bogus alert.
- */
-async function budgetReaction(
-  userId: string,
-  writes: Awaited<ReturnType<typeof runAgent>>["writes"],
-  budgetStatusesForFn: typeof budgetStatusesFor,
-): Promise<string | null> {
-  const thisMonth = monthRange();
-  const loggedByCategory = new Map<Category, number>();
-  for (const w of writes) {
-    if (w.type === "expense" && countsTowardBudgetReaction(w.localDate, thisMonth)) {
-      loggedByCategory.set(w.category, (loggedByCategory.get(w.category) ?? 0) + w.amountCentavos);
+    if (!(err instanceof Error)) throw err;
+    const info = errInfo(err);
+    log.error("inbound.error", { corr, ...info });
+    try {
+      await sendMessage(phone, failureReply(err));
+    } catch (sendErr) {
+      if (!(sendErr instanceof Error)) throw sendErr;
+      const sendInfo = errInfo(sendErr);
+      log.error("inbound.failure_reply_send_failed", { corr, ...sendInfo });
     }
   }
-  if (loggedByCategory.size === 0) return null;
-
-  const statuses = await budgetStatusesForFn(userId, [...loggedByCategory.keys()]);
-  const lines = budgetReactionLines(statuses, loggedByCategory);
-  return lines.length > 0 ? lines.join("\n") : null;
 }

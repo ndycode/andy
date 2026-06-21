@@ -51,7 +51,8 @@ export async function composeProactive(
     const allowed = figures(`${brief} ${fallback}`);
     const numbersIntact = [...figures(out)].every((n) => allowed.has(n));
     return numbersIntact ? out : fallback;
-  } catch {
+  } catch (err) {
+    if (!(err instanceof Error)) throw err;
     return fallback;
   }
 }

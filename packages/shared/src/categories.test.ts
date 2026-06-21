@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import * as categories from "./categories";
 import { coerceCategory, coerceExpenseCategory, isCategory } from "./categories";
 
 describe("coerceCategory", () => {
@@ -48,6 +49,10 @@ describe("coerceCategory", () => {
     expect(isCategory("Food")).toBe(true);
     expect(isCategory("food")).toBe(false);
     expect(isCategory("groceries")).toBe(false);
+  });
+
+  test("public barrel does not expose the internal synonym table", () => {
+    expect("CATEGORY_SYNONYMS" in categories).toBe(false);
   });
 });
 

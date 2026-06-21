@@ -7,6 +7,15 @@ import { defaultModel, FALLBACK_MODELS, MODEL_ID, MODEL_SETTINGS_FOR_TEST } from
 // key, so this runs offline. A dummy key avoids any chance the provider complains during construction.
 process.env.OPENROUTER_API_KEY ||= "sk-or-test-dummy";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function expectRecord(value: unknown, label: string): Record<string, unknown> {
+  if (isRecord(value)) return value;
+  throw new Error(`${label} must be an object`);
+}
+
 describe("model wiring (OpenRouter)", () => {
   test("primary model id is the verified tool-caller, not a fallback", () => {
     expect(MODEL_ID).toBe("openai/gpt-oss-120b:free");
@@ -21,26 +30,30 @@ describe("model wiring (OpenRouter)", () => {
   });
 
   test("defaultModel() wires the fallback chain into the provider settings", () => {
-    const m = defaultModel() as unknown as { modelId?: string; settings?: Record<string, unknown> };
+    const m = expectRecord(defaultModel(), "model");
+    const settings = expectRecord(m.settings, "settings");
+
     expect(m.modelId).toBe(MODEL_ID);
-    expect(m.settings?.models).toEqual(FALLBACK_MODELS);
+    expect(settings.models).toEqual(FALLBACK_MODELS);
   });
 
   test("defaultModel() sets a bounded reasoning effort (latency + empty-turn fix)", () => {
-    const m = defaultModel() as unknown as { settings?: { reasoning?: { effort?: string } } };
-    // gpt-oss-* are reasoning models; leaving this unset is the root cause of the latency tail and
-    // the reasoning-eats-the-output-budget empty turns. Assert it stays bounded (not high/xhigh).
-    expect(m.settings?.reasoning?.effort).toBe("low");
+    const m = expectRecord(defaultModel(), "model");
+    const settings = expectRecord(m.settings, "settings");
+    const reasoning = expectRecord(settings.reasoning, "settings.reasoning");
+
+    expect(reasoning.effort).toBe("low");
     expect(MODEL_SETTINGS_FOR_TEST.reasoning.effort).toBe("low");
   });
 
   test("defaultModel() denies data retention (finance-app privacy)", () => {
-    const m = defaultModel() as unknown as {
-      settings?: { provider?: { data_collection?: string; zdr?: boolean } };
-    };
-    expect(m.settings?.provider?.data_collection).toBe("deny");
+    const m = expectRecord(defaultModel(), "model");
+    const settings = expectRecord(m.settings, "settings");
+    const provider = expectRecord(settings.provider, "settings.provider");
+
+    expect(provider.data_collection).toBe("deny");
     // NOT zdr:true — the free pool has no Zero-Data-Retention endpoints, so it would 'No endpoints
     // found matching your data policy' every request. data_collection:deny is the strongest free-safe policy.
-    expect(m.settings?.provider?.zdr).toBeUndefined();
+    expect(provider.zdr).toBeUndefined();
   });
 });

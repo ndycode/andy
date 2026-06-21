@@ -14,7 +14,8 @@
     "./dedup": "./src/dedup.ts",
     "./errors": "./src/errors.ts",
     "./env": "./src/env.ts",
-    "./log": "./src/log.ts"
+    "./log": "./src/log.ts",
+    "./security": "./src/security.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

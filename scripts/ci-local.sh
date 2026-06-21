@@ -24,14 +24,29 @@ echo "▸ starting ephemeral Postgres for integration tests…"
 cleanup
 docker run -d --name "$PG_NAME" -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=andy_test \
   -p "${PG_PORT}:5432" postgres:16-alpine >/dev/null
-# Wait for readiness (max ~60s).
+echo "▸ waiting for Postgres readiness…"
+ready=0
 for _ in $(seq 1 60); do
-  docker exec "$PG_NAME" pg_isready -U postgres >/dev/null 2>&1 && break
+  if docker exec -e PGPASSWORD=postgres "$PG_NAME" \
+    pg_isready -h 127.0.0.1 -p 5432 -U postgres -d andy_test >/dev/null 2>&1 &&
+    docker exec -e PGPASSWORD=postgres "$PG_NAME" \
+      psql -h 127.0.0.1 -p 5432 -U postgres -d andy_test \
+        -v ON_ERROR_STOP=1 -c "select 1" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
   sleep 1
 done
+if [[ "$ready" != "1" ]]; then
+  echo "Postgres did not become ready for integration tests." >&2
+  docker logs "$PG_NAME" >&2 || true
+  exit 1
+fi
 
 echo "▸ integration tests (DB layer vs real Postgres)";
-TEST_DATABASE_URL="$TEST_URL" bun test packages/db/src/queries.integration.test.ts
+for integration_test in packages/db/src/*.integration.test.ts; do
+  TEST_DATABASE_URL="$TEST_URL" bun test "$integration_test"
+done
 
 echo ""
 echo "✅ Full CI gate passed locally (typecheck · lint · unit · build · DB integration)."

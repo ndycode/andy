@@ -62,4 +62,15 @@ describe("composeProactive — money-correctness guard", () => {
     });
     expect(await composeProactive(brief, fallback, model)).toBe(fallback);
   });
+
+  test("a non-Error model failure is rethrown instead of normalized to fallback", async () => {
+    const modelFailure = { reason: "bad-model-value" } as const;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        throw modelFailure;
+      },
+    });
+
+    await expect(composeProactive(brief, fallback, model)).rejects.toBe(modelFailure);
+  });
 });

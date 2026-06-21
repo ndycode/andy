@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { constantTimeEqual, isAllowed, normalizePhone } from "./allowlist";
+import { isAllowed, normalizePhone } from "./allowlist";
 
 describe("normalizePhone", () => {
   test.each([
@@ -27,10 +27,4 @@ describe("isAllowed (AC10)", () => {
   test("empty inbound rejected", () => {
     expect(isAllowed("", allowed)).toBe(false);
   });
-});
-
-describe("constantTimeEqual", () => {
-  test("equal strings", () => expect(constantTimeEqual("abc", "abc")).toBe(true));
-  test("different length", () => expect(constantTimeEqual("abc", "abcd")).toBe(false));
-  test("same length differ", () => expect(constantTimeEqual("abc", "abd")).toBe(false));
 });

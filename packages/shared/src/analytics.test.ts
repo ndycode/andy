@@ -1,44 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import {
-  projectMonthEnd,
-  projectMonthEndRobust,
-  shouldWarnPace,
-  spendingDelta,
-  spendingPace,
-} from "./analytics";
+import * as analytics from "./analytics";
+import { shouldWarnPace, spendingDelta, spendingPace } from "./analytics";
 
-describe("projectMonthEndRobust (outlier-aware)", () => {
-  test("a day-3 big one-off is NOT extrapolated (the false-panic case)", () => {
-    // day 3 of 30: three ₱500 food txns + one ₱20,000 one-off.
-    // linear: 2,150,000 / 3 * 30 ≈ ₱215k panic.
-    // robust: typical 150k/3*30 = 1.5M, + 2M outlier counted once = 3.5M ≈ ₱35k — far saner.
-    const amounts = [50_000, 50_000, 50_000, 2_000_000]; // centavos
-    const linear = projectMonthEnd(2_150_000, 3, 30);
-    const robust = projectMonthEndRobust(amounts, 3, 30);
-    expect(robust).toBeLessThan(linear); // key property: robust < naive linear
-    expect(robust).toBeGreaterThanOrEqual(2_150_000); // never below reality
-  });
-
-  test("no outlier → identical to linear", () => {
-    const amounts = [50_000, 50_000, 50_000];
-    expect(projectMonthEndRobust(amounts, 3, 30)).toBe(projectMonthEnd(150_000, 3, 30));
-  });
-
-  test("fewer than 3 txns → falls back to linear (no stable median)", () => {
-    const amounts = [50_000, 2_000_000];
-    expect(projectMonthEndRobust(amounts, 2, 30)).toBe(projectMonthEnd(2_050_000, 2, 30));
-  });
-
-  test("projection never drops below what's already spent", () => {
-    const amounts = [10, 10, 10, 5_000_000];
-    expect(projectMonthEndRobust(amounts, 28, 30)).toBeGreaterThanOrEqual(5_000_030);
-  });
-
-  test("spendingPace with amounts uses the robust projection", () => {
-    const amounts = [50_000, 50_000, 50_000, 2_000_000];
-    const withAmounts = spendingPace(2_150_000, 3, 30, 300_000, amounts);
-    const linear = spendingPace(2_150_000, 3, 30, 300_000);
-    expect(withAmounts.projected).toBeLessThan(linear.projected);
+describe("analytics public barrel boundary", () => {
+  test("does not expose projection implementation helpers", () => {
+    expect("projectMonthEnd" in analytics).toBe(false);
+    expect("projectMonthEndRobust" in analytics).toBe(false);
   });
 });
 
@@ -91,31 +58,14 @@ describe("spendingDelta", () => {
   });
 });
 
-describe("projectMonthEnd (linear run-rate)", () => {
-  test("half a 30-day month doubles to month end", () => {
-    // 60,000 over 15 days → 4,000/day → 120,000 across 30
-    expect(projectMonthEnd(60_000, 15, 30)).toBe(120_000);
-  });
-
-  test("day 1 extrapolates across the whole month", () => {
-    expect(projectMonthEnd(10_000, 1, 30)).toBe(300_000);
-  });
-
-  test("last day equals spent so far", () => {
-    expect(projectMonthEnd(90_000, 30, 30)).toBe(90_000);
-  });
-
-  test("guards dayOfMonth < 1 (returns spent as-is)", () => {
-    expect(projectMonthEnd(5000, 0, 30)).toBe(5000);
-  });
-
-  test("rounds to integer centavos", () => {
-    // 100 over 3 days → 33.33/day → 1000 across 30 (rounded)
-    expect(Number.isInteger(projectMonthEnd(100, 3, 30))).toBe(true);
-  });
-});
-
 describe("spendingPace (projection vs budget)", () => {
+  test("with amounts uses the robust projection", () => {
+    const amounts = [50_000, 50_000, 50_000, 2_000_000];
+    const withAmounts = spendingPace(2_150_000, 3, 30, 300_000, amounts);
+    const linear = spendingPace(2_150_000, 3, 30, 300_000);
+    expect(withAmounts.projected).toBeLessThan(linear.projected);
+  });
+
   test("flags a projected overshoot", () => {
     // 60k over 15/30 days → projected 120k vs 100k limit → over by 20k
     const v = spendingPace(60_000, 15, 30, 100_000);

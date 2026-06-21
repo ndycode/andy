@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { contentDedupKey } from "./dedup";
 
 describe("contentDedupKey — content-hash dedup fallback", () => {
   const t = new Date("2026-06-12T04:30:20Z");
+
+  test("source remains text-diffable without literal NUL bytes", () => {
+    const source = readFileSync(new URL("./dedup.ts", import.meta.url));
+
+    expect(source.includes(0)).toBe(false);
+  });
 
   test("same phone+text in the same minute → same key (a redelivery dedups)", () => {
     const a = contentDedupKey("+639171234567", "grab 180", t);
