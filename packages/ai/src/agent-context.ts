@@ -28,12 +28,24 @@ export interface ContextLoadPolicy {
   lastTransaction: boolean;
 }
 
-export function contextLoadPolicy(profile: ToolProfile): ContextLoadPolicy {
+const LOG_CONTEXT_RE =
+  /\b(spent|paid|bought|got|grab|taxi|fare|gas|fuel|parking|toll|lunch|dinner|breakfast|coffee|snack|groceries|grocery|load|rent|netflix|subscription|salary|sweldo|income)\b/i;
+const CORRECTION_RE =
+  /\b(delete that|scratch that|undo|make that|change it|actually|no,?|no wait)\b/i;
+
+export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextLoadPolicy {
   switch (profile) {
     case "chat":
       return { memories: false, habits: false, history: false, lastTransaction: false };
-    case "log":
-      return { memories: false, habits: true, history: false, lastTransaction: true };
+    case "log": {
+      const textKnown = text !== undefined;
+      return {
+        memories: false,
+        habits: !textKnown || LOG_CONTEXT_RE.test(text),
+        history: false,
+        lastTransaction: !textKnown || CORRECTION_RE.test(text),
+      };
+    }
     case "read":
       return { memories: false, habits: false, history: true, lastTransaction: false };
     case "memory":
@@ -70,7 +82,7 @@ export async function loadAgentContext(
   text = "",
   toolProfile: ToolProfile = "full",
 ): Promise<LoadedAgentContext> {
-  const policy = contextLoadPolicy(toolProfile);
+  const policy = contextLoadPolicy(toolProfile, text);
   const [mems, habitList, history, lastTransaction] = await Promise.all([
     policy.memories
       ? loadOptionalContext({

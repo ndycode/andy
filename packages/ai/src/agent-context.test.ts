@@ -83,6 +83,27 @@ describe("agent context boundary", () => {
     });
   });
 
+  test("log context loads only DB state useful for the exact inbound text", () => {
+    expect(contextLoadPolicy("log", "grab 180")).toEqual({
+      memories: false,
+      habits: true,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("log", "delete that")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: true,
+    });
+    expect(contextLoadPolicy("log", "grab 180, no make it 200")).toEqual({
+      memories: false,
+      habits: true,
+      history: false,
+      lastTransaction: true,
+    });
+  });
+
   test("runAgent passes the selected tool profile into context loading", () => {
     const source = readFileSync(new URL("./agent.ts", import.meta.url), "utf8");
 

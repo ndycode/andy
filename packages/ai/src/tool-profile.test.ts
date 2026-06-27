@@ -11,6 +11,8 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("save 20k for japan by december")).toBe("goal");
     expect(selectToolProfile("budget 5k for food")).toBe("budget");
     expect(selectToolProfile("rent 8k every 1st")).toBe("recurring");
+    expect(selectToolProfile("delete that")).toBe("log");
+    expect(selectToolProfile("actually 200")).toBe("log");
   });
 
   test("falls back to full profile for mixed turns that need multiple tool families", () => {
