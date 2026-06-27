@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { countToolCalls, isEmptyNoopTurn, runAgentAttempt } from "./agent-attempt";
+import {
+  agentAttemptLimits,
+  countToolCalls,
+  isEmptyNoopTurn,
+  runAgentAttempt,
+} from "./agent-attempt";
 
 describe("agent attempt boundary", () => {
   test("counts tool calls across all generation steps", () => {
@@ -22,10 +27,21 @@ describe("agent attempt boundary", () => {
     expect(typeof runAgentAttempt).toBe("function");
   });
 
+  test("uses tighter generation budgets for narrow profiles", () => {
+    expect(agentAttemptLimits("chat")).toEqual({ maxSteps: 2, maxOutputTokens: 256 });
+    expect(agentAttemptLimits("log")).toEqual({ maxSteps: 6, maxOutputTokens: 512 });
+    expect(agentAttemptLimits("read")).toEqual({ maxSteps: 6, maxOutputTokens: 768 });
+    expect(agentAttemptLimits("goal")).toEqual({ maxSteps: 7, maxOutputTokens: 768 });
+    expect(agentAttemptLimits("full")).toEqual({ maxSteps: 12, maxOutputTokens: 1024 });
+  });
+
   test("builds tools from the selected profile", () => {
     const source = readFileSync(new URL("./agent-attempt.ts", import.meta.url), "utf8");
 
     expect(source).toContain("toolProfile");
     expect(source).toContain("buildTools(ctx, {}, toolProfile)");
+    expect(source).toContain("const limits = agentAttemptLimits(toolProfile)");
+    expect(source).toContain("stepCountIs(limits.maxSteps)");
+    expect(source).toContain("maxOutputTokens: limits.maxOutputTokens");
   });
 });

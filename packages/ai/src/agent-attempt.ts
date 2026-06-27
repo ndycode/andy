@@ -42,6 +42,32 @@ export interface AgentAttemptResult {
   toolCount: number;
 }
 
+export interface AgentAttemptLimits {
+  maxSteps: number;
+  maxOutputTokens: number;
+}
+
+export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
+  switch (profile) {
+    case "chat":
+      return { maxSteps: 2, maxOutputTokens: 256 };
+    case "log":
+      return { maxSteps: 6, maxOutputTokens: 512 };
+    case "memory":
+      return { maxSteps: 5, maxOutputTokens: 512 };
+    case "budget":
+      return { maxSteps: 5, maxOutputTokens: 512 };
+    case "recurring":
+      return { maxSteps: 5, maxOutputTokens: 512 };
+    case "read":
+      return { maxSteps: 6, maxOutputTokens: 768 };
+    case "goal":
+      return { maxSteps: 7, maxOutputTokens: 768 };
+    case "full":
+      return { maxSteps: 12, maxOutputTokens: 1024 };
+  }
+}
+
 export function countToolCalls(gen: ToolCallGeneration): number {
   return gen.steps?.reduce((n, s) => n + (s.toolCalls?.length ?? 0), 0) ?? 0;
 }
@@ -68,17 +94,18 @@ export async function runAgentAttempt({
     peekWrites: peek,
   };
   const tools = buildTools(ctx, {}, toolProfile);
+  const limits = agentAttemptLimits(toolProfile);
   const agent = new ToolLoopAgent({
     model,
     instructions,
     tools,
-    // 12 steps: a busy message can log several entries and run a follow-up read, each its own
-    // tool step, plus final text. The cap bounds worst-case token use while the wall-clock
-    // AbortSignal below is the real safety net against a runaway loop.
-    stopWhen: stepCountIs(12),
-    // On reasoning models this is shared by reasoning + visible text, so keep enough room for a
-    // real multi-item answer after low-effort reasoning without letting a response grow unbounded.
-    maxOutputTokens: 1024,
+    // Profile-specific caps keep narrow turns fast while preserving the roomy envelope for mixed
+    // finance turns that may need several tool families. The wall-clock AbortSignal below remains
+    // the hard safety net against a slow free-model run.
+    stopWhen: stepCountIs(limits.maxSteps),
+    // On reasoning models this is shared by reasoning + visible text, so each profile gets enough
+    // room for its likely reply shape without letting simple turns spend a full mixed-turn budget.
+    maxOutputTokens: limits.maxOutputTokens,
     // The SDK retry layer would multiply each outer retry attempt; this service owns retry and
     // fallback so one attempt maps to one model call.
     maxRetries: 0,
