@@ -1,5 +1,43 @@
 import { describe, expect, test } from "bun:test";
-import { errInfo } from "./log";
+import { errInfo, log } from "./log";
+
+describe("log emit (total logger)", () => {
+  function capture(fn: () => void): string[] {
+    const lines: string[] = [];
+    const realLog = console.log;
+    console.log = (l?: unknown) => {
+      lines.push(String(l));
+    };
+    try {
+      fn();
+    } finally {
+      console.log = realLog;
+    }
+    return lines;
+  }
+
+  test("never throws on an unserializable field; emits a safe fallback line", () => {
+    let lines: string[] = [];
+    // BigInt is not JSON-serializable — JSON.stringify would throw and (pre-fix) crash the caller.
+    expect(() => {
+      lines = capture(() => log.info("test.event", { big: 10n }));
+    }).not.toThrow();
+    expect(lines).toHaveLength(1);
+    const parsed = JSON.parse(lines[0] ?? "{}");
+    expect(parsed.event).toBe("test.event");
+    expect(parsed.logError).toBe("unserializable fields dropped");
+  });
+
+  test("serializes normal fields into one structured line", () => {
+    const lines = capture(() => log.info("ok.event", { a: 1, b: "x" }));
+    expect(JSON.parse(lines[0] ?? "{}")).toMatchObject({
+      level: "info",
+      event: "ok.event",
+      a: 1,
+      b: "x",
+    });
+  });
+});
 
 describe("errInfo", () => {
   test("default is terse: name + message, no stack", () => {

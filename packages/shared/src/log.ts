@@ -9,10 +9,11 @@ function emit(level: Level, event: string, fields?: Record<string, unknown>): vo
   let line: string;
   try {
     line = JSON.stringify({ level, event, t: new Date().toISOString(), ...fields });
+    // A total logger must swallow ALL serialization failures so logging can never throw into the
+    // caller; narrowing/rethrowing would defeat that. no-excuse-ok: catch
   } catch {
-    // A field was unserializable (circular ref, BigInt). Logging must NEVER throw into the caller —
-    // emit a minimal safe line (base fields only, guaranteed serializable) instead of crashing the
-    // request/cron that was merely trying to log.
+    // A field was unserializable (circular ref, BigInt). Emit a minimal safe line (base fields only,
+    // guaranteed serializable) instead of crashing the request/cron that was merely trying to log.
     line = JSON.stringify({
       level,
       event,
