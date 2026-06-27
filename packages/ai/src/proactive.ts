@@ -27,6 +27,10 @@ export async function composeProactive(
       model,
       system: VOICE,
       prompt: brief,
+      // Greedy decoding: a proactive money message should phrase the same facts the same way, and the
+      // figure-integrity guard below is strict — determinism makes both the output and any rejection
+      // reproducible.
+      temperature: 0,
       // Bound this single-shot call. In the daily cron composeProactive runs in a loop (per budget
       // category + per due bill); without a timeout one hung LLM call would block the whole cron
       // until the platform wall-clock kill. On abort the catch below falls back to the deterministic

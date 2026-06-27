@@ -40,6 +40,15 @@ export const MODEL_ID = "openai/gpt-oss-120b:free";
  * effectively one working hop), and gpt-oss-20b shares the primary's contended upstream. NOT
  * llama-3.3-70b (fails this tool schema, proven live).
  *
+ * CAVEAT — existence is NOT deny-routability (audit H2): "exists + advertises tools" on the models
+ * endpoint does NOT guarantee a free endpoint that satisfies provider.data_collection 'deny' (below).
+ * A model whose only free endpoint trains on data is 404'd under deny ("No endpoints found matching
+ * your data policy") and silently drops OUT of the served chain — which can shrink this "diversified"
+ * list to a single deny-compatible endpoint and even make MODEL_ID itself unreachable. To revalidate
+ * which ids actually serve under deny, run `bun run scripts/probe-openrouter-models.ts` (needs
+ * OPENROUTER_API_KEY); agent.ts also emits `agent.model_off_chain` + a `fellBack` field so a live
+ * degradation is observable rather than silent. This list is a candidate set PENDING that deny-probe.
+ *
  * NOTE (single-throttle caveat, free-only by design): beyond per-upstream limits there is also ONE
  * account-wide free-tier throttle shared across ALL free models — provider diversity does NOT escape
  * that. When the whole account is throttled, every entry fails; agent.ts's deadline-bounded retry +

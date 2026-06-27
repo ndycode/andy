@@ -77,6 +77,10 @@ export async function runAgentAttempt({
     // The SDK retry layer would multiply each outer retry attempt; this service owns retry and
     // fallback so one attempt maps to one model call.
     maxRetries: 0,
+    // Deterministic decoding. Across a ~27-tool schema, greedy sampling makes tool selection and the
+    // edit-vs-relog / multi-entry-parse decisions repeatable, which both improves correctness and
+    // makes a failed turn reproducible. (Reasoning effort is set on the model in model.ts.)
+    temperature: 0,
   });
   const gen = await agent.generate({
     messages: [...priorMessages, { role: "user", content: text }],
@@ -85,6 +89,15 @@ export async function runAgentAttempt({
 
   // A no-tool/no-text response has buffered no writes, so retrying with a fresh buffer is safe.
   if (isEmptyNoopTurn(gen)) {
+    // finishReason 'length' on an EMPTY turn means the output-token budget was spent entirely on
+    // reasoning before any tool call or visible text. That is deterministic for this model+budget, so
+    // retrying the same OpenRouter model just burns the retry chain (and free-tier quota) to the same
+    // dead end. Signal NON-retryable (a message that matches neither isTransient nor isTierFatal) so
+    // withRetry fails fast into the handler's friendly-error path. A 'stop'/other empty turn is a
+    // transient free-model wobble a retry usually clears, so it keeps the retryable signal below.
+    if (gen.finishReason === "length") {
+      throw new Error("model produced no output: output-token budget spent on reasoning (length)");
+    }
     throw new Error("empty model response: no tool call and no text");
   }
 

@@ -62,6 +62,22 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     expect(reply.toLowerCase()).toContain("net");
   });
 
+  test("empty turn with finishReason 'length' FAILS FAST (no retry) instead of burning the chain", async () => {
+    // An empty turn (no tool call, no text) whose finishReason is 'length' means reasoning ate the
+    // whole output-token budget — deterministic for this model+budget, so retrying is pointless. The
+    // run must reject after a SINGLE attempt (not retry to exhaustion), letting the handler's
+    // friendly-error path take over fast.
+    let call = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        call++;
+        return result([{ type: "text", text: "" }], "length"); // empty AND token-exhausted
+      },
+    });
+    await expect(runAgent("how am i doing", base, model)).rejects.toThrow();
+    expect(call).toBe(1); // failed fast — no retry chain burned
+  });
+
   test("truncated reply (finishReason 'length') gets a continuation marker, not a dangling fragment", async () => {
     const model = new MockLanguageModelV3({
       doGenerate: async () =>

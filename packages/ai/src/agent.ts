@@ -9,8 +9,13 @@ import {
 } from "./agent-context";
 import { withRetry } from "./agent-retry";
 import type { ToolContext } from "./context";
-import { defaultModel } from "./model";
+import { defaultModel, FALLBACK_MODELS, MODEL_ID } from "./model";
 import { synthesizeReply } from "./reply-synthesis";
+
+// The model ids we deliberately configured (primary + native fallback chain). servedModel is matched
+// against this so a silent degradation is observable. Mock models (tests) start with "mock" and are
+// excluded from the off-chain alert.
+const KNOWN_MODEL_CHAIN: readonly string[] = [MODEL_ID, ...FALLBACK_MODELS];
 
 export interface RunResult {
   reply: string;
@@ -88,9 +93,25 @@ export async function runAgent(
   // fallback this can differ from MODEL_ID — logging it makes a silent degradation to a worse fallback
   // visible instead of invisible.
   const usage = result.gen.totalUsage;
+  const servedModel = result.gen.response?.modelId;
+  // H2: make a silent model degradation visible. With native cross-model fallback (and the
+  // data_collection:'deny' policy, which can make the documented primary unreachable), a DIFFERENT
+  // model than MODEL_ID may serve the request. `fellBack` flags serving a CONFIGURED fallback; an
+  // off-chain model (one we never listed — the deny-collapse symptom, or an OpenRouter routing
+  // surprise) is worth a loud warn since it was never vetted against Andy's tool schema.
+  const fellBack =
+    servedModel != null && servedModel !== MODEL_ID && KNOWN_MODEL_CHAIN.includes(servedModel);
+  const offChain =
+    servedModel != null &&
+    !KNOWN_MODEL_CHAIN.includes(servedModel) &&
+    !servedModel.startsWith("mock");
+  if (offChain) {
+    log.warn("agent.model_off_chain", { userId: base.userId, servedModel, expected: MODEL_ID });
+  }
   log.info("agent.run", {
     userId: base.userId,
-    servedModel: result.gen.response?.modelId,
+    servedModel,
+    fellBack,
     finishReason: result.gen.finishReason,
     steps: result.gen.steps?.length ?? 1,
     toolCalls: countToolCalls(result.gen),
