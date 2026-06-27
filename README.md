@@ -15,7 +15,7 @@ you  ▸ am i broke?
 andy ▸ you're at ₱2,408 net this month. you get paid the 15th, so you're fine — but those grabs are adding up 👀
 ```
 
-Andy is a single-user, free-tier, serverless finance assistant. You talk to it like a friend; it turns natural language into typed financial transactions, persists them with exact integer-centavo money math, and answers questions from real SQL aggregation — never from chat history. It's built for the Philippines (PHP, Asia/Manila, GCash/sweldo idioms) and runs at ~$0/month.
+Andy is a single-user, serverless finance assistant. You talk to it like a friend; it turns natural language into typed financial transactions, persists them with exact integer-centavo money math, and answers questions from real SQL aggregation — never from chat history. It's built for the Philippines (PHP, Asia/Manila, GCash/sweldo idioms).
 
 **540+ tests · TypeScript strict · typecheck + lint + test + build green in CI.**
 
@@ -59,7 +59,7 @@ This is a finance app, so the bar is *the numbers are never wrong and nothing do
 
 **Same-message corrections that never clobber history.** "grab 180, no make it 200" in one message must edit the *just-logged* entry — not an unrelated historical row. The edit/delete path forward-replays the in-turn write buffer to target the correct row, and falls back to a stable snapshot id (replay-safe across retries) only when the turn logged nothing. Adversarially reviewed and regression-tested.
 
-**Resilient multi-model inference.** The agent routes through OpenRouter on a free, tool-capable primary model (`openai/gpt-oss-120b`), tool-call-tested against Andy's live tool schema, with native cross-model fallback to other free models — wrapped in jittered backoff, a hard time budget so a slow run aborts *cleanly* (never a platform hard-kill that strands state), and error classification that skips a dead model instead of dead-ending. Under the `data_collection:'deny'` privacy policy the served model is probe-gated (see `packages/ai/src/model.ts`), and a silent fall-back to a different model is logged. The per-message token footprint was profiled and roughly halved.
+**Resilient multi-model inference.** The agent routes through OpenRouter on a free, tool-capable OSS primary model (`openai/gpt-oss-20b:free`), with native fallback to `openai/gpt-oss-120b:free` — wrapped in jittered backoff, a hard time budget so a slow run aborts *cleanly* (never a platform hard-kill that strands state), and error classification that skips a dead model instead of dead-ending. A silent fall-back to a different model is logged. The per-message token footprint was profiled and roughly halved.
 
 **Observability + graceful degradation.** Every run emits one structured JSON line (tokens, steps, tool calls). Failures map to honest user replies ("too many at once, give me a sec" vs "out of credits") rather than a generic error, and a throttled message is always retryable, never silently dropped.
 
@@ -92,4 +92,3 @@ own instance — the project isn't designed for external deployment.
 ## License
 
 [MIT](./LICENSE) © ndycode
-

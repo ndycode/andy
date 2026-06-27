@@ -3,11 +3,10 @@
  * Deny-probe for OpenRouter free models (audit H2).
  *
  * "Exists + advertises tools" on the models endpoint does NOT mean a model can actually serve under
- * `provider.data_collection: "deny"` — the policy Andy runs (packages/ai/src/model.ts). A model whose
+ * `provider.data_collection: "deny"` — stricter than Andy's current production route. A model whose
  * only free endpoint trains on data is 404'd under deny and silently drops out of the served fallback
  * chain. This script makes a REAL completion request per candidate, under deny, with a tiny tool, and
- * reports which ids genuinely route + tool-call — the ground truth needed to (re)pick MODEL_ID and
- * FALLBACK_MODELS.
+ * reports which ids genuinely route + tool-call if you want to reintroduce that stricter policy.
  *
  * Usage:  OPENROUTER_API_KEY=... bun run scripts/probe-openrouter-models.ts
  * Reads the key from the environment (the same one the app uses); makes one cheap call per candidate.
@@ -23,9 +22,10 @@
 // Current chain (keep in sync with packages/ai/src/model.ts) plus extra free tool-callers to consider
 // as deny-compatible replacements. Edit freely — this is a scratch list for the probe.
 const CANDIDATES: readonly string[] = [
-  "openai/gpt-oss-120b:free", // current MODEL_ID
-  "qwen/qwen3-next-80b-a3b-instruct:free", // current fallback 1
-  "nvidia/nemotron-3-super-120b-a12b:free", // current fallback 2
+  "openai/gpt-oss-20b:free", // current MODEL_ID
+  "openai/gpt-oss-120b:free", // current fallback
+  "qwen/qwen3-next-80b-a3b-instruct:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
   "meta-llama/llama-3.3-70b-instruct:free",
   "deepseek/deepseek-chat-v3.1:free",
   "google/gemini-2.0-flash-exp:free",

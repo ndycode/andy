@@ -10,7 +10,7 @@ const harness = await createAgentLiveStressHarness();
 
 try {
   console.log(
-    `agent-live user: ${harness.userId}\nmodel: live OpenRouter (openai/gpt-oss-120b:free + fallbacks)\n`,
+    `agent-live user: ${harness.userId}\nmodel: live OpenRouter (openai/gpt-oss-20b:free + free OSS fallback)\n`,
   );
   await runLiveLoggingReadChecks(harness);
   await runLiveGoalMemoryChecks(harness);
