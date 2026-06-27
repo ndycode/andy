@@ -71,7 +71,7 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
         memories: true,
         habits: false,
         history: needsRecentTurns(text),
-        lastTransaction: true,
+        lastTransaction: text === undefined || CORRECTION_RE.test(text),
       };
     case "budget":
       return {

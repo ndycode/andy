@@ -133,7 +133,7 @@ describe("agent context boundary", () => {
       memories: true,
       habits: false,
       history: false,
-      lastTransaction: true,
+      lastTransaction: false,
     });
   });
 
@@ -143,6 +143,21 @@ describe("agent context boundary", () => {
     expect(contextLoadPolicy("budget", "same for transport").history).toBe(true);
     expect(contextLoadPolicy("recurring", "change that one to every 15th").history).toBe(true);
     expect(contextLoadPolicy("goal", "put 1k to it").history).toBe(true);
+  });
+
+  test("goal context loads the last transaction only for correction-like text", () => {
+    expect(contextLoadPolicy("goal", "put 1k to japan")).toEqual({
+      memories: true,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("goal", "put 1k to japan, actually 2k")).toEqual({
+      memories: true,
+      habits: false,
+      history: false,
+      lastTransaction: true,
+    });
   });
 
   test("runAgent passes the selected tool profile into context loading", () => {
