@@ -1,6 +1,32 @@
 {
   "name": "andy",
+  "version": "0.0.0",
   "private": true,
+  "description": "An iMessage personal finance assistant: natural-language money tracking with an AI SDK agent, exact integer-centavo math, and atomic dedup. Bun monorepo, serverless on Vercel.",
+  "license": "MIT",
+  "author": "ndycode",
+  "homepage": "https://github.com/ndycode/andy#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ndycode/andy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ndycode/andy/issues"
+  },
+  "keywords": [
+    "imessage",
+    "personal-finance",
+    "ai-agent",
+    "ai-sdk",
+    "openrouter",
+    "hono",
+    "drizzle",
+    "postgres",
+    "bun",
+    "typescript",
+    "vercel",
+    "serverless"
+  ],
   "workspaces": [
     "apps/*",
     "packages/*"

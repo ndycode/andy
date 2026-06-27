@@ -1,0 +1,49 @@
+name: Bug report
+description: Something is incorrect or broken (logic, money math, build, tests).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not include real secrets** (`.env` values, API keys, phone
+        numbers). For security vulnerabilities, use
+        [the private advisory flow](https://github.com/ndycode/andy/security/advisories/new) instead
+        of a public issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Ideally a failing test, command, or minimal sequence.
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - "packages/shared (money/time/budget/etc.)"
+        - "packages/db (schema/queries/dedup)"
+        - "packages/ai (agent/tools/model)"
+        - "apps/api (handler/cron/sendblue)"
+        - "tooling/CI/build"
+        - "docs"
+        - "not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Output of `bun --version` and your OS, if relevant.
+    validations:
+      required: false

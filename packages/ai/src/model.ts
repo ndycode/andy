@@ -17,9 +17,10 @@ import type { LanguageModel } from "ai";
  * needs a multi-tier candidate array — one OpenRouter model carries the whole chain.
  *
  * Model picks: all FREE (`:free`) and all verified tool-callers. `openai/gpt-oss-120b` is primary
- * because it was live-tested against Andy's real ~18-tool schema and tool-calls cleanly; the same
- * test caught `meta-llama/llama-3.3-70b` failing with "Failed to call a function", so it is
- * deliberately EXCLUDED from the chain. The fallbacks are other free, tool-capable instruct models.
+ * because it was live-tested against Andy's tool schema and tool-calls cleanly; the same test caught
+ * `meta-llama/llama-3.3-70b` failing with "Failed to call a function", so it is deliberately EXCLUDED
+ * from the chain. The fallbacks are other free, tool-capable instruct models. (Re-run the live probe
+ * after the tool set changes — buildTools currently exposes 28 tools.)
  */
 
 /** Primary model id. Exported (was the gateway model id before) so callers/tests can reference it. */

@@ -7,6 +7,15 @@ on:
     branches: [main]
   workflow_dispatch: # allow manual runs (and runs when a push didn't auto-trigger)
 
+# Least privilege: this workflow only checks out and builds — it needs no write scopes on GITHUB_TOKEN.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR) to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest

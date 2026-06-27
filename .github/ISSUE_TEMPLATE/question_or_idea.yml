@@ -1,0 +1,22 @@
+name: Question or idea
+description: Ask about the design, or suggest a small improvement.
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Andy is a personal showcase project — design questions and small ideas are welcome. Please
+        note feature requests aimed at generalizing it for self-hosting / multi-user are out of scope.
+  - type: textarea
+    id: body
+    attributes:
+      label: Your question or idea
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Link to the relevant file(s) or section if it helps.
+    validations:
+      required: false
