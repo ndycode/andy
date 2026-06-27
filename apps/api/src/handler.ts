@@ -41,12 +41,15 @@ const DEFAULT_DEPS: InboundDeps = {
   sendTyping,
 };
 
+const FAST_TYPING_MIN_MS = 180;
+const FAST_TYPING_JITTER_MS = 520;
+
 /**
  * Three-phase inbound handler (verification C1 — no DB connection held across the LLM run):
  *   0. allowlist gate (caller already token-checked)
  *   1. claim — atomic marker (closes the concurrent-redelivery double-log race)
  *   2. fast-path or agent — buffers writes, no connection held
- *   3. flush — short txn applies writes + completes marker, then reply (+ in-the-moment reaction)
+ *   3. flush — short txn applies writes + completes marker, then brief typing cue + reply
  */
 export async function handleInbound(
   phone: string,
@@ -54,7 +57,15 @@ export async function handleInbound(
   messageId?: string,
   deps: InboundDeps = DEFAULT_DEPS,
 ): Promise<void> {
-  const { claimSlot, resolveUserId, runAgent, flushWrites, budgetStatusesFor, sendMessage } = deps;
+  const {
+    claimSlot,
+    resolveUserId,
+    runAgent,
+    flushWrites,
+    budgetStatusesFor,
+    sendMessage,
+    sendTyping,
+  } = deps;
   if (!isAllowed(phone, env.ALLOWED_PHONE)) {
     // Drop unknown senders silently to the user, but LOG it (PII-free — no phone number): a
     // misconfigured ALLOWED_PHONE would otherwise be an invisible total outage (every message dropped
@@ -126,6 +137,7 @@ export async function handleInbound(
     // was actually saved, prompting a resend (the marker now dedups the data, but the reply is a lie).
     // Log it and move on; the turn is persisted, so the next message has full context regardless.
     try {
+      await sendFastTypingCue(phone, sendTyping, corr);
       await sendMessage(phone, reaction ? `${reply}\n\n${reaction}` : reply);
     } catch (sendErr) {
       if (!(sendErr instanceof Error)) throw sendErr;
@@ -160,4 +172,25 @@ export async function handleInbound(
       log.error("inbound.failure_reply_send_failed", { corr, ...sendInfo });
     }
   }
+}
+
+async function sendFastTypingCue(
+  phone: string,
+  sendTypingFn: InboundDeps["sendTyping"],
+  corr: string,
+): Promise<void> {
+  try {
+    await sendTypingFn(phone);
+  } catch (err) {
+    if (err instanceof Error) {
+      log.error("inbound.typing_cue_failed", { corr, ...errInfo(err) });
+    } else {
+      log.error("inbound.typing_cue_failed", { corr, message: String(err) });
+    }
+    return;
+  }
+
+  if (process.env.NODE_ENV === "test") return;
+  const delayMs = FAST_TYPING_MIN_MS + Math.floor(Math.random() * FAST_TYPING_JITTER_MS);
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
 }

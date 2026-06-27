@@ -35,16 +35,19 @@ describe("handleInbound — three-phase orchestration", () => {
     expect(callCount(calls, "sendMessage")).toBe(0);
   });
 
-  test("agent path: no proactive typing, agent runs, both turns flushed, reply sent once", async () => {
+  test("agent path: fast typing cue fires only after flush, then reply sends once", async () => {
     await handleInbound(
       PHONE,
       "how am i doing?",
       "m1",
       handlerDeps(calls, { reply: "logged ₱180 transport 🛵", writes: [EXPENSE] }),
     );
-    expect(callCount(calls, "sendTyping")).toBe(0);
+    expect(callCount(calls, "sendTyping")).toBe(1);
     expect(callCount(calls, "runAgent")).toBe(1);
     expect(callCount(calls, "sendMessage")).toBe(1);
+    const names = callNames(calls);
+    expect(names.indexOf("sendTyping")).toBeGreaterThan(names.indexOf("flushWrites"));
+    expect(names.indexOf("sendTyping")).toBeLessThan(names.indexOf("sendMessage"));
     const reply = calls.find((c) => c.fn === "sendMessage")?.args[1];
     expect(reply).toBe("logged ₱180 transport 🛵");
     // The flush carries the agent's writes PLUS the two conversation turns (the M1 atomic-turn fix).
@@ -66,8 +69,11 @@ describe("handleInbound — three-phase orchestration", () => {
     );
 
     expect(callCount(calls, "runAgent")).toBe(0);
-    expect(callCount(calls, "sendTyping")).toBe(0);
+    expect(callCount(calls, "sendTyping")).toBe(1);
     expect(callCount(calls, "sendMessage")).toBe(1);
+    const names = callNames(calls);
+    expect(names.indexOf("sendTyping")).toBeGreaterThan(names.indexOf("flushWrites"));
+    expect(names.indexOf("sendTyping")).toBeLessThan(names.indexOf("sendMessage"));
     const reply = calls.find((c) => c.fn === "sendMessage")?.args[1];
     expect(reply).toBe("got it, logged ₱180 grab + ₱120 iced matcha. ₱300 total today.");
 
@@ -97,6 +103,7 @@ describe("handleInbound — three-phase orchestration", () => {
   test("no tapback when there is no inbound GUID (synthesized dedup key)", async () => {
     // messageId omitted → content-hash dedup key; a tapback needs the real Apple GUID, so skip it.
     await handleInbound(PHONE, "grab 180", undefined, handlerDeps(calls, { writes: [EXPENSE] }));
+    expect(callCount(calls, "sendTyping")).toBe(1);
     expect(callCount(calls, "sendMessage")).toBe(1);
     expect(callCount(calls, "sendReaction")).toBe(0);
   });
