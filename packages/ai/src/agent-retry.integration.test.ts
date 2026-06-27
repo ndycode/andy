@@ -25,6 +25,19 @@ describe("runAgent retry and tier fallback with a mocked model", () => {
     await expect(runAgent("grab 180", base, model)).rejects.toThrow(/429/);
   });
 
+  test("single-candidate chain retries once instead of burning the old five-attempt budget", async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        calls++;
+        throw new Error("429 rate limit");
+      },
+    });
+
+    await expect(runAgent("grab 180", base, model)).rejects.toThrow(/429/);
+    expect(calls).toBe(2);
+  });
+
   test("fresh write buffer per attempt: a mid-loop 429 after a buffered write does NOT double-log", async () => {
     let phase = 0;
     const logCall = {

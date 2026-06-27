@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { isTierFatal, isTransient, withRetry } from "./agent-retry";
+import { isTierFatal, isTransient, retryAttemptBudget, withRetry } from "./agent-retry";
 
 describe("agent retry boundary", () => {
   test("classifies transient transport and model wobble errors", () => {
@@ -30,5 +30,14 @@ describe("agent retry boundary", () => {
 
   test("exports the retry coordinator", () => {
     expect(typeof withRetry).toBe("function");
+  });
+
+  test("budgets one retry for native OpenRouter fallback and one final-tier retry for arrays", () => {
+    expect(retryAttemptBudget(1)).toBe(2);
+    expect(retryAttemptBudget(2)).toBe(3);
+    expect(retryAttemptBudget(4)).toBe(5);
+    expect(retryAttemptBudget(20)).toBe(5);
+    expect(retryAttemptBudget(0)).toBe(2);
+    expect(retryAttemptBudget(Number.NaN)).toBe(2);
   });
 });

@@ -77,11 +77,16 @@ export function isTierFatal(err: unknown): boolean {
  *  - transient on the LAST tier (nowhere else to go): jittered exponential backoff, then retry the
  *    same tier — giving its per-minute window time to reopen. Never sleep past the deadline.
  */
+export function retryAttemptBudget(candidateCount: number): number {
+  const count = Number.isFinite(candidateCount) ? Math.max(1, Math.floor(candidateCount)) : 1;
+  return Math.min(5, count + 1);
+}
+
 export async function withRetry<T>(
   fn: (i: number) => Promise<T>,
   candidateCount: number,
   deadline = Number.POSITIVE_INFINITY,
-  attempts = 5,
+  attempts = retryAttemptBudget(candidateCount),
 ): Promise<T> {
   // Tests exercise the retry path without sleeping real seconds.
   const unit = process.env.NODE_ENV === "test" ? 1 : 500;
