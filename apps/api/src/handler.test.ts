@@ -35,14 +35,14 @@ describe("handleInbound — three-phase orchestration", () => {
     expect(callCount(calls, "sendMessage")).toBe(0);
   });
 
-  test("happy path: typing post-claim, agent runs, both turns flushed, reply sent once", async () => {
+  test("agent path: no proactive typing, agent runs, both turns flushed, reply sent once", async () => {
     await handleInbound(
       PHONE,
-      "grab 180",
+      "how am i doing?",
       "m1",
       handlerDeps(calls, { reply: "logged ₱180 transport 🛵", writes: [EXPENSE] }),
     );
-    expect(callCount(calls, "sendTyping")).toBe(1);
+    expect(callCount(calls, "sendTyping")).toBe(0);
     expect(callCount(calls, "runAgent")).toBe(1);
     expect(callCount(calls, "sendMessage")).toBe(1);
     const reply = calls.find((c) => c.fn === "sendMessage")?.args[1];
@@ -55,6 +55,36 @@ describe("handleInbound — three-phase orchestration", () => {
     // A real inbound GUID + a write → love tapback.
     expect(callCount(calls, "sendReaction")).toBe(1);
     expect(callCount(calls, "learnHabit")).toBe(1); // expense had a note → habit learned
+  });
+
+  test("fast expense path logs the showcase spend without calling the model", async () => {
+    await handleInbound(
+      PHONE,
+      "yo andy, i spent 180 on grab and 120 on iced matcha today",
+      "m1",
+      handlerDeps(calls, { agentThrows: new Error("model should not run") }),
+    );
+
+    expect(callCount(calls, "runAgent")).toBe(0);
+    expect(callCount(calls, "sendTyping")).toBe(0);
+    expect(callCount(calls, "sendMessage")).toBe(1);
+    const reply = calls.find((c) => c.fn === "sendMessage")?.args[1];
+    expect(reply).toBe("got it, logged ₱180 grab + ₱120 iced matcha. ₱300 total today.");
+
+    const flush = calls.find((c) => c.fn === "flushWrites");
+    const intents = flush?.args[1] as WriteIntent[];
+    const expenses = intents.filter((i) => i.type === "expense");
+    expect(expenses).toHaveLength(2);
+    expect(expenses.flatMap((i) => (i.type === "expense" ? [i.note] : []))).toEqual([
+      "grab",
+      "iced matcha",
+    ]);
+    expect(expenses.flatMap((i) => (i.type === "expense" ? [i.category] : []))).toEqual([
+      "Transport",
+      "Food",
+    ]);
+    expect(callCount(calls, "sendReaction")).toBe(1);
+    expect(callCount(calls, "learnHabit")).toBe(2);
   });
 
   test("superseded flush sends NO reply (the winning worker owns it)", async () => {

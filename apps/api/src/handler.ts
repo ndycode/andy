@@ -1,11 +1,22 @@
 import { runAgent } from "@repo/ai";
-import { budgetStatusesFor, claimSlot, flushWrites, learnHabit, resolveUserId } from "@repo/db";
+import {
+  budgetStatusesFor,
+  claimSlot,
+  findGoalByName,
+  flushWrites,
+  getMonthOverview,
+  getSpendingByCategory,
+  learnHabit,
+  listGoals,
+  resolveUserId,
+} from "@repo/db";
 import { isAllowed } from "@repo/shared/allowlist";
 import { contentDedupKey } from "@repo/shared/dedup";
 import { env } from "@repo/shared/env";
 import { failureReply } from "@repo/shared/errors";
 import { errInfo, log } from "@repo/shared/log";
 import { APP_TIMEZONE, localDate } from "@repo/shared/time";
+import { tryFastPath } from "./fast-path";
 import { budgetReaction } from "./handler-budget-reaction";
 import { buildFlushIntents } from "./handler-flush-intents";
 import { runPostCommitEffects } from "./handler-post-commit-effects";
@@ -20,6 +31,10 @@ const DEFAULT_DEPS: InboundDeps = {
   runAgent,
   flushWrites,
   budgetStatusesFor,
+  getMonthOverview,
+  getSpendingByCategory,
+  findGoalByName,
+  listGoals,
   learnHabit,
   sendMessage,
   sendReaction,
@@ -30,7 +45,7 @@ const DEFAULT_DEPS: InboundDeps = {
  * Three-phase inbound handler (verification C1 — no DB connection held across the LLM run):
  *   0. allowlist gate (caller already token-checked)
  *   1. claim — atomic marker (closes the concurrent-redelivery double-log race)
- *   2. agent — buffers writes, no connection held (typing indicator fires here, post-claim)
+ *   2. fast-path or agent — buffers writes, no connection held
  *   3. flush — short txn applies writes + completes marker, then reply (+ in-the-moment reaction)
  */
 export async function handleInbound(
@@ -39,15 +54,7 @@ export async function handleInbound(
   messageId?: string,
   deps: InboundDeps = DEFAULT_DEPS,
 ): Promise<void> {
-  const {
-    claimSlot,
-    resolveUserId,
-    runAgent,
-    flushWrites,
-    budgetStatusesFor,
-    sendMessage,
-    sendTyping,
-  } = deps;
+  const { claimSlot, resolveUserId, runAgent, flushWrites, budgetStatusesFor, sendMessage } = deps;
   if (!isAllowed(phone, env.ALLOWED_PHONE)) {
     // Drop unknown senders silently to the user, but LOG it (PII-free — no phone number): a
     // misconfigured ALLOWED_PHONE would otherwise be an invisible total outage (every message dropped
@@ -69,19 +76,24 @@ export async function handleInbound(
     return;
   }
 
-  // Typing indicator AFTER the claim — a duplicate redelivery (skip) returns above with no reply, so
-  // firing typing before the claim showed a phantom "Andy is typing…" bubble that never resolved.
-  // Fire-and-forget (self-catching); the very next thing we do is await the multi-second agent run.
-  void sendTyping(phone);
-
   try {
-    // Phase 2 — agent (no DB connection held). Loads recent turns for conversation flow.
+    // Phase 2 — fast-path or agent (no DB connection held). The fast-path keeps common demo/logging
+    // messages off the free-model retry loop, which is often the slowest and least reliable hop.
     const userId = await resolveUserId(phone);
-    const { reply, writes } = await runAgent(text, {
-      userId,
-      timezone: APP_TIMEZONE,
-      today: localDate(),
-    });
+    const today = localDate();
+    const fast = await tryFastPath(text, { userId, today }, deps);
+    const { reply, writes } =
+      fast ??
+      (await runAgent(
+        text,
+        {
+          userId,
+          timezone: APP_TIMEZONE,
+          today,
+        },
+        undefined,
+        12_000,
+      ));
 
     // Phase 3 — flush writes + complete the dedup marker atomically. The two conversation turns are
     // flushed in the SAME transaction (M1 fix): previously they ran post-commit via allSettled, so a

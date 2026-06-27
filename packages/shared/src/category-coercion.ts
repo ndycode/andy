@@ -17,6 +17,8 @@ export const CATEGORY_SYNONYMS: Readonly<Record<string, Category>> = {
   dining: "Food",
   restaurant: "Food",
   coffee: "Food",
+  matcha: "Food",
+  milktea: "Food",
   snack: "Food",
   snacks: "Food",
   // Transport
