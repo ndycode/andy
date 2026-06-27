@@ -11,6 +11,7 @@ import { withRetry } from "./agent-retry";
 import type { ToolContext } from "./context";
 import { defaultModel, FALLBACK_MODELS, MODEL_ID } from "./model";
 import { synthesizeReply } from "./reply-synthesis";
+import { selectToolProfile } from "./tool-profile";
 
 // The model ids we deliberately configured (primary + native fallback chain). servedModel is matched
 // against this so a silent degradation is observable. Mock models (tests) start with "mock" and are
@@ -51,6 +52,7 @@ export async function runAgent(
   const { mems, habitList, history, lastTransaction } = await loadAgentContext(base, text);
   const priorMessages = priorMessagesFromTurns(history);
   const instructions = buildAgentInstructions(base, mems, habitList);
+  const toolProfile = selectToolProfile(text);
 
   // Build the per-attempt model chain. The production default is a SINGLE OpenRouter model that
   // already carries its own native cross-model fallback (the `models` list), so there is no longer a
@@ -73,6 +75,7 @@ export async function runAgent(
         base,
         lastTransaction,
         timeoutMs: Math.max(1, deadline - Date.now()),
+        toolProfile,
       });
     },
     candidates.length,
@@ -118,6 +121,8 @@ export async function runAgent(
     finishReason: result.gen.finishReason,
     steps: result.gen.steps?.length ?? 1,
     toolCalls: countToolCalls(result.gen),
+    toolProfile,
+    toolCount: result.toolCount,
     writes: result.writes.length,
     inputTokens: usage?.inputTokens,
     outputTokens: usage?.outputTokens,

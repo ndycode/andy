@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { countToolCalls, isEmptyNoopTurn, runAgentAttempt } from "./agent-attempt";
 
 describe("agent attempt boundary", () => {
@@ -19,5 +20,12 @@ describe("agent attempt boundary", () => {
 
   test("exports the attempt runner", () => {
     expect(typeof runAgentAttempt).toBe("function");
+  });
+
+  test("builds tools from the selected profile", () => {
+    const source = readFileSync(new URL("./agent-attempt.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("toolProfile");
+    expect(source).toContain("buildTools(ctx, {}, toolProfile)");
   });
 });

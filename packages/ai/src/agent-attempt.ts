@@ -8,6 +8,7 @@ import {
 } from "ai";
 import type { AgentBaseContext } from "./agent-context";
 import { createWriteBuffer, type ToolContext } from "./context";
+import type { ToolProfile } from "./tool-profile";
 import { buildTools } from "./tools";
 
 export type AgentGeneration = GenerateTextResult<ReturnType<typeof buildTools>, never>;
@@ -32,11 +33,13 @@ export interface AgentAttemptParams {
   base: AgentBaseContext;
   lastTransaction: ToolContext["lastTransaction"];
   timeoutMs: number;
+  toolProfile: ToolProfile;
 }
 
 export interface AgentAttemptResult {
   gen: AgentGeneration;
   writes: WriteIntent[];
+  toolCount: number;
 }
 
 export function countToolCalls(gen: ToolCallGeneration): number {
@@ -55,6 +58,7 @@ export async function runAgentAttempt({
   base,
   lastTransaction,
   timeoutMs,
+  toolProfile,
 }: AgentAttemptParams): Promise<AgentAttemptResult> {
   const { addWrite, peek, drain } = createWriteBuffer();
   const ctx: ToolContext = {
@@ -63,10 +67,11 @@ export async function runAgentAttempt({
     addWrite,
     peekWrites: peek,
   };
+  const tools = buildTools(ctx, {}, toolProfile);
   const agent = new ToolLoopAgent({
     model,
     instructions,
-    tools: buildTools(ctx),
+    tools,
     // 12 steps: a busy message can log several entries and run a follow-up read, each its own
     // tool step, plus final text. The cap bounds worst-case token use while the wall-clock
     // AbortSignal below is the real safety net against a runaway loop.
@@ -101,5 +106,5 @@ export async function runAgentAttempt({
     throw new Error("empty model response: no tool call and no text");
   }
 
-  return { gen, writes: drain() };
+  return { gen, writes: drain(), toolCount: Object.keys(tools).length };
 }

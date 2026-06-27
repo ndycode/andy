@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { LastTransaction } from "@repo/db";
+import { toolContext as ctx } from "./context-test-harness";
+import { buildTools } from "./tools";
 
 const { runTool, toolCtx } = await import("./tool-test-harness");
 
@@ -33,6 +35,38 @@ describe("same-turn log → edit → delete reflects post-edit values (L4)", () 
     const res = await runTool(tools.deleteLast, {});
     expect(res).toMatchObject({ ok: true, deleted: { category: "Food" } });
     drain();
+  });
+});
+
+describe("buildTools profile routing", () => {
+  test("keeps the full public surface by default", () => {
+    expect(Object.keys(buildTools(ctx()))).toContain("setBudget");
+    expect(Object.keys(buildTools(ctx()))).toContain("searchHistory");
+    expect(Object.keys(buildTools(ctx()))).toContain("addRecurringBill");
+  });
+
+  test("narrows the runtime tool map for simple log and read profiles", () => {
+    expect(Object.keys(buildTools(ctx(), {}, "log"))).toEqual([
+      "logExpense",
+      "logIncome",
+      "editLast",
+      "deleteLast",
+    ]);
+    expect(Object.keys(buildTools(ctx(), {}, "read"))).toEqual([
+      "getSpending",
+      "getPeriodSpending",
+      "getOverview",
+      "getCategoryBreakdown",
+      "getRecent",
+      "insights",
+      "compareSpending",
+      "searchHistory",
+      "getSpendingPace",
+    ]);
+  });
+
+  test("chat profile exposes no tools for true small talk", () => {
+    expect(Object.keys(buildTools(ctx(), {}, "chat"))).toEqual([]);
   });
 });
 
