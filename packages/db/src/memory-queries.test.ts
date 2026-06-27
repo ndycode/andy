@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   findMemoryToForget,
   forgetMemory,
@@ -45,6 +46,13 @@ describe("findMemoryToForget module boundary", () => {
     expect(queryCount()).toBe(0);
   });
 
+  test("returns null for punctuation-only queries without touching the DB", async () => {
+    const { exec, queryCount } = stubExec([]);
+
+    await expect(findMemoryToForget(exec, "u1", "!!!")).resolves.toBeNull();
+    expect(queryCount()).toBe(0);
+  });
+
   test("returns an exact match without running the contains fallback", async () => {
     const { exec, queryCount } = stubExec([[{ id: "m1", content: "payday is the 15th" }]]);
 
@@ -69,5 +77,12 @@ describe("findMemoryToForget module boundary", () => {
     const { exec } = stubExec([[], []]);
 
     await expect(findMemoryToForget(exec, "u1", "nonexistent")).resolves.toBeNull();
+  });
+
+  test("uses compact canonical memory matching for duplicate and contains lookups", () => {
+    const source = readFileSync(new URL("./memory-queries.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("MEMORY_CONTENT_COMPACT_KEY_SQL");
+    expect(source).toContain("memoryContentContainsSql(normalized, compact)");
   });
 });

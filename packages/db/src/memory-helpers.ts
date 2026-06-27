@@ -52,7 +52,7 @@ export function selectPromptMemories(
   const queryTokens = keywords(query);
   const seen = new Set<string>();
   const unique = rows.flatMap((r, index) => {
-    const key = normalizeMemoryContent(r.content);
+    const key = compactMemoryContent(r.content);
     if (seen.has(key)) return [];
     seen.add(key);
     return [{ row: r, index, relevance: relevanceScore(r.content, queryTokens) }];
@@ -68,7 +68,14 @@ export function selectPromptMemories(
 }
 
 export function normalizeMemoryContent(content: string): string {
-  return content.toLowerCase().trim().replace(/\s+/g, " ");
+  return content
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+export function compactMemoryContent(content: string): string {
+  return normalizeMemoryContent(content).replace(/\s+/g, "");
 }
 
 function relevanceScore(content: string, queryTokens: readonly string[]): number {

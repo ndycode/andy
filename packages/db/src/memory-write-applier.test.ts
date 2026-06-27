@@ -54,6 +54,7 @@ describe("memory write applier boundary", () => {
     const source = readFileSync(new URL("./memory-write-applier.ts", import.meta.url), "utf8");
 
     expect(source).toContain("normalizeMemoryContent(content)");
-    expect(source).toContain("MEMORY_CONTENT_KEY_SQL");
+    expect(source).toContain("compactMemoryContent(content)");
+    expect(source).toContain("memoryContentMatchesSql(normalized, compact)");
   });
 });

@@ -1,6 +1,10 @@
-import { and, eq, ilike, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "./client";
-import { normalizeMemoryContent, selectPromptMemories } from "./memory-helpers";
+import {
+  compactMemoryContent,
+  normalizeMemoryContent,
+  selectPromptMemories,
+} from "./memory-helpers";
 import { escapeLike } from "./query-helpers";
 import { type MemoryKind, memories } from "./schema";
 
@@ -32,7 +36,16 @@ export interface MemoryLookupExec {
   select(selection: MemorySelection): MemoryLookupFrom;
 }
 
-export const MEMORY_CONTENT_KEY_SQL = sql`lower(regexp_replace(btrim(${memories.content}), ${"\\s+"}, ${" "}, ${"g"}))`;
+export const MEMORY_CONTENT_KEY_SQL = sql`lower(btrim(regexp_replace(${memories.content}, ${"[^[:alnum:]]+"}, ${" "}, ${"g"})))`;
+export const MEMORY_CONTENT_COMPACT_KEY_SQL = sql`regexp_replace(${MEMORY_CONTENT_KEY_SQL}, ${"\\s+"}, ${""}, ${"g"})`;
+
+export function memoryContentMatchesSql(normalized: string, compact: string) {
+  return sql`(${MEMORY_CONTENT_KEY_SQL} = ${normalized} or ${MEMORY_CONTENT_COMPACT_KEY_SQL} = ${compact})`;
+}
+
+function memoryContentContainsSql(normalized: string, compact: string) {
+  return sql`(${MEMORY_CONTENT_KEY_SQL} like ${`%${escapeLike(normalized)}%`} or ${MEMORY_CONTENT_COMPACT_KEY_SQL} like ${`%${escapeLike(compact)}%`})`;
+}
 
 /** Save a memory (optionally typed). */
 export async function saveMemory(
@@ -44,10 +57,12 @@ export async function saveMemory(
   const trimmed = content.trim().slice(0, 4000);
   if (!trimmed) return;
   const normalized = normalizeMemoryContent(trimmed);
+  const compact = compactMemoryContent(trimmed);
+  if (!compact) return;
   const [existing] = await db
     .select({ id: memories.id })
     .from(memories)
-    .where(and(eq(memories.userId, userId), sql`${MEMORY_CONTENT_KEY_SQL} = ${normalized}`))
+    .where(and(eq(memories.userId, userId), memoryContentMatchesSql(normalized, compact)))
     .limit(1);
   if (existing) return;
   await db.insert(memories).values({ userId, content: trimmed, kind });
@@ -121,19 +136,21 @@ export async function findMemoryToForget(
   const q = query.trim();
   if (!q) return null;
   const normalized = normalizeMemoryContent(q);
+  const compact = compactMemoryContent(q);
+  if (!compact) return null;
   // Exact normalized content wins; this is equality on a canonical key, not a scan pattern.
   const [exact] = await exec
     .select({ id: memories.id, content: memories.content })
     .from(memories)
-    .where(and(eq(memories.userId, userId), sql`${MEMORY_CONTENT_KEY_SQL} = ${normalized}`))
+    .where(and(eq(memories.userId, userId), memoryContentMatchesSql(normalized, compact)))
     .orderBy(sql`${memories.createdAt} desc`)
     .limit(1);
   if (exact) return exact;
-  // Otherwise the most-recent CONTAINS match (ILIKE with escaped wildcards).
+  // Otherwise the most-recent CONTAINS match on the same canonical forms.
   const [contains] = await exec
     .select({ id: memories.id, content: memories.content })
     .from(memories)
-    .where(and(eq(memories.userId, userId), ilike(memories.content, `%${escapeLike(q)}%`)))
+    .where(and(eq(memories.userId, userId), memoryContentContainsSql(normalized, compact)))
     .orderBy(sql`${memories.createdAt} desc`)
     .limit(1);
   return contains ?? null;

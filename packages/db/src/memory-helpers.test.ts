@@ -1,18 +1,32 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeMemoryContent, selectPromptMemories } from "./memory-helpers";
+import {
+  compactMemoryContent,
+  normalizeMemoryContent,
+  selectPromptMemories,
+} from "./memory-helpers";
 
 describe("selectPromptMemories", () => {
   test("normalizes memory content for duplicate keys", () => {
-    expect(normalizeMemoryContent("  Payday   is every 15th  ")).toBe("payday is every 15th");
+    expect(normalizeMemoryContent("  Payday!!! is every 15th  ")).toBe("payday is every 15th");
+    expect(compactMemoryContent("likes milk tea")).toBe("likesmilktea");
   });
 
   test("de-dupes normalized content case-insensitively, keeping the first row", () => {
     const rows = [
       { content: "Payday is the 15th", kind: "fact" },
-      { content: "payday   is the 15th", kind: "payday" },
+      { content: "payday!!! is the 15th", kind: "payday" },
     ];
 
     expect(selectPromptMemories(rows, 10)).toEqual(["Payday is the 15th"]);
+  });
+
+  test("de-dupes compact phrase variants such as milk tea and milktea", () => {
+    const rows = [
+      { content: "likes milk tea after work", kind: "preference" },
+      { content: "likes milktea after work", kind: "preference" },
+    ];
+
+    expect(selectPromptMemories(rows, 10)).toEqual(["likes milk tea after work"]);
   });
 
   test("ranks actionable memory kinds ahead of less actionable facts", () => {
