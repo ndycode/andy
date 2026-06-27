@@ -1,8 +1,9 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "globalEnv": ["NODE_ENV", "VERCEL", "VERCEL_ENV"],
+  "globalDependencies": ["tsconfig.base.json", "bun.lock"],
   "tasks": {
-    "typecheck": {},
+    "typecheck": { "dependsOn": ["^typecheck"] },
     "test": {},
     "clean": { "cache": false }
   }

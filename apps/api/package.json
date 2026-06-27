@@ -12,7 +12,7 @@
     "@repo/ai": "*",
     "@repo/db": "*",
     "@repo/shared": "*",
-    "hono": "^4.6.0",
+    "hono": "^4.12.27",
     "ky": "^2.0.2"
   },
   "devDependencies": {

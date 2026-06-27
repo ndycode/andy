@@ -11,7 +11,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@openrouter/ai-sdk-provider": "^2.9.1",
+    "@openrouter/ai-sdk-provider": "^2.10.0",
     "@repo/db": "*",
     "@repo/shared": "*",
     "ai": "^6.0.202",
@@ -20,7 +20,7 @@
   "devDependencies": {
     "@ai-sdk/provider": "^3.0.10",
     "drizzle-orm": "^0.45.2",
-    "postgres": "^3.4.5",
+    "postgres": "^3.4.9",
     "typescript": "^5.7.0"
   }
 }

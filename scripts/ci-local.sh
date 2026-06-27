@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Run the FULL CI gate locally, mirroring .github/workflows/ci.yml exactly — including the
-# Postgres-backed DB-layer integration tests. Useful because GitHub Actions may be unavailable
-# (e.g. disabled for the account), so this is the dependable green-checkmark you can run on demand.
+# Run the FULL CI gate locally — the same checks as .github/workflows/ci.yml (typecheck · lint ·
+# unit + DB-layer integration tests · build), against an ephemeral Postgres. Useful because GitHub
+# Actions may be unavailable (e.g. disabled for the account), so this is the dependable
+# green-checkmark you can run on demand.
 #
 # Usage:  bun run ci:local        (or ./scripts/ci-local.sh)
 # Requires: docker (for the ephemeral Postgres). Everything is torn down on exit.
@@ -17,8 +18,8 @@ trap cleanup EXIT
 
 echo "▸ typecheck";            bun run typecheck
 echo "▸ lint";                 bun run lint
+echo "▸ lint:no-excuse";       bun run lint:no-excuse
 echo "▸ test (unit)";          bun test
-echo "▸ build (vercel bundle)"; bun run build
 
 echo "▸ starting ephemeral Postgres for integration tests…"
 cleanup
@@ -44,9 +45,14 @@ if [[ "$ready" != "1" ]]; then
 fi
 
 echo "▸ integration tests (DB layer vs real Postgres)";
-for integration_test in packages/db/src/*.integration.test.ts; do
+# failglob: if a rename ever leaves zero matches, fail loudly instead of running a literal pattern.
+shopt -s failglob
+for integration_test in packages/*/src/*.integration.test.ts; do
   TEST_DATABASE_URL="$TEST_URL" bun test "$integration_test"
 done
+shopt -u failglob
+
+echo "▸ build (vercel bundle)"; bun run build
 
 echo ""
-echo "✅ Full CI gate passed locally (typecheck · lint · unit · build · DB integration)."
+echo "✅ Full CI gate passed locally (typecheck · lint · unit + DB integration · build)."

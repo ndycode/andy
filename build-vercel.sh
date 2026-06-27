@@ -8,8 +8,10 @@ OUT=.vercel/output
 rm -rf "$OUT"
 mkdir -p "$OUT/functions/api.func" "$OUT/static"
 
-# Bundle the Hono app + all workspace/npm deps into one file.
-bun build api/index.ts --target=node --format=esm \
+# Bundle the Hono app + all workspace/npm deps into one file. --minify shrinks the cold-start
+# payload; --keep-names preserves function/class names so error stacks and any name-based runtime
+# logic (error.name checks, logged err.name) stay intact after minification.
+bun build api/index.ts --target=node --format=esm --minify --keep-names \
   --outfile="$OUT/functions/api.func/index.mjs"
 
 # Function config (Node 22, Singapore region + generous timeout). maxDuration 300s (the plan max)
