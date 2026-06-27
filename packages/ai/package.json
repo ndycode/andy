@@ -15,7 +15,7 @@
     "@repo/db": "*",
     "@repo/shared": "*",
     "ai": "^6.0.202",
-    "zod": "^3.25.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@ai-sdk/provider": "^3.0.10",
