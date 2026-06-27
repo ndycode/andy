@@ -32,6 +32,12 @@ const LOG_CONTEXT_RE =
   /\b(spent|paid|bought|got|grab|taxi|fare|gas|fuel|parking|toll|lunch|dinner|breakfast|coffee|snack|groceries|grocery|load|rent|netflix|subscription|salary|sweldo|income)\b/i;
 const CORRECTION_RE =
   /\b(delete that|scratch that|undo|make that|change it|actually|no,?|no wait)\b/i;
+const FOLLOWUP_CONTEXT_RE =
+  /\b(what about|how about|same|that one|last one|previous|earlier|again|also|too|instead|it|them|those)\b/i;
+
+function needsRecentTurns(text: string | undefined): boolean {
+  return text === undefined || FOLLOWUP_CONTEXT_RE.test(text);
+}
 
 export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextLoadPolicy {
   switch (profile) {
@@ -47,15 +53,40 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
       };
     }
     case "read":
-      return { memories: false, habits: false, history: true, lastTransaction: false };
+      return {
+        memories: false,
+        habits: false,
+        history: needsRecentTurns(text),
+        lastTransaction: false,
+      };
     case "memory":
-      return { memories: false, habits: false, history: true, lastTransaction: false };
+      return {
+        memories: false,
+        habits: false,
+        history: needsRecentTurns(text),
+        lastTransaction: false,
+      };
     case "goal":
-      return { memories: true, habits: false, history: true, lastTransaction: true };
+      return {
+        memories: true,
+        habits: false,
+        history: needsRecentTurns(text),
+        lastTransaction: true,
+      };
     case "budget":
-      return { memories: false, habits: false, history: true, lastTransaction: false };
+      return {
+        memories: false,
+        habits: false,
+        history: needsRecentTurns(text),
+        lastTransaction: false,
+      };
     case "recurring":
-      return { memories: false, habits: false, history: true, lastTransaction: false };
+      return {
+        memories: false,
+        habits: false,
+        history: needsRecentTurns(text),
+        lastTransaction: false,
+      };
     case "full":
       return { memories: true, habits: true, history: true, lastTransaction: true };
   }

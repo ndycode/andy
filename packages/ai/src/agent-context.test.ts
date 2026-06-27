@@ -104,6 +104,47 @@ describe("agent context boundary", () => {
     });
   });
 
+  test("narrow self-contained turns skip recent conversation history", () => {
+    expect(contextLoadPolicy("read", "how much did i spend this month?")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("memory", "remember i get paid every 15th")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("budget", "budget 5k for food")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("recurring", "rent 8k every 1st")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("goal", "save 20k for japan by december")).toEqual({
+      memories: true,
+      habits: false,
+      history: false,
+      lastTransaction: true,
+    });
+  });
+
+  test("narrow follow-up turns keep recent conversation history", () => {
+    expect(contextLoadPolicy("read", "what about food?").history).toBe(true);
+    expect(contextLoadPolicy("memory", "forget that one").history).toBe(true);
+    expect(contextLoadPolicy("budget", "same for transport").history).toBe(true);
+    expect(contextLoadPolicy("recurring", "change that one to every 15th").history).toBe(true);
+    expect(contextLoadPolicy("goal", "put 1k to it").history).toBe(true);
+  });
+
   test("runAgent passes the selected tool profile into context loading", () => {
     const source = readFileSync(new URL("./agent.ts", import.meta.url), "utf8");
 
