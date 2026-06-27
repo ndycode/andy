@@ -39,7 +39,17 @@ export async function saveMemory(
   kind: MemoryKind = "fact",
 ): Promise<void> {
   const db = getDb();
-  await db.insert(memories).values({ userId, content: content.slice(0, 4000), kind });
+  const trimmed = content.trim().slice(0, 4000);
+  if (!trimmed) return;
+  const [existing] = await db
+    .select({ id: memories.id })
+    .from(memories)
+    .where(
+      and(eq(memories.userId, userId), sql`lower(${memories.content}) = ${trimmed.toLowerCase()}`),
+    )
+    .limit(1);
+  if (existing) return;
+  await db.insert(memories).values({ userId, content: trimmed, kind });
 }
 
 // SQL kind-priority for the recall window — MUST stay in sync with MEMORY_KIND_RANK in memory-helpers.
