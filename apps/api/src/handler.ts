@@ -240,18 +240,27 @@ async function sendFastTypingCue(
   const typing = Promise.resolve()
     .then(() => sendTypingFn(phone))
     .catch((err: unknown) => err);
-  const timeout = new Promise<"timeout">((resolve) =>
-    setTimeout(() => resolve("timeout"), timeoutMs),
-  );
-  const result = await Promise.race([typing, timeout]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+  let result: unknown;
+  try {
+    result = await Promise.race([typing, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   if (result === "timeout") {
     timedOut = true;
     log.warn("inbound.typing_cue_timeout", { corr, timeoutMs });
   }
 
   typing.then((err) => {
-    if (timedOut && err instanceof Error) {
+    if (!timedOut || err === undefined) return;
+    if (err instanceof Error) {
       log.error("inbound.typing_cue_late_failed", { corr, ...errInfo(err) });
+    } else {
+      log.error("inbound.typing_cue_late_failed", { corr, message: String(err) });
     }
   });
 

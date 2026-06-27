@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { WriteIntent } from "@repo/db";
 import { handleInbound, type InboundDeps } from "./handler";
 import {
@@ -123,5 +124,11 @@ describe("handleInbound — three-phase orchestration", () => {
     expect(callCount(calls, "sendMessage")).toBe(1);
     expect(callCount(calls, "learnHabit")).toBe(1);
     expect(callCount(calls, "sendReaction")).toBe(1);
+  });
+
+  test("all bounded optional wait helpers clear their timeout handles", () => {
+    const source = readFileSync(new URL("./handler.ts", import.meta.url), "utf8");
+
+    expect(source.match(/clearTimeout\(timer\)/g)).toHaveLength(3);
   });
 });
