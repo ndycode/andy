@@ -36,6 +36,14 @@ const MEMORY_KIND_RANK: Record<string, number> = {
   other: 3,
 };
 
+export function shouldPromoteMemoryKind(current: string, next: string): boolean {
+  return memoryKindRank(next) < memoryKindRank(current);
+}
+
+function memoryKindRank(kind: string): number {
+  return MEMORY_KIND_RANK[kind] ?? 3;
+}
+
 const KEYWORD_ALIASES: Record<string, readonly string[]> = {
   boba: ["milktea"],
   paid: ["payday", "salary"],

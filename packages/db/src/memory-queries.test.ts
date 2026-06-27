@@ -85,4 +85,11 @@ describe("findMemoryToForget module boundary", () => {
     expect(source).toContain("MEMORY_CONTENT_COMPACT_KEY_SQL");
     expect(source).toContain("memoryContentContainsSql(normalized, compact)");
   });
+
+  test("promotes duplicate memory kinds in the direct save path", () => {
+    const source = readFileSync(new URL("./memory-queries.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("shouldPromoteMemoryKind(existing.kind, kind)");
+    expect(source).toContain(".set({ kind })");
+  });
 });

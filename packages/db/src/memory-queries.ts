@@ -4,6 +4,7 @@ import {
   compactMemoryContent,
   normalizeMemoryContent,
   selectPromptMemories,
+  shouldPromoteMemoryKind,
 } from "./memory-helpers";
 import { escapeLike } from "./query-helpers";
 import { type MemoryKind, memories } from "./schema";
@@ -60,11 +61,19 @@ export async function saveMemory(
   const compact = compactMemoryContent(trimmed);
   if (!compact) return;
   const [existing] = await db
-    .select({ id: memories.id })
+    .select({ id: memories.id, kind: memories.kind })
     .from(memories)
     .where(and(eq(memories.userId, userId), memoryContentMatchesSql(normalized, compact)))
     .limit(1);
-  if (existing) return;
+  if (existing) {
+    if (shouldPromoteMemoryKind(existing.kind, kind)) {
+      await db
+        .update(memories)
+        .set({ kind })
+        .where(and(eq(memories.id, existing.id), eq(memories.userId, userId)));
+    }
+    return;
+  }
   await db.insert(memories).values({ userId, content: trimmed, kind });
 }
 

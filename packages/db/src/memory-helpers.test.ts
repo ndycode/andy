@@ -3,12 +3,19 @@ import {
   compactMemoryContent,
   normalizeMemoryContent,
   selectPromptMemories,
+  shouldPromoteMemoryKind,
 } from "./memory-helpers";
 
 describe("selectPromptMemories", () => {
   test("normalizes memory content for duplicate keys", () => {
     expect(normalizeMemoryContent("  Payday!!! is every 15th  ")).toBe("payday is every 15th");
     expect(compactMemoryContent("likes milk tea")).toBe("likesmilktea");
+  });
+
+  test("promotes duplicate memory kinds only when the incoming kind is more actionable", () => {
+    expect(shouldPromoteMemoryKind("fact", "payday")).toBe(true);
+    expect(shouldPromoteMemoryKind("payday", "fact")).toBe(false);
+    expect(shouldPromoteMemoryKind("fact", "preference")).toBe(false);
   });
 
   test("de-dupes normalized content case-insensitively, keeping the first row", () => {

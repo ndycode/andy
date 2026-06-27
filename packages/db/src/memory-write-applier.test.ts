@@ -3,22 +3,30 @@ import { readFileSync } from "node:fs";
 import type { FlushWriteTx } from "./flush-write-types";
 import { applyMemoryWriteIntent } from "./memory-write-applier";
 
-function fakeMemoryTx(existing: boolean) {
+function fakeMemoryTx(existing: false | { id: string; kind: "fact" | "preference" | "payday" }) {
   const inserts: unknown[] = [];
+  const updates: unknown[] = [];
   const selectChain = {
     from: () => selectChain,
     where: () => selectChain,
-    limit: async () => (existing ? [{ id: "m1" }] : []),
+    limit: async () => (existing ? [existing] : []),
   };
   const tx = {
     select: () => selectChain,
+    update: () => ({
+      set: (value: unknown) => ({
+        where: async () => {
+          updates.push(value);
+        },
+      }),
+    }),
     insert: () => ({
       values: async (value: unknown) => {
         inserts.push(value);
       },
     }),
   } as unknown as FlushWriteTx;
-  return { tx, inserts };
+  return { tx, inserts, updates };
 }
 
 describe("memory write applier boundary", () => {
@@ -39,7 +47,7 @@ describe("memory write applier boundary", () => {
       { userId: "user-1", content: "Payday is every 15th", kind: "payday" },
     ]);
 
-    const duplicate = fakeMemoryTx(true);
+    const duplicate = fakeMemoryTx({ id: "m1", kind: "payday" });
     await applyMemoryWriteIntent(duplicate.tx, {
       type: "saveMemory",
       userId: "user-1",
@@ -48,6 +56,21 @@ describe("memory write applier boundary", () => {
     });
 
     expect(duplicate.inserts).toHaveLength(0);
+    expect(duplicate.updates).toHaveLength(0);
+  });
+
+  test("saveMemory promotes duplicate rows to a more actionable kind", async () => {
+    const duplicate = fakeMemoryTx({ id: "m1", kind: "fact" });
+
+    await applyMemoryWriteIntent(duplicate.tx, {
+      type: "saveMemory",
+      userId: "user-1",
+      content: "payday!!! is every 15th",
+      kind: "payday",
+    });
+
+    expect(duplicate.inserts).toHaveLength(0);
+    expect(duplicate.updates).toEqual([{ kind: "payday" }]);
   });
 
   test("saveMemory duplicate checks use the normalized memory key", () => {
@@ -56,5 +79,6 @@ describe("memory write applier boundary", () => {
     expect(source).toContain("normalizeMemoryContent(content)");
     expect(source).toContain("compactMemoryContent(content)");
     expect(source).toContain("memoryContentMatchesSql(normalized, compact)");
+    expect(source).toContain("shouldPromoteMemoryKind(existing.kind, kind)");
   });
 });
