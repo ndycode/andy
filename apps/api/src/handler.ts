@@ -28,6 +28,7 @@ const DEFAULT_DEPS: InboundDeps = {
 
 const FAST_TYPING_MIN_MS = 180;
 const FAST_TYPING_JITTER_MS = 520;
+const INBOUND_MODEL_DEADLINE_MS = 18_000;
 
 /**
  * Three-phase inbound handler (verification C1 — no DB connection held across the LLM run):
@@ -75,11 +76,16 @@ export async function handleInbound(
   try {
     // Phase 2 — agent (no DB connection held). Loads recent turns for conversation flow.
     const userId = await resolveUserId(phone);
-    const { reply, writes } = await runAgent(text, {
-      userId,
-      timezone: APP_TIMEZONE,
-      today: localDate(),
-    });
+    const { reply, writes } = await runAgent(
+      text,
+      {
+        userId,
+        timezone: APP_TIMEZONE,
+        today: localDate(),
+      },
+      undefined,
+      INBOUND_MODEL_DEADLINE_MS,
+    );
 
     // Phase 3 — flush writes + complete the dedup marker atomically. The two conversation turns are
     // flushed in the SAME transaction (M1 fix): previously they ran post-commit via allSettled, so a

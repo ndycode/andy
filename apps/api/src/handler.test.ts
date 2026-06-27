@@ -45,6 +45,7 @@ describe("handleInbound — three-phase orchestration", () => {
     expect(callCount(calls, "sendTyping")).toBe(1);
     expect(callCount(calls, "runAgent")).toBe(1);
     expect(callCount(calls, "sendMessage")).toBe(1);
+    expect(calls.find((c) => c.fn === "runAgent")?.args[3]).toBe(18_000);
     const names = callNames(calls);
     expect(names.indexOf("sendTyping")).toBeGreaterThan(names.indexOf("flushWrites"));
     expect(names.indexOf("sendTyping")).toBeLessThan(names.indexOf("sendMessage"));

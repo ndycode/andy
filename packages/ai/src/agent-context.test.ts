@@ -49,4 +49,10 @@ describe("agent context boundary", () => {
 
     expect(source).not.toContain(".catch(()");
   });
+
+  test("passes the inbound text into memory recall for query-aware memory selection", () => {
+    const source = readFileSync(new URL("./agent-context.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("recallMemories(base.userId, 8, text)");
+  });
 });

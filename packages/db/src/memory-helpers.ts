@@ -3,6 +3,30 @@ export type PromptMemoryRow = {
   kind: string;
 };
 
+const QUERY_STOPWORDS = new Set([
+  "about",
+  "also",
+  "andy",
+  "can",
+  "did",
+  "for",
+  "how",
+  "into",
+  "like",
+  "make",
+  "much",
+  "now",
+  "that",
+  "the",
+  "this",
+  "til",
+  "today",
+  "what",
+  "when",
+  "with",
+  "you",
+]);
+
 const MEMORY_KIND_RANK: Record<string, number> = {
   payday: 0,
   fact: 1,
@@ -12,15 +36,42 @@ const MEMORY_KIND_RANK: Record<string, number> = {
   other: 3,
 };
 
-export function selectPromptMemories(rows: readonly PromptMemoryRow[], limit: number): string[] {
+export function selectPromptMemories(
+  rows: readonly PromptMemoryRow[],
+  limit: number,
+  query = "",
+): string[] {
+  const queryTokens = keywords(query);
   const seen = new Set<string>();
-  const unique = rows.filter((r) => {
+  const unique = rows.flatMap((r, index) => {
     const key = r.content.trim().toLowerCase();
-    if (seen.has(key)) return false;
+    if (seen.has(key)) return [];
     seen.add(key);
-    return true;
+    return [{ row: r, index, relevance: relevanceScore(r.content, queryTokens) }];
   });
 
-  unique.sort((a, b) => (MEMORY_KIND_RANK[a.kind] ?? 3) - (MEMORY_KIND_RANK[b.kind] ?? 3));
-  return unique.slice(0, limit).map((r) => r.content);
+  unique.sort(
+    (a, b) =>
+      b.relevance - a.relevance ||
+      (MEMORY_KIND_RANK[a.row.kind] ?? 3) - (MEMORY_KIND_RANK[b.row.kind] ?? 3) ||
+      a.index - b.index,
+  );
+  return unique.slice(0, limit).map((r) => r.row.content);
+}
+
+function relevanceScore(content: string, queryTokens: readonly string[]): number {
+  if (queryTokens.length === 0) return 0;
+  const contentTokens = new Set(keywords(content));
+  let score = 0;
+  for (const token of queryTokens) {
+    if (contentTokens.has(token)) score += 2;
+  }
+  return score;
+}
+
+function keywords(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 3 && !QUERY_STOPWORDS.has(token));
 }

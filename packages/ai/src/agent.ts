@@ -48,7 +48,7 @@ export async function runAgent(
   // over-injecting multiplies input tokens and latency for little gain.
   // The listMemory tool reads the FULL set fresh from the DB when the user actually asks, so this
   // small recall is only the prompt-context seed, not a cap on what "what do you know about me" shows.
-  const { mems, habitList, history, lastTransaction } = await loadAgentContext(base);
+  const { mems, habitList, history, lastTransaction } = await loadAgentContext(base, text);
   const priorMessages = priorMessagesFromTurns(history);
   const instructions = buildAgentInstructions(base, mems, habitList);
 

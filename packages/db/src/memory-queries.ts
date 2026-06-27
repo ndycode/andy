@@ -59,15 +59,15 @@ const MEMORY_KIND_SQL_RANK = sql`case ${memories.kind}
  *  - de-dups exact duplicate content case-insensitively, keeping the highest-ranked.
  * Pulls a wider window from the DB (kind-priority, then recency), then trims after rank/dedup.
  */
-export async function recallMemories(userId: string, limit = 20): Promise<string[]> {
+export async function recallMemories(userId: string, limit = 20, query = ""): Promise<string[]> {
   const db = getDb();
   const rows = await db
     .select({ content: memories.content, kind: memories.kind, createdAt: memories.createdAt })
     .from(memories)
     .where(eq(memories.userId, userId))
     .orderBy(MEMORY_KIND_SQL_RANK, sql`${memories.createdAt} desc`)
-    .limit(Math.min(limit * 4, 100));
-  return selectPromptMemories(rows, limit);
+    .limit(Math.min(Math.max(limit * 8, 60), 200));
+  return selectPromptMemories(rows, limit, query);
 }
 
 /** Memories with id + kind, most recent first — for the transparent listMemory tool. */

@@ -36,4 +36,17 @@ describe("selectPromptMemories", () => {
 
     expect(selectPromptMemories(rows, 2)).toEqual(["payday note", "fact note"]);
   });
+
+  test("promotes memories relevant to the current message before generic high-rank memories", () => {
+    const rows = [
+      { content: "payday is every 15th and 30th", kind: "payday" },
+      { content: "wants a japan fund by december", kind: "goal" },
+      { content: "likes oat milk", kind: "preference" },
+    ];
+
+    expect(selectPromptMemories(rows, 2, "put 1k to japan na")).toEqual([
+      "wants a japan fund by december",
+      "payday is every 15th and 30th",
+    ]);
+  });
 });

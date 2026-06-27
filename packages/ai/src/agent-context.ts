@@ -36,12 +36,15 @@ async function loadOptionalContext<T>({
   }
 }
 
-export async function loadAgentContext(base: AgentBaseContext): Promise<LoadedAgentContext> {
+export async function loadAgentContext(
+  base: AgentBaseContext,
+  text = "",
+): Promise<LoadedAgentContext> {
   const [mems, habitList, history, lastTransaction] = await Promise.all([
     loadOptionalContext({
       event: "agent.context.memories_failed",
       userId: base.userId,
-      load: () => recallMemories(base.userId, 5),
+      load: () => recallMemories(base.userId, 8, text),
       fallback: [],
     }),
     loadOptionalContext({
