@@ -3,6 +3,7 @@ import { errInfo, log } from "@repo/shared/log";
 import type { LanguageModel, ModelMessage } from "ai";
 import type { ToolContext } from "./context";
 import { SYSTEM_PROMPT } from "./prompts";
+import type { ToolProfile } from "./tool-profile";
 
 export type AgentBaseContext = Omit<ToolContext, "addWrite" | "lastTransaction" | "peekWrites">;
 
@@ -19,6 +20,34 @@ type OptionalContextLoad<T> = {
   readonly load: () => Promise<T>;
   readonly fallback: T;
 };
+
+export interface ContextLoadPolicy {
+  memories: boolean;
+  habits: boolean;
+  history: boolean;
+  lastTransaction: boolean;
+}
+
+export function contextLoadPolicy(profile: ToolProfile): ContextLoadPolicy {
+  switch (profile) {
+    case "chat":
+      return { memories: false, habits: false, history: false, lastTransaction: false };
+    case "log":
+      return { memories: false, habits: true, history: false, lastTransaction: true };
+    case "read":
+      return { memories: false, habits: false, history: true, lastTransaction: false };
+    case "memory":
+      return { memories: false, habits: false, history: true, lastTransaction: false };
+    case "goal":
+      return { memories: true, habits: false, history: true, lastTransaction: true };
+    case "budget":
+      return { memories: false, habits: false, history: true, lastTransaction: false };
+    case "recurring":
+      return { memories: false, habits: false, history: true, lastTransaction: false };
+    case "full":
+      return { memories: true, habits: true, history: true, lastTransaction: true };
+  }
+}
 
 async function loadOptionalContext<T>({
   event,
@@ -39,32 +68,42 @@ async function loadOptionalContext<T>({
 export async function loadAgentContext(
   base: AgentBaseContext,
   text = "",
+  toolProfile: ToolProfile = "full",
 ): Promise<LoadedAgentContext> {
+  const policy = contextLoadPolicy(toolProfile);
   const [mems, habitList, history, lastTransaction] = await Promise.all([
-    loadOptionalContext({
-      event: "agent.context.memories_failed",
-      userId: base.userId,
-      load: () => recallMemories(base.userId, 8, text),
-      fallback: [],
-    }),
-    loadOptionalContext({
-      event: "agent.context.habits_failed",
-      userId: base.userId,
-      load: () => topHabits(base.userId, 8),
-      fallback: [],
-    }),
-    loadOptionalContext({
-      event: "agent.context.history_failed",
-      userId: base.userId,
-      load: () => recentTurns(base.userId, 4),
-      fallback: [],
-    }),
-    loadOptionalContext({
-      event: "agent.context.last_transaction_failed",
-      userId: base.userId,
-      load: () => getLastTransaction(base.userId),
-      fallback: null,
-    }),
+    policy.memories
+      ? loadOptionalContext({
+          event: "agent.context.memories_failed",
+          userId: base.userId,
+          load: () => recallMemories(base.userId, 8, text),
+          fallback: [],
+        })
+      : Promise.resolve([]),
+    policy.habits
+      ? loadOptionalContext({
+          event: "agent.context.habits_failed",
+          userId: base.userId,
+          load: () => topHabits(base.userId, 8),
+          fallback: [],
+        })
+      : Promise.resolve([]),
+    policy.history
+      ? loadOptionalContext({
+          event: "agent.context.history_failed",
+          userId: base.userId,
+          load: () => recentTurns(base.userId, 4),
+          fallback: [],
+        })
+      : Promise.resolve([]),
+    policy.lastTransaction
+      ? loadOptionalContext({
+          event: "agent.context.last_transaction_failed",
+          userId: base.userId,
+          load: () => getLastTransaction(base.userId),
+          fallback: null,
+        })
+      : Promise.resolve(null),
   ]);
 
   return { mems, habitList, history, lastTransaction };

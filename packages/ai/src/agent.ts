@@ -49,10 +49,14 @@ export async function runAgent(
   // over-injecting multiplies input tokens and latency for little gain.
   // The listMemory tool reads the FULL set fresh from the DB when the user actually asks, so this
   // small recall is only the prompt-context seed, not a cap on what "what do you know about me" shows.
-  const { mems, habitList, history, lastTransaction } = await loadAgentContext(base, text);
+  const toolProfile = selectToolProfile(text);
+  const { mems, habitList, history, lastTransaction } = await loadAgentContext(
+    base,
+    text,
+    toolProfile,
+  );
   const priorMessages = priorMessagesFromTurns(history);
   const instructions = buildAgentInstructions(base, mems, habitList);
-  const toolProfile = selectToolProfile(text);
 
   // Build the per-attempt model chain. The production default is a SINGLE OpenRouter model that
   // already carries its own native cross-model fallback (the `models` list), so there is no longer a

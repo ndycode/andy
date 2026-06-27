@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { buildAgentInstructions, priorMessagesFromTurns } from "./agent-context";
+import { buildAgentInstructions, contextLoadPolicy, priorMessagesFromTurns } from "./agent-context";
 
 const base = { userId: "user-1", timezone: "Asia/Manila", today: "2026-06-20" };
 
@@ -54,5 +54,40 @@ describe("agent context boundary", () => {
     const source = readFileSync(new URL("./agent-context.ts", import.meta.url), "utf8");
 
     expect(source).toContain("recallMemories(base.userId, 8, text)");
+  });
+
+  test("context load policy skips DB reads that a narrow profile cannot use", () => {
+    expect(contextLoadPolicy("chat")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("log")).toEqual({
+      memories: false,
+      habits: true,
+      history: false,
+      lastTransaction: true,
+    });
+    expect(contextLoadPolicy("read")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("full")).toEqual({
+      memories: true,
+      habits: true,
+      history: true,
+      lastTransaction: true,
+    });
+  });
+
+  test("runAgent passes the selected tool profile into context loading", () => {
+    const source = readFileSync(new URL("./agent.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("selectToolProfile(text)");
+    expect(source).toContain("loadAgentContext(");
+    expect(source).toContain("toolProfile,");
   });
 });
