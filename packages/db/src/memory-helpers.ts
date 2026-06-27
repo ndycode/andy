@@ -36,6 +36,14 @@ const MEMORY_KIND_RANK: Record<string, number> = {
   other: 3,
 };
 
+const KEYWORD_ALIASES: Record<string, readonly string[]> = {
+  boba: ["milktea"],
+  paid: ["payday", "salary"],
+  pay: ["payday"],
+  salary: ["payday"],
+  sweldo: ["payday", "salary"],
+};
+
 export function selectPromptMemories(
   rows: readonly PromptMemoryRow[],
   limit: number,
@@ -70,8 +78,21 @@ function relevanceScore(content: string, queryTokens: readonly string[]): number
 }
 
 function keywords(value: string): string[] {
-  return value
+  const base = value
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((token) => token.length >= 3 && !QUERY_STOPWORDS.has(token));
+  const expanded = new Set(base);
+
+  for (const token of base) {
+    for (const alias of KEYWORD_ALIASES[token] ?? []) {
+      expanded.add(alias);
+    }
+  }
+
+  for (let i = 0; i < base.length - 1; i++) {
+    expanded.add(`${base[i]}${base[i + 1]}`);
+  }
+
+  return [...expanded];
 }

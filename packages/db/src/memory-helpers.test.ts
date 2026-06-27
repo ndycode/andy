@@ -49,4 +49,29 @@ describe("selectPromptMemories", () => {
       "payday is every 15th and 30th",
     ]);
   });
+
+  test("matches compound user wording against spaced memory phrases", () => {
+    const rows = [
+      { content: "payday is every 15th and 30th", kind: "payday" },
+      { content: "likes milk tea after work", kind: "preference" },
+    ];
+
+    expect(selectPromptMemories(rows, 1, "spent 120 on milktea today")).toEqual([
+      "likes milk tea after work",
+    ]);
+  });
+
+  test("matches payday memories from paid salary and sweldo wording", () => {
+    const rows = [
+      { content: "likes milk tea after work", kind: "preference" },
+      { content: "payday is every 15th and 30th", kind: "payday" },
+    ];
+
+    expect(selectPromptMemories(rows, 1, "when do i get paid again?")).toEqual([
+      "payday is every 15th and 30th",
+    ]);
+    expect(selectPromptMemories(rows, 1, "may sweldo ba today?")).toEqual([
+      "payday is every 15th and 30th",
+    ]);
+  });
 });
