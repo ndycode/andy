@@ -1,7 +1,8 @@
+import type { Category } from "./category-definitions";
 import { formatPHP } from "./money-format";
 
 export interface BudgetSnapshot {
-  category: string;
+  category: Category;
   limit: number; // centavos; 0 or negative = no real budget
   spent: number; // centavos, month-to-date (already includes the just-logged expense)
 }

@@ -56,4 +56,28 @@ describe("reply-synthesis boundary", () => {
 
     expect(reply).toBe("logged 1 entry ✅ — Food: ₱2,300.00 so far this month.");
   });
+
+  test("does NOT reply 'got it.' when a read tool errored (threw) with no result", () => {
+    const reply = synthesizeReply(
+      {
+        steps: [
+          {
+            // A thrown read tool produces a tool-error content part, not a toolResult.
+            content: [{ type: "tool-error", toolName: "getOverview" }],
+          },
+        ],
+      },
+      [],
+    );
+    expect(reply).not.toBe("got it.");
+    expect(reply.toLowerCase()).toContain("trying again");
+  });
+
+  test("still replies 'got it.' for a non-read tool-error (nothing to surface)", () => {
+    const reply = synthesizeReply(
+      { steps: [{ content: [{ type: "tool-error", toolName: "logExpense" }] }] },
+      [],
+    );
+    expect(reply).toBe("got it.");
+  });
 });
