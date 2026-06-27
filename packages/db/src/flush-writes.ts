@@ -39,41 +39,47 @@ export async function flushWrites(
 ): Promise<FlushResult> {
   const db = getDb();
   try {
-    await db.transaction(async (tx) => {
-      // Bound the critical section so a wedged statement can't outlive the steal window (pooler-safe:
-      // SET LOCAL is scoped to this txn and reset on commit/rollback). SET does not accept a bound
-      // parameter for its value, so the timeout is interpolated as a literal — it's a module constant,
-      // never user input, so there's no injection surface.
-      await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${FLUSH_STATEMENT_TIMEOUT_MS}`));
-      await tx.execute(
-        sql.raw(`SET LOCAL idle_in_transaction_session_timeout = ${FLUSH_STATEMENT_TIMEOUT_MS}`),
-      );
+    // Pin READ COMMITTED explicitly: the self-fence (complete the marker only WHERE status='claimed',
+    // roll back on 0 rows) is reasoned about under READ COMMITTED, where both contending flushes see
+    // each other's committed marker state. Don't leave it to the server/pooler default.
+    await db.transaction(
+      async (tx) => {
+        // Bound the critical section so a wedged statement can't outlive the steal window (pooler-safe:
+        // SET LOCAL is scoped to this txn and reset on commit/rollback). SET does not accept a bound
+        // parameter for its value, so the timeout is interpolated as a literal — it's a module constant,
+        // never user input, so there's no injection surface.
+        await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${FLUSH_STATEMENT_TIMEOUT_MS}`));
+        await tx.execute(
+          sql.raw(`SET LOCAL idle_in_transaction_session_timeout = ${FLUSH_STATEMENT_TIMEOUT_MS}`),
+        );
 
-      // Tracks the transaction inserted earlier in THIS same flush, so an edit/delete that followed
-      // a log in the same message targets the just-logged row, not a stale historical snapshot.
-      const state: FlushWriteState = { lastInsertedTxId: null };
-      for (const intent of intents) await applyWriteIntent(tx, intent, state);
+        // Tracks the transaction inserted earlier in THIS same flush, so an edit/delete that followed
+        // a log in the same message targets the just-logged row, not a stale historical snapshot.
+        const state: FlushWriteState = { lastInsertedTxId: null };
+        for (const intent of intents) await applyWriteIntent(tx, intent, state);
 
-      if (messageId) {
-        // Complete the marker as an UPSERT so callers that don't pre-claim (crons, tests, db-stress)
-        // still work: a missing marker is inserted straight as 'completed'. When the marker already
-        // exists, flip 'claimed' → 'completed' only WHERE it is still 'claimed' (the self-fence). The
-        // RETURNING yields a row when we inserted fresh OR won the claimed→completed transition, and
-        // 0 rows ONLY when the conflict hit an already-'completed' marker — i.e. a concurrent worker
-        // that stole our stale slot finished first. Then we roll the whole flush back → "superseded",
-        // so the two workers can never both apply the same writes.
-        const completed = await tx
-          .insert(processedMessages)
-          .values({ messageId, status: "completed", completedAt: new Date() })
-          .onConflictDoUpdate({
-            target: processedMessages.messageId,
-            set: { status: "completed", completedAt: new Date() },
-            setWhere: eq(processedMessages.status, "claimed"),
-          })
-          .returning({ messageId: processedMessages.messageId });
-        if (completed.length === 0) throw new MarkerSupersededError();
-      }
-    });
+        if (messageId) {
+          // Complete the marker as an UPSERT so callers that don't pre-claim (crons, tests, db-stress)
+          // still work: a missing marker is inserted straight as 'completed'. When the marker already
+          // exists, flip 'claimed' → 'completed' only WHERE it is still 'claimed' (the self-fence). The
+          // RETURNING yields a row when we inserted fresh OR won the claimed→completed transition, and
+          // 0 rows ONLY when the conflict hit an already-'completed' marker — i.e. a concurrent worker
+          // that stole our stale slot finished first. Then we roll the whole flush back → "superseded",
+          // so the two workers can never both apply the same writes.
+          const completed = await tx
+            .insert(processedMessages)
+            .values({ messageId, status: "completed", completedAt: new Date() })
+            .onConflictDoUpdate({
+              target: processedMessages.messageId,
+              set: { status: "completed", completedAt: new Date() },
+              setWhere: eq(processedMessages.status, "claimed"),
+            })
+            .returning({ messageId: processedMessages.messageId });
+          if (completed.length === 0) throw new MarkerSupersededError();
+        }
+      },
+      { isolationLevel: "read committed" },
+    );
     return "committed";
   } catch (err) {
     if (err instanceof MarkerSupersededError) return "superseded";

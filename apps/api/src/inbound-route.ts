@@ -2,7 +2,7 @@ import { log } from "@repo/shared/log";
 import type { Context } from "hono";
 import { handleInbound } from "./handler";
 import { createInboundBurstLimiter } from "./inbound-rate-limit";
-import { parseInbound } from "./sendblue-inbound";
+import { isValidWebhookToken, parseInbound } from "./sendblue-inbound";
 
 // Largest inbound webhook body we'll even parse. A real Sendblue inbound is a few hundred bytes; this
 // rejects an oversized payload before any JSON parse / work, cheaply.
@@ -16,14 +16,23 @@ function allowAuthedRequest(now = Date.now()): boolean {
 
 // Inbound iMessage webhook. Auth via self-minted ?t= URL token (Sendblue has no signing secret).
 export async function sendblueWebhook(c: Context): Promise<Response> {
-  // Reject an oversized body before parsing anything.
-  const len = Number(c.req.header("content-length") ?? "0");
-  if (Number.isFinite(len) && len > MAX_BODY_BYTES) return c.json({ ok: false }, 413);
+  // 1. Reject an over-large body by its DECLARED length first — cheapest possible rejection.
+  const declaredLen = Number(c.req.header("content-length") ?? "0");
+  if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_BYTES)
+    return c.json({ ok: false }, 413);
 
+  // 2. Authenticate the URL token BEFORE reading/parsing the body, so an unauthenticated request (a
+  //    leaked-token probe, a scanner) does zero parse work.
   const token = c.req.query("t") ?? null;
+  if (!isValidWebhookToken(token)) return c.json({ ok: false }, 401);
+
+  // 3. Read the raw body and enforce the cap on the ACTUAL byte length too — don't solely trust the
+  //    Content-Length header (a client can understate it). Then parse.
+  const raw = await c.req.text();
+  if (raw.length > MAX_BODY_BYTES) return c.json({ ok: false }, 413);
   let body: unknown;
   try {
-    body = await c.req.json();
+    body = JSON.parse(raw);
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     body = {};

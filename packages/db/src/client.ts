@@ -22,6 +22,14 @@ import * as schema from "./schema";
  */
 let _db: PostgresJsDatabase<typeof schema> | null = null;
 
+/**
+ * Session-level statement timeout (ms). Bounds EVERY query on the connection — context loads, cron
+ * reads, tool reads — so a wedged read fails fast into the agent deadline / handler catch instead of
+ * riding to the Vercel 300s hard-kill (which strands a 'claimed' marker). The flush txn still sets its
+ * own tighter SET LOCAL, which overrides this within that transaction.
+ */
+const STATEMENT_TIMEOUT_MS = 30_000;
+
 /** True if the connection string targets a transaction-mode pooler (no prepared statements). */
 export function isPoolerUrl(url: string): boolean {
   return (
@@ -45,6 +53,14 @@ export function getDb(): PostgresJsDatabase<typeof schema> {
       max: 1,
       idle_timeout: 20,
       connect_timeout: 10,
+      // Session GUCs sent at connect: bound every statement + idle-in-transaction, and label the
+      // connection so it's identifiable in pg_stat_activity. application_name aids ops; the timeouts
+      // are the real fix (no unbounded reads). These are standard, pooler-accepted startup params.
+      connection: {
+        application_name: "andy",
+        statement_timeout: STATEMENT_TIMEOUT_MS,
+        idle_in_transaction_session_timeout: STATEMENT_TIMEOUT_MS,
+      },
     }),
     { schema },
   );

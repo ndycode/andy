@@ -65,6 +65,8 @@ export interface HygieneResult {
   reaped: number;
   reapedNudges: number;
   reapedSummaries: number;
+  /** true if any isolated reaper failed (its error was swallowed) — surfaced on cron.done for alerting. */
+  degraded: boolean;
 }
 
 export interface DailyCheckResult

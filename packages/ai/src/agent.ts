@@ -40,7 +40,8 @@ export async function runAgent(
   // strands the 'claimed' marker, and 504s — the exact failure that dropped a burst of messages).
   deadlineMs = 45_000,
 ): Promise<RunResult> {
-  const deadline = Date.now() + deadlineMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + deadlineMs;
   // Recall context in parallel (short reads) before the model call. lastTransaction is
   // snapshotted here so edit/delete tools pin a stable target id across any 429 retry.
   // Counts are deliberately small: every item is injected into EVERY step of the tool loop, so
@@ -59,8 +60,10 @@ export async function runAgent(
 
   // Each attempt gets a FRESH write buffer: a 429/fallback mid-tool-loop must not replay
   // already-buffered writes into the next attempt (that would double-log).
+  let attempts = 0;
   const result = await withRetry(
     async (i: number) => {
+      attempts = i + 1;
       const cand = candidates[Math.min(i, candidates.length - 1)] as LanguageModel; // clamp to last tier
       return runAgentAttempt({
         model: cand,
@@ -112,6 +115,8 @@ export async function runAgent(
     userId: base.userId,
     servedModel,
     fellBack,
+    attempts,
+    durationMs: Date.now() - startedAt,
     finishReason: result.gen.finishReason,
     steps: result.gen.steps?.length ?? 1,
     toolCalls: countToolCalls(result.gen),

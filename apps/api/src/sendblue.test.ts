@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
-import { parseInbound } from "./sendblue-inbound";
+import { isValidWebhookToken, parseInbound } from "./sendblue-inbound";
 import { sendMessage, sendReaction, sendTyping } from "./sendblue-outbound";
 
 const TOKEN = "secret-token-123";
@@ -54,6 +54,14 @@ describe("parseInbound — token auth (AC9)", () => {
   });
 });
 
+describe("isValidWebhookToken — auth before body parse", () => {
+  test("accepts the configured token, rejects wrong/missing", () => {
+    expect(isValidWebhookToken(TOKEN)).toBe(true);
+    expect(isValidWebhookToken("nope")).toBe(false);
+    expect(isValidWebhookToken(null)).toBe(false);
+  });
+});
+
 describe("parseInbound — inbound filtering", () => {
   test("outbound message ignored", () => {
     expect(parseInbound(TOKEN, { ...received, is_outbound: true })).toBeNull();
@@ -63,6 +71,12 @@ describe("parseInbound — inbound filtering", () => {
   });
   test("empty content ignored", () => {
     expect(parseInbound(TOKEN, { ...received, content: "" })).toBeNull();
+  });
+  test("whitespace-only content ignored (trimmed at parse time)", () => {
+    expect(parseInbound(TOKEN, { ...received, content: "   " })).toBeNull();
+  });
+  test("surrounding whitespace is trimmed from content", () => {
+    expect(parseInbound(TOKEN, { ...received, content: "  grab 180  " })?.text).toBe("grab 180");
   });
   test("missing number ignored", () => {
     expect(parseInbound(TOKEN, { ...received, number: undefined })).toBeNull();

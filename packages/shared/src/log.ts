@@ -6,7 +6,20 @@
 type Level = "info" | "warn" | "error";
 
 function emit(level: Level, event: string, fields?: Record<string, unknown>): void {
-  const line = JSON.stringify({ level, event, t: new Date().toISOString(), ...fields });
+  let line: string;
+  try {
+    line = JSON.stringify({ level, event, t: new Date().toISOString(), ...fields });
+  } catch {
+    // A field was unserializable (circular ref, BigInt). Logging must NEVER throw into the caller —
+    // emit a minimal safe line (base fields only, guaranteed serializable) instead of crashing the
+    // request/cron that was merely trying to log.
+    line = JSON.stringify({
+      level,
+      event,
+      t: new Date().toISOString(),
+      logError: "unserializable fields dropped",
+    });
+  }
   if (level === "error") console.error(line);
   else console.log(line);
 }

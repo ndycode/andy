@@ -1,3 +1,5 @@
+import { log } from "@repo/shared/log";
+
 type ErrorStatusField = "statusCode" | "status";
 
 function isRecord(value: unknown): value is { readonly [key: string]: unknown } {
@@ -100,13 +102,17 @@ export async function withRetry<T>(
       if (!fatal && !isTransient(err)) throw err; // genuine error — don't burn the chain on it
       // Advance to a fresh tier with no delay whenever one exists (works for both tier-fatal and a
       // rate-limited tier — the next pool has its own separate limit).
-      if (moreTiers) continue;
+      if (moreTiers) {
+        log.warn("agent.retry", { attempt: i + 1, mode: "tier-jump", fatal });
+        continue;
+      }
       // No other tier left. Tier-fatal here is terminal; a transient gets one backoff-and-retry on
       // this same (last) tier, as long as the sleep fits the budget.
       if (fatal) throw err;
       const baseMs = unit * 2 ** i; // 0.5s, 1s, 2s, 4s in prod
       const delay = baseMs + Math.random() * baseMs; // full jitter, decorrelates concurrent retries
       if (Date.now() + delay >= deadline) throw err;
+      log.warn("agent.retry", { attempt: i + 1, mode: "backoff", delayMs: Math.round(delay) });
       await new Promise((r) => setTimeout(r, delay));
     }
   }

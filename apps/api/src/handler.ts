@@ -48,7 +48,13 @@ export async function handleInbound(
     sendMessage,
     sendTyping,
   } = deps;
-  if (!isAllowed(phone, env.ALLOWED_PHONE)) return; // AC10: drop unknown silently
+  if (!isAllowed(phone, env.ALLOWED_PHONE)) {
+    // Drop unknown senders silently to the user, but LOG it (PII-free — no phone number): a
+    // misconfigured ALLOWED_PHONE would otherwise be an invisible total outage (every message dropped
+    // with zero signal). This is the one log that turns that into a detectable event.
+    log.warn("inbound.not_allowed", {});
+    return;
+  }
 
   // Prefer the channel's stable id (Sendblue `message_handle`). If absent, synthesize a
   // content-hash key (phone+text+Manila-minute) so a redelivery still dedups instead of
@@ -117,11 +123,20 @@ export async function handleInbound(
 
     log.info("inbound.done", { corr, writes: writes.length, reacted: Boolean(reaction) });
 
-    await runPostCommitEffects({ deps, phone, userId, writes, messageId });
+    // Post-commit effects (habit learning + tapback) are best-effort and run AFTER the commit + reply.
+    // Self-catch so a failure here never falls into the pre-flush catch below — that would send the
+    // user a "something went wrong" message about data that was actually saved and acknowledged.
+    try {
+      await runPostCommitEffects({ deps, phone, userId, writes, messageId });
+    } catch (postErr) {
+      if (!(postErr instanceof Error)) throw postErr;
+      log.error("inbound.post_commit_failed", { corr, ...errInfo(postErr) });
+    }
   } catch (err) {
     // Only PRE-flush errors reach here (agent or flush threw): the marker stays 'claimed', so a
-    // redelivery safely retries — nothing committed, nothing lost. The post-flush reply send catches
-    // its own failure above, so a committed turn never produces this misleading failure reply.
+    // redelivery safely retries — nothing committed, nothing lost. The post-flush reply send and the
+    // post-commit effects each catch their own failure above, so a committed turn never produces this
+    // misleading failure reply.
     if (!(err instanceof Error)) throw err;
     const info = errInfo(err);
     log.error("inbound.error", { corr, ...info });

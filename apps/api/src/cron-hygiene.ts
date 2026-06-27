@@ -26,28 +26,45 @@ export async function runDailyHygiene(deps: HygieneDeps, userId: string): Promis
     reapSummaryRuns,
   } = deps;
   const reaped = await runIsolatedCount("cron.reap.error", reapProcessedMessages);
-  await runIsolatedEffect("cron.reap_messages.error", () => reapMessages(userId));
+  const reapedMessages = await runIsolatedEffect("cron.reap_messages.error", () =>
+    reapMessages(userId),
+  );
   const fixed = await runIsolatedCount("cron.goal_reconcile.error", () =>
     reconcileGoalBalances(userId),
   );
-  if (fixed > 0) log.warn("cron.goal_reconcile.corrected", { goals: fixed });
+  if (fixed.count > 0) log.warn("cron.goal_reconcile.corrected", { goals: fixed.count });
 
   const reapedNudges = await runIsolatedCount("cron.reap_nudges.error", reapNudges);
   const reapedSummaries = await runIsolatedCount("cron.reap_summaries.error", reapSummaryRuns);
 
-  return { reaped, reapedNudges, reapedSummaries };
+  // degraded = any reaper's error was swallowed, so the daily cleanup was incomplete. Surfaced on
+  // cron.done so a persistently-failing reaper (silent data accumulation) is alertable.
+  const degraded = !(
+    reaped.ok &&
+    reapedMessages.ok &&
+    fixed.ok &&
+    reapedNudges.ok &&
+    reapedSummaries.ok
+  );
+
+  return {
+    reaped: reaped.count,
+    reapedNudges: reapedNudges.count,
+    reapedSummaries: reapedSummaries.count,
+    degraded,
+  };
 }
 
 async function runIsolatedCount(
   event: HygieneErrorEvent,
   operation: () => Promise<number>,
-): Promise<number> {
+): Promise<{ count: number; ok: boolean }> {
   try {
-    return await operation();
+    return { count: await operation(), ok: true };
   } catch (err) {
     if (err instanceof Error) {
       log.error(event, errInfo(err));
-      return 0;
+      return { count: 0, ok: false };
     }
     throw err;
   }
@@ -56,13 +73,14 @@ async function runIsolatedCount(
 async function runIsolatedEffect(
   event: HygieneErrorEvent,
   operation: () => Promise<unknown>,
-): Promise<void> {
+): Promise<{ ok: boolean }> {
   try {
     await operation();
+    return { ok: true };
   } catch (err) {
     if (err instanceof Error) {
       log.error(event, errInfo(err));
-      return;
+      return { ok: false };
     }
     throw err;
   }
