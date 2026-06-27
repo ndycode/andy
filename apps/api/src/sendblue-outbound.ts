@@ -23,7 +23,7 @@ export async function sendMessage(phone: string, content: string): Promise<void>
 
 export async function sendTyping(phone: string): Promise<void> {
   await sendBestEffort("sendblue.typing.error", () =>
-    post("/send-typing-indicator", { number: phone }),
+    post("/send-typing-indicator", { number: phone, from_number: env.SENDBLUE_FROM_NUMBER }),
   );
 }
 
