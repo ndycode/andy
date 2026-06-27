@@ -57,4 +57,35 @@ describe("runPostCommitEffects", () => {
 
     expect(calls).toEqual([{ fn: "learnHabit", args: ["user-1", "grab", "Transport"] }]);
   });
+
+  test("starts tapback without waiting for habit learning to settle", async () => {
+    const calls: Call[] = [];
+    let finishHabit!: () => void;
+    const slowHabit = new Promise<void>((resolve) => {
+      finishHabit = resolve;
+    });
+    const rec = (fn: string, ...args: unknown[]) => calls.push({ fn, args });
+
+    const done = runPostCommitEffects({
+      deps: {
+        learnHabit: async (...args: unknown[]) => {
+          rec("learnHabit", ...args);
+          await slowHabit;
+        },
+        sendReaction: async (...args: unknown[]) => {
+          rec("sendReaction", ...args);
+        },
+      },
+      phone: "+639171234567",
+      userId: "user-1",
+      writes: [EXPENSE],
+      messageId: "m1",
+    });
+
+    await Promise.resolve();
+    expect(calls.map((c) => c.fn)).toEqual(["learnHabit", "sendReaction"]);
+
+    finishHabit();
+    await done;
+  });
 });

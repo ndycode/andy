@@ -19,7 +19,15 @@ export async function runPostCommitEffects({
     if (w.type === "expense" && w.note)
       habitWrites.push(deps.learnHabit(userId, w.note, w.category));
   }
-  if (habitWrites.length > 0) await Promise.allSettled(habitWrites);
+  const habitSettled = habitWrites.length > 0 ? Promise.allSettled(habitWrites) : Promise.resolve();
+  const reaction =
+    writes.length > 0 && messageId
+      ? deps.sendReaction(phone, "love", messageId).then(
+          () => null,
+          (err: unknown) => err,
+        )
+      : Promise.resolve(null);
 
-  if (writes.length > 0 && messageId) await deps.sendReaction(phone, "love", messageId);
+  const [, reactionErr] = await Promise.all([habitSettled, reaction]);
+  if (reactionErr !== null) throw reactionErr;
 }
