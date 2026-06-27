@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { FlushWriteTx } from "./flush-write-types";
 import { applyMemoryWriteIntent } from "./memory-write-applier";
 
@@ -25,7 +26,7 @@ describe("memory write applier boundary", () => {
     expect(typeof applyMemoryWriteIntent).toBe("function");
   });
 
-  test("saveMemory trims content and skips exact case-insensitive duplicates", async () => {
+  test("saveMemory trims content and skips duplicate rows", async () => {
     const fresh = fakeMemoryTx(false);
     await applyMemoryWriteIntent(fresh.tx, {
       type: "saveMemory",
@@ -47,5 +48,12 @@ describe("memory write applier boundary", () => {
     });
 
     expect(duplicate.inserts).toHaveLength(0);
+  });
+
+  test("saveMemory duplicate checks use the normalized memory key", () => {
+    const source = readFileSync(new URL("./memory-write-applier.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("normalizeMemoryContent(content)");
+    expect(source).toContain("MEMORY_CONTENT_KEY_SQL");
   });
 });

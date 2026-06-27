@@ -1,6 +1,6 @@
 import { and, eq, ilike, sql } from "drizzle-orm";
 import { getDb } from "./client";
-import { selectPromptMemories } from "./memory-helpers";
+import { normalizeMemoryContent, selectPromptMemories } from "./memory-helpers";
 import { escapeLike } from "./query-helpers";
 import { type MemoryKind, memories } from "./schema";
 
@@ -32,6 +32,8 @@ export interface MemoryLookupExec {
   select(selection: MemorySelection): MemoryLookupFrom;
 }
 
+export const MEMORY_CONTENT_KEY_SQL = sql`lower(regexp_replace(btrim(${memories.content}), ${"\\s+"}, ${" "}, ${"g"}))`;
+
 /** Save a memory (optionally typed). */
 export async function saveMemory(
   userId: string,
@@ -41,12 +43,11 @@ export async function saveMemory(
   const db = getDb();
   const trimmed = content.trim().slice(0, 4000);
   if (!trimmed) return;
+  const normalized = normalizeMemoryContent(trimmed);
   const [existing] = await db
     .select({ id: memories.id })
     .from(memories)
-    .where(
-      and(eq(memories.userId, userId), sql`lower(${memories.content}) = ${trimmed.toLowerCase()}`),
-    )
+    .where(and(eq(memories.userId, userId), sql`${MEMORY_CONTENT_KEY_SQL} = ${normalized}`))
     .limit(1);
   if (existing) return;
   await db.insert(memories).values({ userId, content: trimmed, kind });
@@ -119,12 +120,12 @@ export async function findMemoryToForget(
 ): Promise<MemoryForgetHit | null> {
   const q = query.trim();
   if (!q) return null;
-  const lowered = q.toLowerCase();
-  // Exact (case-insensitive) wins; lower(content) = lower(query) is an equality, not a scan pattern.
+  const normalized = normalizeMemoryContent(q);
+  // Exact normalized content wins; this is equality on a canonical key, not a scan pattern.
   const [exact] = await exec
     .select({ id: memories.id, content: memories.content })
     .from(memories)
-    .where(and(eq(memories.userId, userId), sql`lower(${memories.content}) = ${lowered}`))
+    .where(and(eq(memories.userId, userId), sql`${MEMORY_CONTENT_KEY_SQL} = ${normalized}`))
     .orderBy(sql`${memories.createdAt} desc`)
     .limit(1);
   if (exact) return exact;

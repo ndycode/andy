@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { selectPromptMemories } from "./memory-helpers";
+import { normalizeMemoryContent, selectPromptMemories } from "./memory-helpers";
 
 describe("selectPromptMemories", () => {
-  test("de-dupes exact content case-insensitively, keeping the first row", () => {
+  test("normalizes memory content for duplicate keys", () => {
+    expect(normalizeMemoryContent("  Payday   is every 15th  ")).toBe("payday is every 15th");
+  });
+
+  test("de-dupes normalized content case-insensitively, keeping the first row", () => {
     const rows = [
       { content: "Payday is the 15th", kind: "fact" },
-      { content: "payday is the 15th", kind: "payday" },
+      { content: "payday   is the 15th", kind: "payday" },
     ];
 
     expect(selectPromptMemories(rows, 10)).toEqual(["Payday is the 15th"]);

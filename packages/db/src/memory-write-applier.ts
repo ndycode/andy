@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { FlushWriteTx, MemoryWriteIntent } from "./flush-write-types";
-import { findMemoryToForget } from "./memory-queries";
+import { normalizeMemoryContent } from "./memory-helpers";
+import { findMemoryToForget, MEMORY_CONTENT_KEY_SQL } from "./memory-queries";
 import { memories, messages } from "./schema";
 
 export async function applyMemoryWriteIntent(
@@ -10,15 +11,11 @@ export async function applyMemoryWriteIntent(
   if (w.type === "saveMemory") {
     const content = w.content.trim().slice(0, 4000);
     if (!content) return;
+    const normalized = normalizeMemoryContent(content);
     const [existing] = await tx
       .select({ id: memories.id })
       .from(memories)
-      .where(
-        and(
-          eq(memories.userId, w.userId),
-          sql`lower(${memories.content}) = ${content.toLowerCase()}`,
-        ),
-      )
+      .where(and(eq(memories.userId, w.userId), sql`${MEMORY_CONTENT_KEY_SQL} = ${normalized}`))
       .limit(1);
     if (existing) return;
     await tx.insert(memories).values({
