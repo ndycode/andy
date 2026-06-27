@@ -90,10 +90,13 @@ export async function applyTransactionWriteIntent(
             })
             .where(and(eq(savingsGoals.id, row.goalId), eq(savingsGoals.userId, w.userId)));
         }
-        const set: Record<string, unknown> = {};
+        // Partial<$inferInsert> (not Record<string, unknown>) so a typo'd column or a wrong value
+        // type on the integer-centavo edit path is a compile error again, not a silent no-op.
+        const set: Partial<typeof transactions.$inferInsert> = {};
         if (w.patch.amountCentavos != null) set.amountCentavos = w.patch.amountCentavos;
         if (w.patch.category != null && !row.goalId) set.category = w.patch.category;
-        if (w.patch.note != null) set.note = w.patch.note;
+        // Bound the note exactly like the insert path (line 23) so an edited note can't exceed NOTE_MAX.
+        if (w.patch.note != null) set.note = w.patch.note.slice(0, NOTE_MAX);
         if (Object.keys(set).length > 0) {
           set.updatedAt = new Date();
           await tx

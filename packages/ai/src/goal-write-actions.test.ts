@@ -77,6 +77,24 @@ describe("goal write actions", () => {
     ]);
   });
 
+  test("repeated same-turn contributions to one goal echo the running total, not a stale snapshot", async () => {
+    const { ctx: toolCtx } = ctx();
+    const first = await contributeToSavingsGoal(
+      toolCtx,
+      { goalName: "laptop", amount: "2000", date: "2026-06-03" },
+      goalActionDeps([]),
+    );
+    expect(first).toMatchObject({ ok: true, progress: "₱7,000.00 / ₱20,000.00" });
+    // Second contribution in the SAME turn must include the first one (still buffered, not yet
+    // flushed), so the snapshot savedCentavos isn't echoed as if the first never happened.
+    const second = await contributeToSavingsGoal(
+      toolCtx,
+      { goalName: "laptop", amount: "3000", date: "2026-06-03" },
+      goalActionDeps([]),
+    );
+    expect(second).toMatchObject({ ok: true, progress: "₱10,000.00 / ₱20,000.00" });
+  });
+
   test("contributeToSavingsGoal gives the same-turn create retry hint without buffering", async () => {
     const { ctx: toolCtx, drain } = ctx();
 

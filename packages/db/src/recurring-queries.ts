@@ -1,6 +1,7 @@
 import { currentWeekStart, daysInLocalMonth, localDate } from "@repo/shared/time";
 import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "./client";
+import { LABEL_MAX } from "./flush-write-types";
 import { addDaysToLocalDate, pickRecurringMatch } from "./query-helpers";
 import { recurringItems } from "./schema";
 import type { RecurringInput } from "./write-intents";
@@ -12,7 +13,7 @@ export async function addRecurring(userId: string, r: RecurringInput) {
   await db.execute(sql`
     INSERT INTO ${recurringItems}
       (user_id, label, kind, amount_centavos, category, cadence, day_of_month, day_of_week)
-    VALUES (${userId}, ${r.label}, ${r.kind}, ${r.amountCentavos}, ${r.category},
+    VALUES (${userId}, ${r.label.slice(0, LABEL_MAX)}, ${r.kind}, ${r.amountCentavos}, ${r.category},
             ${r.cadence}, ${r.dayOfMonth ?? null}, ${r.dayOfWeek ?? null})
     ON CONFLICT (user_id, lower(label)) DO UPDATE SET
       label = excluded.label, kind = excluded.kind,

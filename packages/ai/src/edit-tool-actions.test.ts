@@ -43,4 +43,40 @@ describe("edit-tool-actions boundary", () => {
     });
     expect(c.peekWrites()).toHaveLength(1);
   });
+
+  test("editLastTransaction never recategorizes an expense as Income", () => {
+    const c = ctx();
+    c.addWrite({
+      type: "expense",
+      userId: "user-1",
+      amountCentavos: 18_000,
+      category: "Transport",
+      note: "grab",
+      localDate: "2026-06-11",
+    });
+    // "salary"/"income" coerce to Income via coerceCategory; the expense edit path must NOT store an
+    // expense under Income (it would corrupt every income/expense aggregate).
+    const res = editLastTransaction(c, { category: "income" });
+    expect(res.ok).toBe(true);
+    const w = c.peekWrites().at(-1);
+    expect(w?.type).toBe("editLast");
+    if (w?.type === "editLast") expect(w.patch.category).not.toBe("Income");
+  });
+
+  test("editLastTransaction rejects a category change on an income transaction", () => {
+    const c = ctx();
+    c.addWrite({
+      type: "income",
+      userId: "user-1",
+      amountCentavos: 2_500_000,
+      category: "Income",
+      note: "sweldo",
+      localDate: "2026-06-11",
+    });
+    expect(editLastTransaction(c, { category: "Food" })).toEqual({
+      ok: false,
+      error: "that's income — it stays under Income. edit the amount instead.",
+    });
+    expect(c.peekWrites()).toHaveLength(1);
+  });
 });

@@ -8,6 +8,11 @@ export async function budgetReaction(
   writes: WriteIntent[],
   budgetStatusesForFn: typeof budgetStatusesFor,
 ): Promise<string | null> {
+  // If the same turn also edited or deleted a transaction, the per-expense `justLogged` amount no
+  // longer matches the post-flush month spend (which reflects the edit/delete), so priorSpent would
+  // be wrong and could fire a bogus "over budget" line. Stay quiet rather than risk a wrong figure.
+  if (writes.some((w) => w.type === "editLast" || w.type === "deleteLast")) return null;
+
   const thisMonth = monthRange();
   const loggedByCategory = new Map<Category, number>();
   for (const w of writes) {

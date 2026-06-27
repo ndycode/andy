@@ -20,6 +20,28 @@ describe("budgetReaction", () => {
     expect(line).toBe("that's 82% of your Food budget, ₱900.00 left for the month 👀");
   });
 
+  test("stays quiet when the turn also edited/deleted (per-expense justLogged math would be wrong)", async () => {
+    let queried = false;
+    const line = await budgetReaction(
+      "user-1",
+      [
+        FOOD_EXPENSE,
+        {
+          type: "editLast",
+          userId: "user-1",
+          targetSameTurn: true,
+          patch: { amountCentavos: 5000 },
+        },
+      ],
+      async () => {
+        queried = true;
+        return [{ category: "Food", spent: 410000, limit: 500000 }];
+      },
+    );
+    expect(line).toBeNull();
+    expect(queried).toBe(false);
+  });
+
   test("ignores non-current-month expenses before querying budget status", async () => {
     let queried = false;
 

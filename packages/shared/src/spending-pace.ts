@@ -1,3 +1,4 @@
+import { BUDGET_NEAR_RATIO } from "./budget";
 import { projectMonthEnd, projectMonthEndRobust } from "./spending-projection";
 
 export interface PaceVerdict {
@@ -39,7 +40,7 @@ export function shouldWarnPace(
   opts: { minDay?: number; nearRatio?: number; marginRatio?: number } = {},
 ): boolean {
   const minDay = opts.minDay ?? 5;
-  const nearRatio = opts.nearRatio ?? 0.8;
+  const nearRatio = opts.nearRatio ?? BUDGET_NEAR_RATIO;
   const marginRatio = opts.marginRatio ?? 0.1;
   if (v.limit <= 0) return false;
   if (dayOfMonth < minDay) return false;

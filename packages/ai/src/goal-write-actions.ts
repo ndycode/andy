@@ -60,6 +60,12 @@ export async function contributeToSavingsGoal(
     }
     return { ok: false, error: `no goal matching "${goalName}". create it first.` };
   }
+  // Account for earlier same-turn contributions to THIS goal so a second "add 1k to japan" in one
+  // message echoes the running total, not savedCentavos (the pre-turn snapshot) + only this amount.
+  let priorSameTurn = 0;
+  for (const w of ctx.peekWrites()) {
+    if (w.type === "goalContribution" && w.goalId === goal.id) priorSameTurn += w.amountCentavos;
+  }
   ctx.addWrite({
     type: "goalContribution",
     userId: ctx.userId,
@@ -67,7 +73,7 @@ export async function contributeToSavingsGoal(
     amountCentavos: r.centavos,
     localDate: d.date,
   });
-  const newSaved = goal.savedCentavos + r.centavos;
+  const newSaved = goal.savedCentavos + priorSameTurn + r.centavos;
   return {
     ok: true,
     goal: goal.name,

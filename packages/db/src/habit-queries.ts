@@ -14,7 +14,14 @@ export async function learnHabit(userId: string, merchant: string, category: Cat
     .values(keys.map((merchant) => ({ userId, merchant, category, count: 1 })))
     .onConflictDoUpdate({
       target: [habits.userId, habits.merchant],
-      set: { category, count: sql`${habits.count} + 1`, updatedAt: new Date() },
+      // count is confidence in THIS merchant->category mapping. Only reinforce (count+1) when the
+      // category is unchanged; if it flips (e.g. "grab" was Food, now Transport), reset to 1 so the
+      // count reflects confidence in the NEW mapping, not the total times the merchant was seen.
+      set: {
+        category,
+        count: sql`case when ${habits.category} = ${category} then ${habits.count} + 1 else 1 end`,
+        updatedAt: new Date(),
+      },
     });
 }
 

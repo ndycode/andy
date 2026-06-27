@@ -21,15 +21,19 @@ export async function getInsights(userId: string, at: Date = new Date()) {
     })
     .from(transactions)
     .where(base);
+  // Group case/whitespace-insensitively so "Grab", "grab" and "grab " collapse into ONE merchant
+  // leak instead of fragmenting (which understated every repeat merchant). max(note) picks a stable
+  // display label for the group; the tiebreak orders by the same normalized key.
+  const noteKey = sql`lower(trim(${transactions.note}))`;
   const [leak] = await db
     .select({
-      note: transactions.note,
+      note: sql<string>`max(${transactions.note})`,
       total: sql<number>`sum(${transactions.amountCentavos})::bigint`,
     })
     .from(transactions)
     .where(and(base, sql`${transactions.note} is not null and trim(${transactions.note}) <> ''`))
-    .groupBy(transactions.note)
-    .orderBy(sql`sum(${transactions.amountCentavos}) desc`, sql`${transactions.note} asc`)
+    .groupBy(noteKey)
+    .orderBy(sql`sum(${transactions.amountCentavos}) desc`, noteKey)
     .limit(1);
   return {
     weekendCentavos: toSafeCentavos(we?.weekend ?? 0),

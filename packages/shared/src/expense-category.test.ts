@@ -7,5 +7,10 @@ describe("expense-category module boundary", () => {
     expect(coerceExpenseCategory("Food", "grab")).toBe("Food");
     expect(coerceExpenseCategory("Income", "lunch")).toBe("Food");
     expect(coerceExpenseCategory("Other", "salary advance fee")).toBe("Other");
+    // Literal category names in the note are salvaged too (routed through coerceCategory), not only
+    // the slang in CATEGORY_SYNONYMS.
+    expect(coerceExpenseCategory("Other", "food")).toBe("Food");
+    expect(coerceExpenseCategory("Other", "transport")).toBe("Transport");
+    expect(coerceExpenseCategory("Income", "bills")).toBe("Bills");
   });
 });

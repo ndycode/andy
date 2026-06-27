@@ -34,7 +34,7 @@ export async function applyBudgetGoalWriteIntent(
       .delete(budgets)
       .where(and(eq(budgets.userId, w.userId), eq(budgets.category, w.category)));
   } else if (w.type === "editGoal") {
-    const set: Record<string, unknown> = {};
+    const set: Partial<typeof savingsGoals.$inferInsert> = {};
     if (w.patch.name != null) set.name = w.patch.name.slice(0, NAME_MAX);
     if (w.patch.targetCentavos != null) set.targetCentavos = w.patch.targetCentavos;
     if (w.patch.targetDate !== undefined) set.targetDate = w.patch.targetDate;

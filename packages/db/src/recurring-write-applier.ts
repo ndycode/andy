@@ -38,7 +38,7 @@ export async function applyRecurringWriteIntent(
       .where(eq(recurringItems.userId, w.userId));
     const hit = pickRecurringMatch(rows, w.match);
     if (hit) {
-      const set: Record<string, unknown> = {};
+      const set: Partial<typeof recurringItems.$inferInsert> = {};
       if (w.patch.amountCentavos != null) set.amountCentavos = w.patch.amountCentavos;
       if (w.patch.category != null) set.category = w.patch.category;
       if (w.patch.cadence != null) set.cadence = w.patch.cadence;

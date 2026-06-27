@@ -92,7 +92,16 @@ describe("parseAmount", () => {
   });
 
   test("rejects a range with a clear actionable reason", () => {
-    for (const range of ["100-200", "100 to 200", "50–100"]) {
+    // Includes ₱-prefixed / spaced forms — the range check runs AFTER currency+space stripping so the
+    // symbols and spaces between the numbers and the dash don't hide the range.
+    for (const range of [
+      "100-200",
+      "100 to 200",
+      "50–100",
+      "₱100–₱200",
+      "₱100 – ₱200",
+      "₱50 to ₱100",
+    ]) {
       const result = parseAmount(range);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toMatch(/range/);

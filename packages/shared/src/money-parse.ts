@@ -6,12 +6,13 @@ export type ParseResult = { ok: true; centavos: number } | { ok: false; reason: 
  * Convert a clean decimal string times a 10^k multiplier into integer centavos without a float
  * intermediate. This preserves half-up rounding for sub-centavo precision.
  */
-function decimalToCentavos(s: string, multiplier: number): number {
+function decimalToCentavos(s: string, suffixExp: number): number {
   const [intRaw, fracRaw = ""] = s.split(".");
-  const k = multiplier === 1_000_000 ? 6 : multiplier === 1_000 ? 3 : 0;
   // Do not strip leading zeros: digits is sliced positionally against fracRaw.length below.
   const digits = `${intRaw}${fracRaw}` || "0";
-  const exp = 2 + k - fracRaw.length;
+  // 2 = pesos->centavos; suffixExp is 0|3|6 from a bare/"k"/"m" suffix (single source in parseAmount,
+  // replacing a duplicated multiplier->exponent ternary).
+  const exp = 2 + suffixExp - fracRaw.length;
   if (exp >= 0) return Number(digits) * 10 ** exp;
 
   const cut = -exp;
@@ -31,22 +32,24 @@ export function parseAmount(raw: string): ParseResult {
   let s = raw.trim().toLowerCase();
   if (s === "") return { ok: false, reason: "empty" };
 
-  if (/\d\s*(?:-|to|–|—)\s*\d/.test(s)) {
-    return { ok: false, reason: "looks like a range — send one amount" };
-  }
-
   s = s
     .replace(/₱|php|pesos?/g, "")
     .replace(/\s/g, "")
     .trim();
 
-  let multiplier = 1;
+  // Range check AFTER stripping currency symbols + spaces, so "₱100 – ₱200" (symbols/spaces between
+  // the numbers and the dash) is caught too — not only the already-bare "100-200" form.
+  if (/\d\s*(?:-|to|–|—)\s*\d/.test(s)) {
+    return { ok: false, reason: "looks like a range — send one amount" };
+  }
+
+  let suffixExp = 0;
   const suffix = s.at(-1);
   if (suffix === "k") {
-    multiplier = 1_000;
+    suffixExp = 3;
     s = s.slice(0, -1);
   } else if (suffix === "m") {
-    multiplier = 1_000_000;
+    suffixExp = 6;
     s = s.slice(0, -1);
   }
 
@@ -64,7 +67,7 @@ export function parseAmount(raw: string): ParseResult {
     return { ok: false, reason: `unparseable amount: "${raw}"` };
   }
 
-  const centavos = decimalToCentavos(s, multiplier);
+  const centavos = decimalToCentavos(s, suffixExp);
   if (!Number.isFinite(centavos)) return { ok: false, reason: "not finite" };
   if (centavos <= 0) return { ok: false, reason: "must be positive" };
   if (centavos > MAX_ENTRY_CENTAVOS) return { ok: false, reason: "exceeds per-entry cap" };

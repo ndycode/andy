@@ -1,10 +1,9 @@
 import { shouldWarnPace, spendingPace } from "@repo/shared/analytics";
+import { BUDGET_NEAR_RATIO } from "@repo/shared/budget";
 import { errInfo, log } from "@repo/shared/log";
 import { daysInLocalMonth, localDayOfMonth } from "@repo/shared/time";
 import { budgetPaceNudgeCopy, budgetThresholdNudgeCopy } from "./cron-budget-copy";
 import type { BudgetCheckResult, CronDeps, CronRunContext } from "./cron-types";
-
-const NUDGE_THRESHOLD = 0.8;
 
 export type BudgetCheckDeps = Pick<
   CronDeps,
@@ -27,7 +26,7 @@ export async function runBudgetChecks(
     if (b.limit <= 0) continue;
     const ratio = b.spent / b.limit;
 
-    if (ratio >= NUDGE_THRESHOLD) {
+    if (ratio >= BUDGET_NEAR_RATIO) {
       const kind = `budget:${b.category}`;
       try {
         if (!(await recordNudge(userId, kind))) continue;
@@ -47,11 +46,13 @@ export async function runBudgetChecks(
       continue;
     }
 
-    const paceAmounts = await categoryAmountsThisMonth(userId, b.category, now);
-    const pace = spendingPace(b.spent, dom, dim, b.limit, paceAmounts);
-    if (!shouldWarnPace(pace, dom)) continue;
     const kind = `pace:${b.category}`;
     try {
+      // Fetch + compute INSIDE the try so a DB error for one category is logged and skipped, not
+      // allowed to abort the pace checks for every remaining category.
+      const paceAmounts = await categoryAmountsThisMonth(userId, b.category, now);
+      const pace = spendingPace(b.spent, dom, dim, b.limit, paceAmounts);
+      if (!shouldWarnPace(pace, dom)) continue;
       if (!(await recordNudge(userId, kind))) continue;
       const { fallback, brief } = budgetPaceNudgeCopy({
         category: b.category,
