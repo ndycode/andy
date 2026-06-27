@@ -18,90 +18,91 @@ export type FinanceToolDeps = {
  * Write-tools buffer intents via ctx.addWrite (no DB connection held during the agent run).
  * Read-tools issue their own short reads.
  */
-const TOOL_PROFILE_KEYS: Record<ToolProfile, readonly string[] | null> = {
-  chat: [],
-  log: ["logExpense", "logIncome", "editLast", "deleteLast"],
-  read: [
-    "getSpending",
-    "getPeriodSpending",
-    "getOverview",
-    "getCategoryBreakdown",
-    "getRecent",
-    "insights",
-    "compareSpending",
-    "searchHistory",
-    "getSpendingPace",
-  ],
-  memory: ["remember", "forgetMemory", "listMemory"],
-  goal: [
-    "createGoal",
-    "contributeToGoal",
-    "getGoalStatus",
-    "editGoal",
-    "deleteGoal",
-    "editLast",
-    "deleteLast",
-  ],
-  budget: ["setBudget", "getBudgets", "removeBudget"],
-  recurring: ["addRecurringBill", "listRecurringBills", "removeRecurringBill", "editRecurringBill"],
-  full: null,
-};
-
 export function buildTools(
   ctx: ToolContext,
   deps: FinanceToolDeps = {},
   profile: ToolProfile = "full",
-) {
-  // ── logging ──────────────────────────────────────────────
-  const logTools = buildLogTools(ctx, deps.log);
+): FinanceTools {
+  switch (profile) {
+    case "chat":
+      return narrowTools({});
+    case "log":
+      return narrowTools(buildLogToolProfile(ctx, deps));
+    case "read":
+      return narrowTools(buildReadToolProfile(ctx));
+    case "memory":
+      return narrowTools(buildMemoryTools(ctx));
+    case "goal":
+      return narrowTools(buildGoalToolProfile(ctx));
+    case "budget":
+      return narrowTools(buildBudgetTools(ctx));
+    case "recurring":
+      return narrowTools(buildRecurringTools(ctx));
+    case "full":
+      return buildFullTools(ctx, deps);
+  }
+}
 
-  // ── questions / reads ────────────────────────────────────
-  const readTools = buildReadTools(ctx);
+export type FinanceTools = ReturnType<typeof buildFullTools>;
 
-  // ── savings goals ────────────────────────────────────────
-  const goalTools = buildGoalTools(ctx);
-
-  // ── memory ───────────────────────────────────────────────
-  const memoryTools = buildMemoryTools(ctx);
-
-  // ── edit / delete ────────────────────────────────────────
+function buildLogToolProfile(ctx: ToolContext, deps: FinanceToolDeps) {
   const editTools = buildEditTools(ctx);
 
-  // ── recurring bills ──────────────────────────────────────
-  const recurringTools = buildRecurringTools(ctx);
+  return {
+    ...buildLogTools(ctx, deps.log),
+    editLast: editTools.editLast,
+    deleteLast: editTools.deleteLast,
+  };
+}
 
-  // ── budgets ──────────────────────────────────────────────
-  const budgetTools = buildBudgetTools(ctx);
+function buildReadToolProfile(ctx: ToolContext) {
+  const readTools = buildReadTools(ctx);
 
-  const tools = {
-    ...logTools,
+  return {
     getSpending: readTools.getSpending,
     getPeriodSpending: readTools.getPeriodSpending,
     getOverview: readTools.getOverview,
     getCategoryBreakdown: readTools.getCategoryBreakdown,
     getRecent: readTools.getRecent,
-    ...goalTools,
-    ...memoryTools,
-    ...editTools,
     insights: readTools.insights,
     compareSpending: readTools.compareSpending,
     searchHistory: readTools.searchHistory,
     getSpendingPace: readTools.getSpendingPace,
-    ...recurringTools,
-    ...budgetTools,
   };
-  return pickProfileTools(tools, profile);
 }
 
-export type FinanceTools = ReturnType<typeof buildTools>;
+function buildGoalToolProfile(ctx: ToolContext) {
+  const editTools = buildEditTools(ctx);
 
-function pickProfileTools<T extends Record<string, unknown>>(tools: T, profile: ToolProfile): T {
-  const keys = TOOL_PROFILE_KEYS[profile];
-  if (keys === null) return tools;
+  return {
+    ...buildGoalTools(ctx),
+    editLast: editTools.editLast,
+    deleteLast: editTools.deleteLast,
+  };
+}
 
-  const selected: Partial<T> = {};
-  for (const key of keys) {
-    if (key in tools) selected[key as keyof T] = tools[key as keyof T];
-  }
-  return selected as T;
+function buildFullTools(ctx: ToolContext, deps: FinanceToolDeps) {
+  const readTools = buildReadTools(ctx);
+
+  return {
+    ...buildLogTools(ctx, deps.log),
+    getSpending: readTools.getSpending,
+    getPeriodSpending: readTools.getPeriodSpending,
+    getOverview: readTools.getOverview,
+    getCategoryBreakdown: readTools.getCategoryBreakdown,
+    getRecent: readTools.getRecent,
+    ...buildGoalTools(ctx),
+    ...buildMemoryTools(ctx),
+    ...buildEditTools(ctx),
+    insights: readTools.insights,
+    compareSpending: readTools.compareSpending,
+    searchHistory: readTools.searchHistory,
+    getSpendingPace: readTools.getSpendingPace,
+    ...buildRecurringTools(ctx),
+    ...buildBudgetTools(ctx),
+  };
+}
+
+function narrowTools(tools: Partial<FinanceTools>): FinanceTools {
+  return tools as FinanceTools;
 }

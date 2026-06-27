@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { LastTransaction } from "@repo/db";
 import { toolContext as ctx } from "./context-test-harness";
 import { buildTools } from "./tools";
@@ -67,6 +68,17 @@ describe("buildTools profile routing", () => {
 
   test("chat profile exposes no tools for true small talk", () => {
     expect(Object.keys(buildTools(ctx(), {}, "chat"))).toEqual([]);
+  });
+
+  test("narrow profiles build only their selected tool groups", () => {
+    const source = readFileSync(new URL("./tools.ts", import.meta.url), "utf8");
+
+    expect(source).toContain('case "chat":');
+    expect(source).toContain("return narrowTools({});");
+    expect(source).toContain("return narrowTools(buildLogToolProfile(ctx, deps));");
+    expect(source).toContain("return narrowTools(buildReadToolProfile(ctx));");
+    expect(source).not.toContain("pickProfileTools");
+    expect(source).not.toContain("TOOL_PROFILE_KEYS");
   });
 });
 
