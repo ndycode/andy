@@ -108,4 +108,20 @@ describe("handleInbound — three-phase orchestration", () => {
     expect(callCount(calls, "sendMessage")).toBe(1);
     expect(callCount(calls, "sendReaction")).toBe(0);
   });
+
+  test("post-commit effects are bounded after the reply has already sent", async () => {
+    const deps: InboundDeps = {
+      ...handlerDeps(calls, { reply: "logged ₱180 transport 🛵", writes: [EXPENSE] }),
+      learnHabit: async (...args) => {
+        calls.push({ fn: "learnHabit", args });
+        await new Promise(() => undefined);
+      },
+    };
+
+    await handleInbound(PHONE, "grab 180", "m1", deps);
+
+    expect(callCount(calls, "sendMessage")).toBe(1);
+    expect(callCount(calls, "learnHabit")).toBe(1);
+    expect(callCount(calls, "sendReaction")).toBe(1);
+  });
 });

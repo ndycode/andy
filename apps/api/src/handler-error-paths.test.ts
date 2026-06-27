@@ -138,4 +138,32 @@ describe("handleInbound — post-flush and failure boundaries", () => {
     expect(callCount(calls, "flushWrites")).toBe(0);
     expect(callCount(calls, "sendMessage")).toBe(1);
   });
+
+  test("a non-Error post-commit effect failure is logged without throwing", async () => {
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = (line?: unknown) => {
+      errors.push(String(line));
+    };
+    const failure = { reason: "bad-tapback" } as const;
+
+    try {
+      await expect(
+        handleInbound(PHONE, "grab 180", "m1", {
+          ...handlerDeps(calls, { writes: [EXPENSE] }),
+          sendReaction: async (...args) => {
+            calls.push({ fn: "sendReaction", args });
+            throw failure;
+          },
+        }),
+      ).resolves.toBeUndefined();
+    } finally {
+      console.error = realError;
+    }
+
+    expect(callCount(calls, "flushWrites")).toBe(1);
+    expect(callCount(calls, "sendMessage")).toBe(1);
+    expect(callCount(calls, "sendReaction")).toBe(1);
+    expect(errors.some((line) => line.includes('"event":"inbound.post_commit_failed"'))).toBe(true);
+  });
 });

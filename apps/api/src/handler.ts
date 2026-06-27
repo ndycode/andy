@@ -28,6 +28,7 @@ const DEFAULT_DEPS: InboundDeps = {
 
 const TYPING_CUE_MAX_WAIT_MS = 250;
 const BUDGET_REACTION_MAX_WAIT_MS = 500;
+const POST_COMMIT_MAX_WAIT_MS = 500;
 const INBOUND_MODEL_DEADLINE_MS = 18_000;
 
 /**
@@ -134,14 +135,12 @@ export async function handleInbound(
     log.info("inbound.done", { corr, writes: writes.length, reacted: Boolean(reaction) });
 
     // Post-commit effects (habit learning + tapback) are best-effort and run AFTER the commit + reply.
-    // Self-catch so a failure here never falls into the pre-flush catch below — that would send the
-    // user a "something went wrong" message about data that was actually saved and acknowledged.
-    try {
-      await runPostCommitEffects({ deps, phone, userId, writes, messageId });
-    } catch (postErr) {
-      if (!(postErr instanceof Error)) throw postErr;
-      log.error("inbound.post_commit_failed", { corr, ...errInfo(postErr) });
-    }
+    // Bound the wait so a slow optional side effect cannot hold the webhook open after the user has
+    // already received the committed-data acknowledgement.
+    await waitForPostCommitEffects(
+      runPostCommitEffects({ deps, phone, userId, writes, messageId }),
+      corr,
+    );
   } catch (err) {
     // Only PRE-flush errors reach here (agent or flush threw): the marker stays 'claimed', so a
     // redelivery safely retries — nothing committed, nothing lost. The post-flush reply send and the
@@ -157,6 +156,38 @@ export async function handleInbound(
       const sendInfo = errInfo(sendErr);
       log.error("inbound.failure_reply_send_failed", { corr, ...sendInfo });
     }
+  }
+}
+
+type PostCommitWaitResult = "done" | "timeout" | { error: unknown };
+
+async function waitForPostCommitEffects(task: Promise<void>, corr: string): Promise<void> {
+  const timeoutMs = process.env.NODE_ENV === "test" ? 1 : POST_COMMIT_MAX_WAIT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled: Promise<PostCommitWaitResult> = task.then(
+    () => "done",
+    (error: unknown) => ({ error }),
+  );
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([settled, timeout]);
+    if (result === "timeout") {
+      log.warn("inbound.post_commit_timeout", { corr, timeoutMs });
+      task.then(
+        () => log.info("inbound.post_commit_late", { corr }),
+        (error: unknown) =>
+          log.error("inbound.post_commit_late_failed", { corr, ...errInfo(error) }),
+      );
+      return;
+    }
+    if (result !== "done") {
+      log.error("inbound.post_commit_failed", { corr, ...errInfo(result.error) });
+    }
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
