@@ -27,6 +27,7 @@ const DEFAULT_DEPS: InboundDeps = {
 };
 
 const TYPING_CUE_MAX_WAIT_MS = 250;
+const BUDGET_REACTION_MAX_WAIT_MS = 500;
 const INBOUND_MODEL_DEADLINE_MS = 18_000;
 
 /**
@@ -102,22 +103,27 @@ export async function handleInbound(
       return;
     }
 
-    // In-the-moment reaction (Wave 3): if a just-logged expense crossed a budget threshold,
-    // append one Andy line to the SAME reply — zero extra messages, the data's already here.
-    let reaction: string | null = null;
-    try {
-      reaction = await budgetReaction(userId, writes, budgetStatusesFor);
-    } catch (reactionErr) {
-      if (!(reactionErr instanceof Error)) throw reactionErr;
-      const reactionInfo = errInfo(reactionErr);
-      log.error("inbound.budget_reaction_failed", { corr, ...reactionInfo });
+    // In-the-moment reaction (Wave 3): if a just-logged expense crossed a budget threshold, append
+    // one Andy line to the SAME reply. This is useful but optional; don't let the extra read hold the
+    // main committed-data acknowledgement hostage.
+    const reactionTask = resolveBudgetReaction(userId, writes, budgetStatusesFor, corr);
+    const typingTask = sendFastTypingCue(phone, sendTyping, corr);
+    const { reaction, timedOut: reactionTimedOut } = await waitForBudgetReaction(
+      reactionTask,
+      corr,
+    );
+    if (reactionTimedOut) {
+      reactionTask.then((lateReaction) => {
+        if (lateReaction) log.info("inbound.budget_reaction_late", { corr });
+      });
     }
+
     // The writes are already COMMITTED at this point. A send failure here must NOT fall into the
     // generic-failure catch below — that would tell the user "something went wrong" about data that
     // was actually saved, prompting a resend (the marker now dedups the data, but the reply is a lie).
     // Log it and move on; the turn is persisted, so the next message has full context regardless.
     try {
-      await sendFastTypingCue(phone, sendTyping, corr);
+      await typingTask;
       await sendMessage(phone, reaction ? `${reply}\n\n${reaction}` : reply);
     } catch (sendErr) {
       if (!(sendErr instanceof Error)) throw sendErr;
@@ -151,6 +157,45 @@ export async function handleInbound(
       const sendInfo = errInfo(sendErr);
       log.error("inbound.failure_reply_send_failed", { corr, ...sendInfo });
     }
+  }
+}
+
+async function resolveBudgetReaction(
+  userId: string,
+  writes: Awaited<ReturnType<InboundDeps["runAgent"]>>["writes"],
+  budgetStatusesForFn: InboundDeps["budgetStatusesFor"],
+  corr: string,
+): Promise<string | null> {
+  try {
+    return await budgetReaction(userId, writes, budgetStatusesForFn);
+  } catch (reactionErr) {
+    if (reactionErr instanceof Error) {
+      log.error("inbound.budget_reaction_failed", { corr, ...errInfo(reactionErr) });
+    } else {
+      log.error("inbound.budget_reaction_failed", { corr, message: String(reactionErr) });
+    }
+    return null;
+  }
+}
+
+async function waitForBudgetReaction(
+  reactionTask: Promise<string | null>,
+  corr: string,
+): Promise<{ reaction: string | null; timedOut: boolean }> {
+  const timeoutMs = process.env.NODE_ENV === "test" ? 1 : BUDGET_REACTION_MAX_WAIT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+  try {
+    const result = await Promise.race([reactionTask, timeout]);
+    if (result === "timeout") {
+      log.warn("inbound.budget_reaction_timeout", { corr, timeoutMs });
+      return { reaction: null, timedOut: true };
+    }
+    return { reaction: result, timedOut: false };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

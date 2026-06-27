@@ -77,6 +77,23 @@ describe("handleInbound — three-phase orchestration", () => {
     expect(calls.find((c) => c.fn === "sendMessage")?.args[1]).toBe("logged ₱180 transport 🛵");
   });
 
+  test("base reply sends if optional budget reaction lookup stalls", async () => {
+    const deps: InboundDeps = {
+      ...handlerDeps(calls, { reply: "logged ₱180 transport 🛵", writes: [EXPENSE] }),
+      budgetStatusesFor: async (...args) => {
+        calls.push({ fn: "budgetStatusesFor", args });
+        await new Promise(() => undefined);
+        return [];
+      },
+    };
+
+    await handleInbound(PHONE, "grab 180", "m1", deps);
+
+    expect(callCount(calls, "budgetStatusesFor")).toBe(1);
+    expect(callCount(calls, "sendMessage")).toBe(1);
+    expect(calls.find((c) => c.fn === "sendMessage")?.args[1]).toBe("logged ₱180 transport 🛵");
+  });
+
   test("superseded flush sends NO reply (the winning worker owns it)", async () => {
     await handleInbound(PHONE, "grab 180", "m1", handlerDeps(calls, { flush: "superseded" }));
     expect(callCount(calls, "flushWrites")).toBe(1);
