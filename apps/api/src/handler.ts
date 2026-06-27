@@ -1,22 +1,11 @@
 import { runAgent } from "@repo/ai";
-import {
-  budgetStatusesFor,
-  claimSlot,
-  findGoalByName,
-  flushWrites,
-  getMonthOverview,
-  getSpendingByCategory,
-  learnHabit,
-  listGoals,
-  resolveUserId,
-} from "@repo/db";
+import { budgetStatusesFor, claimSlot, flushWrites, learnHabit, resolveUserId } from "@repo/db";
 import { isAllowed } from "@repo/shared/allowlist";
 import { contentDedupKey } from "@repo/shared/dedup";
 import { env } from "@repo/shared/env";
 import { failureReply } from "@repo/shared/errors";
 import { errInfo, log } from "@repo/shared/log";
 import { APP_TIMEZONE, localDate } from "@repo/shared/time";
-import { tryFastPath } from "./fast-path";
 import { budgetReaction } from "./handler-budget-reaction";
 import { buildFlushIntents } from "./handler-flush-intents";
 import { runPostCommitEffects } from "./handler-post-commit-effects";
@@ -31,10 +20,6 @@ const DEFAULT_DEPS: InboundDeps = {
   runAgent,
   flushWrites,
   budgetStatusesFor,
-  getMonthOverview,
-  getSpendingByCategory,
-  findGoalByName,
-  listGoals,
   learnHabit,
   sendMessage,
   sendReaction,
@@ -48,7 +33,7 @@ const FAST_TYPING_JITTER_MS = 520;
  * Three-phase inbound handler (verification C1 — no DB connection held across the LLM run):
  *   0. allowlist gate (caller already token-checked)
  *   1. claim — atomic marker (closes the concurrent-redelivery double-log race)
- *   2. fast-path or agent — buffers writes, no connection held
+ *   2. agent — buffers writes, no connection held
  *   3. flush — short txn applies writes + completes marker, then brief typing cue + reply
  */
 export async function handleInbound(
@@ -88,23 +73,13 @@ export async function handleInbound(
   }
 
   try {
-    // Phase 2 — fast-path or agent (no DB connection held). The fast-path keeps common demo/logging
-    // messages off the free-model retry loop, which is often the slowest and least reliable hop.
+    // Phase 2 — agent (no DB connection held). Loads recent turns for conversation flow.
     const userId = await resolveUserId(phone);
-    const today = localDate();
-    const fast = await tryFastPath(text, { userId, today }, deps);
-    const { reply, writes } =
-      fast ??
-      (await runAgent(
-        text,
-        {
-          userId,
-          timezone: APP_TIMEZONE,
-          today,
-        },
-        undefined,
-        12_000,
-      ));
+    const { reply, writes } = await runAgent(text, {
+      userId,
+      timezone: APP_TIMEZONE,
+      today: localDate(),
+    });
 
     // Phase 3 — flush writes + complete the dedup marker atomically. The two conversation turns are
     // flushed in the SAME transaction (M1 fix): previously they ran post-commit via allSettled, so a

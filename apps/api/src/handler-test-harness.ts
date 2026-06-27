@@ -1,5 +1,4 @@
-import type { ClaimResult, FlushResult, GoalRow, WriteIntent } from "@repo/db";
-import type { Category } from "@repo/shared/categories";
+import type { ClaimResult, FlushResult, WriteIntent } from "@repo/db";
 import type { InboundDeps } from "./handler";
 
 export const PHONE = "+639171234567";
@@ -15,15 +14,6 @@ export const EXPENSE: WriteIntent = {
   localDate: "2026-06-11",
 };
 
-export const JAPAN_GOAL: GoalRow = {
-  id: "goal-1",
-  name: "Japan fund",
-  targetCentavos: 2_000_000,
-  savedCentavos: 0,
-  createdAt: new Date("2026-06-11T00:00:00Z"),
-  targetDate: "2026-12-31",
-};
-
 export type HandlerCall = {
   readonly fn: string;
   readonly args: readonly unknown[];
@@ -37,9 +27,6 @@ type HandlerDepsOverrides = Partial<{
   readonly agentThrows: unknown;
   readonly sendThrows: unknown;
   readonly budgetStatusesThrows: unknown;
-  readonly monthOverview: { income: number; expense: number; net: number };
-  readonly spendingByCategory: { category: Category; total: number }[];
-  readonly goals: GoalRow[];
 }>;
 
 export function handlerDeps(calls: HandlerCall[], over: HandlerDepsOverrides = {}): InboundDeps {
@@ -70,25 +57,6 @@ export function handlerDeps(calls: HandlerCall[], over: HandlerDepsOverrides = {
       rec("budgetStatusesFor")(...a);
       if (over.budgetStatusesThrows !== undefined) throw over.budgetStatusesThrows;
       return [];
-    },
-    getMonthOverview: async (...a) => {
-      rec("getMonthOverview")(...a);
-      return over.monthOverview ?? { income: 0, expense: 0, net: 0 };
-    },
-    getSpendingByCategory: async (...a) => {
-      rec("getSpendingByCategory")(...a);
-      return over.spendingByCategory ?? [];
-    },
-    findGoalByName: async (...a) => {
-      rec("findGoalByName")(...a);
-      const query = String(a[1] ?? "").toLowerCase();
-      return (
-        (over.goals ?? [JAPAN_GOAL]).find((goal) => goal.name.toLowerCase().includes(query)) ?? null
-      );
-    },
-    listGoals: async (...a) => {
-      rec("listGoals")(...a);
-      return over.goals ?? [JAPAN_GOAL];
     },
     learnHabit: async (...a) => {
       rec("learnHabit")(...a);
