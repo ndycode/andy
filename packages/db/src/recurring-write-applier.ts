@@ -24,7 +24,8 @@ export async function applyRecurringWriteIntent(
     const rows = await tx
       .select({ id: recurringItems.id, label: recurringItems.label })
       .from(recurringItems)
-      .where(eq(recurringItems.userId, w.userId));
+      .where(eq(recurringItems.userId, w.userId))
+      .orderBy(recurringItems.createdAt, recurringItems.id);
     const hit = pickRecurringMatch(rows, w.match);
     if (hit) {
       await tx
@@ -35,7 +36,8 @@ export async function applyRecurringWriteIntent(
     const rows = await tx
       .select({ id: recurringItems.id, label: recurringItems.label })
       .from(recurringItems)
-      .where(eq(recurringItems.userId, w.userId));
+      .where(eq(recurringItems.userId, w.userId))
+      .orderBy(recurringItems.createdAt, recurringItems.id);
     const hit = pickRecurringMatch(rows, w.match);
     if (hit) {
       const set: Partial<typeof recurringItems.$inferInsert> = {};

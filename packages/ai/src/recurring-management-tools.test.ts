@@ -22,8 +22,8 @@ describe("buildRecurringManagementTools boundary", () => {
     });
 
     expect(result).toEqual({ ok: true, removed: "Netflix" });
-    expect(calls).toEqual([{ fn: "findRecurringByLabel", userId: "user-1", label: "netflix" }]);
-    expect(drain()).toEqual([{ type: "removeRecurring", userId: "user-1", match: "netflix" }]);
+    expect(calls).toEqual([{ fn: "findRecurringMatches", userId: "user-1", label: "netflix" }]);
+    expect(drain()).toEqual([{ type: "removeRecurring", userId: "user-1", match: "Netflix" }]);
   });
 
   test("executes editRecurringBill through injected recurring deps", async () => {
@@ -45,12 +45,12 @@ describe("buildRecurringManagementTools boundary", () => {
       cadence: "weekly",
       dayOfWeek: 5,
     });
-    expect(calls).toEqual([{ fn: "findRecurringByLabel", userId: "user-1", label: "netflix" }]);
+    expect(calls).toEqual([{ fn: "findRecurringMatches", userId: "user-1", label: "netflix" }]);
     expect(drain()).toEqual([
       {
         type: "editRecurring",
         userId: "user-1",
-        match: "netflix",
+        match: "Netflix",
         patch: { amountCentavos: 900_000, cadence: "weekly", dayOfWeek: 5, dayOfMonth: null },
       },
     ]);

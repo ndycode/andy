@@ -1,7 +1,7 @@
 import { formatPHP, parseAmount } from "@repo/shared/money";
 import { validateCalendarDate } from "@repo/shared/time";
 import type { ToolContext } from "./context";
-import { type GoalListDeps, type GoalLookupDeps, loadGoalActionDeps } from "./goal-action-deps";
+import { type GoalListDeps, loadGoalActionDeps } from "./goal-action-deps";
 
 type EditGoalInput = {
   readonly goalName: string;
@@ -23,10 +23,20 @@ type GoalPatch = {
 export async function editSavingsGoal(
   ctx: ToolContext,
   { goalName, newName, target, targetDate }: EditGoalInput,
-  deps?: GoalLookupDeps,
+  deps?: GoalListDeps,
 ) {
   const actionDeps = deps ?? (await loadGoalActionDeps());
-  const goal = await actionDeps.findGoalByName(ctx.userId, goalName);
+  // Use findGoalsByName (not findGoalByName) so an AMBIGUOUS match asks "which one?" instead of
+  // silently editing an arbitrary goal — same disambiguation deleteSavingsGoal already uses.
+  const matches = await actionDeps.findGoalsByName(ctx.userId, goalName);
+  if (matches.length === 0) return { ok: false, error: `no goal matching "${goalName}".` };
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      error: `which one? ${matches.map((g) => `"${g.name}"`).join(", ")} — say the exact name.`,
+    };
+  }
+  const [goal] = matches;
   if (!goal) return { ok: false, error: `no goal matching "${goalName}".` };
   const patch: GoalPatch = {};
   if (newName !== undefined) {

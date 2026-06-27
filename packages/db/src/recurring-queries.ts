@@ -2,7 +2,7 @@ import { currentWeekStart, daysInLocalMonth, localDate } from "@repo/shared/time
 import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "./client";
 import { LABEL_MAX } from "./flush-write-types";
-import { addDaysToLocalDate, pickRecurringMatch } from "./query-helpers";
+import { addDaysToLocalDate, matchRecurring, pickRecurringMatch } from "./query-helpers";
 import { recurringItems } from "./schema";
 import type { RecurringInput } from "./write-intents";
 
@@ -25,13 +25,31 @@ export async function addRecurring(userId: string, r: RecurringInput) {
 
 export async function listRecurring(userId: string) {
   const db = getDb();
-  return db.select().from(recurringItems).where(eq(recurringItems.userId, userId));
+  // Stable order (insertion, then id) so fuzzy "contains" resolution is deterministic across the
+  // action-time check and the flush-time re-resolution — a tie can't silently target a different bill.
+  return db
+    .select()
+    .from(recurringItems)
+    .where(eq(recurringItems.userId, userId))
+    .orderBy(recurringItems.createdAt, recurringItems.id);
 }
 
 /** Find a recurring item by fuzzy label (case-insensitive exact, then contains). */
 export async function findRecurringByLabel(userId: string, label: string) {
   const items = await listRecurring(userId);
   return pickRecurringMatch(items, label);
+}
+
+/**
+ * 3-state recurring match (mirrors findGoalsByName): [] = none, [one] = exact or single contains,
+ * [many] = ambiguous contains. Lets the action ask "which one?" instead of silently acting on the
+ * first fuzzy hit. listRecurring is stably ordered so the contains set is deterministic.
+ */
+export async function findRecurringMatches(userId: string, label: string) {
+  const m = matchRecurring(await listRecurring(userId), label);
+  if (m.kind === "one") return [m.item];
+  if (m.kind === "ambiguous") return m.items;
+  return [];
 }
 
 /**

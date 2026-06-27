@@ -12,4 +12,11 @@ describe("spending-comparison module boundary", () => {
     });
     expect(spendingDelta(100_000, 1).pctChange).toBeNull();
   });
+
+  test("suppresses a misleading 0% when a nonzero delta rounds to zero", () => {
+    const r = spendingDelta(1_000_100, 1_000_000); // +0.01% rounds to 0
+    expect(r.pctChange).toBeNull();
+    expect(r.direction).toBe("up");
+    expect(r.delta).toBe(100);
+  });
 });

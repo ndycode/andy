@@ -2,7 +2,8 @@ import type { RecurringActionDeps } from "./recurring-action-deps";
 
 export type RecurringActionCall =
   | { readonly fn: "listRecurring"; readonly userId: string }
-  | { readonly fn: "findRecurringByLabel"; readonly userId: string; readonly label: string };
+  | { readonly fn: "findRecurringByLabel"; readonly userId: string; readonly label: string }
+  | { readonly fn: "findRecurringMatches"; readonly userId: string; readonly label: string };
 
 export type RecurringRow = Awaited<ReturnType<RecurringActionDeps["listRecurring"]>>[number];
 
@@ -24,11 +25,19 @@ export function recurringItem(overrides: Partial<RecurringRow> = {}): RecurringR
   };
 }
 
+/**
+ * Inject recurring deps for the management actions. `matches` is the resolved candidate set the
+ * actions branch on (mirrors goalActionDeps): [] = none, [one] = resolve, [many] = ambiguous.
+ * Defaults to a single Netflix item. Pass null as shorthand for "no match".
+ */
 export function recurringActionDeps(
   calls: RecurringActionCall[] = [],
-  hit: RecurringRow | null = recurringItem(),
+  matches: RecurringRow[] | null = [recurringItem()],
 ): RecurringActionDeps {
+  const rows = matches ?? [];
   return {
+    // listRecurring returns the FULL list (read actions enumerate everything); the management actions
+    // resolve via findRecurringMatches below, which is what `matches` drives.
     listRecurring: async (userId) => {
       calls.push({ fn: "listRecurring", userId });
       return [
@@ -47,7 +56,11 @@ export function recurringActionDeps(
     },
     findRecurringByLabel: async (userId, label) => {
       calls.push({ fn: "findRecurringByLabel", userId, label });
-      return hit;
+      return rows[0] ?? null;
+    },
+    findRecurringMatches: async (userId, label) => {
+      calls.push({ fn: "findRecurringMatches", userId, label });
+      return rows;
     },
   };
 }

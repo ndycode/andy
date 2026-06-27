@@ -20,7 +20,7 @@ describe("buildGoalManagementTools boundary", () => {
     });
 
     expect(result).toMatchObject({ ok: true, goal: "Laptop", target: "₱30,000.00" });
-    expect(calls).toEqual([{ fn: "findGoalByName", userId: "user-1", name: "laptop" }]);
+    expect(calls).toEqual([{ fn: "findGoalsByName", userId: "user-1", name: "laptop" }]);
     expect(drain()).toEqual([
       { type: "editGoal", userId: "user-1", goalId: "g1", patch: { targetCentavos: 3_000_000 } },
     ]);

@@ -42,11 +42,22 @@ export async function saveMemory(
   await db.insert(memories).values({ userId, content: content.slice(0, 4000), kind });
 }
 
+// SQL kind-priority for the recall window — MUST stay in sync with MEMORY_KIND_RANK in memory-helpers.
+// Ordering by this FIRST (then recency) ensures a high-priority memory (e.g. an old "payday" fact)
+// enters the window even when it's far older than the most-recent rows; previously the window was
+// recency-only, so an old payday/fact beyond the cap was dropped before kind-ranking ever saw it.
+const MEMORY_KIND_SQL_RANK = sql`case ${memories.kind}
+  when 'payday' then 0
+  when 'fact' then 1
+  when 'preference' then 1
+  when 'goal' then 2
+  else 3 end`;
+
 /**
  * Recall memories for prompt injection. Smarter than plain recency:
- *  - de-dups exact duplicate content case-insensitively, keeping the newest;
- *  - ranks by kind so actionable facts lead.
- * Pulls a wider window from the DB, then trims after rank/dedup.
+ *  - ranks by kind IN SQL (over the full set) so actionable facts lead and aren't lost to the window;
+ *  - de-dups exact duplicate content case-insensitively, keeping the highest-ranked.
+ * Pulls a wider window from the DB (kind-priority, then recency), then trims after rank/dedup.
  */
 export async function recallMemories(userId: string, limit = 20): Promise<string[]> {
   const db = getDb();
@@ -54,7 +65,7 @@ export async function recallMemories(userId: string, limit = 20): Promise<string
     .select({ content: memories.content, kind: memories.kind, createdAt: memories.createdAt })
     .from(memories)
     .where(eq(memories.userId, userId))
-    .orderBy(sql`${memories.createdAt} desc`)
+    .orderBy(MEMORY_KIND_SQL_RANK, sql`${memories.createdAt} desc`)
     .limit(Math.min(limit * 4, 100));
   return selectPromptMemories(rows, limit);
 }

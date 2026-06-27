@@ -36,6 +36,27 @@ export function matchGoals<T extends { name: string }>(
   return { kind: "ambiguous", goals: contains };
 }
 
+/**
+ * 3-state recurring-label match (mirrors matchGoals): exact case-insensitive wins; otherwise the set
+ * of CONTAINS matches. Lets the caller ask "which one?" on ambiguity instead of silently acting on an
+ * arbitrary bill (pickRecurringMatch returns only the first contains hit — used by the deterministic
+ * flush-time re-resolution where ORDER BY makes "first" stable). Callers pass rows in a stable order.
+ */
+export function matchRecurring<T extends { label: string }>(
+  rows: readonly T[],
+  match: string,
+): { kind: "none" } | { kind: "one"; item: T } | { kind: "ambiguous"; items: T[] } {
+  const q = match.trim().toLowerCase();
+  if (!q) return { kind: "none" };
+  const exact = rows.find((r) => r.label.toLowerCase() === q);
+  if (exact) return { kind: "one", item: exact };
+  const contains = rows.filter((r) => r.label.toLowerCase().includes(q));
+  const [item, second] = contains;
+  if (!item) return { kind: "none" };
+  if (!second) return { kind: "one", item };
+  return { kind: "ambiguous", items: contains };
+}
+
 const STOPWORDS = new Set([
   "the",
   "a",

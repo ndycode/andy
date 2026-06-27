@@ -1,7 +1,27 @@
 import { type Category, coerceCategory } from "@repo/shared/categories";
 import { formatPHP, parseAmount } from "@repo/shared/money";
 import type { ToolContext } from "./context";
-import { loadRecurringActionDeps, type RecurringLookupDeps } from "./recurring-action-deps";
+import { loadRecurringActionDeps, type RecurringMatchDeps } from "./recurring-action-deps";
+
+/** Shared resolver: returns the single matched bill, or an error result to return verbatim. */
+async function resolveOneRecurring(
+  deps: RecurringMatchDeps,
+  userId: string,
+  label: string,
+): Promise<{ ok: true; item: { id: string; label: string } } | { ok: false; error: string }> {
+  const matches = await deps.findRecurringMatches(userId, label);
+  if (matches.length === 0)
+    return { ok: false, error: `no recurring reminder matching "${label}".` };
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      error: `which one? ${matches.map((m) => `"${m.label}"`).join(", ")} — say the exact label.`,
+    };
+  }
+  const [item] = matches;
+  if (!item) return { ok: false, error: `no recurring reminder matching "${label}".` };
+  return { ok: true, item };
+}
 
 type RecurringLabelInput = {
   readonly label: string;
@@ -26,23 +46,25 @@ type RecurringPatch = {
 export async function removeRecurringBill(
   ctx: ToolContext,
   { label }: RecurringLabelInput,
-  deps?: RecurringLookupDeps,
+  deps?: RecurringMatchDeps,
 ) {
   const actionDeps = deps ?? (await loadRecurringActionDeps());
-  const hit = await actionDeps.findRecurringByLabel(ctx.userId, label);
-  if (!hit) return { ok: false, error: `no recurring reminder matching "${label}".` };
-  ctx.addWrite({ type: "removeRecurring", userId: ctx.userId, match: label });
-  return { ok: true, removed: hit.label };
+  const resolved = await resolveOneRecurring(actionDeps, ctx.userId, label);
+  if (!resolved.ok) return resolved;
+  // Buffer the RESOLVED exact label so flush-time re-resolution is an exact (deterministic) match.
+  ctx.addWrite({ type: "removeRecurring", userId: ctx.userId, match: resolved.item.label });
+  return { ok: true, removed: resolved.item.label };
 }
 
 export async function editRecurringBill(
   ctx: ToolContext,
   { label, amount, category, cadence, dayOfMonth, dayOfWeek }: EditRecurringInput,
-  deps?: RecurringLookupDeps,
+  deps?: RecurringMatchDeps,
 ) {
   const actionDeps = deps ?? (await loadRecurringActionDeps());
-  const hit = await actionDeps.findRecurringByLabel(ctx.userId, label);
-  if (!hit) return { ok: false, error: `no recurring reminder matching "${label}".` };
+  const resolved = await resolveOneRecurring(actionDeps, ctx.userId, label);
+  if (!resolved.ok) return resolved;
+  const hit = resolved.item;
   const patch: RecurringPatch = {};
   if (amount !== undefined) {
     const r = parseAmount(amount);
@@ -72,7 +94,7 @@ export async function editRecurringBill(
       error: "no change specified — pass a new amount, category, cadence, or day",
     };
   }
-  ctx.addWrite({ type: "editRecurring", userId: ctx.userId, match: label, patch });
+  ctx.addWrite({ type: "editRecurring", userId: ctx.userId, match: hit.label, patch });
   return {
     ok: true,
     label: hit.label,

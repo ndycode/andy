@@ -26,6 +26,7 @@ export {
   claimReminder,
   dueRecurringToday,
   findRecurringByLabel,
+  findRecurringMatches,
   listRecurring,
 } from "./recurring-queries";
 export {

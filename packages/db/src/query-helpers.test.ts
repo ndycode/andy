@@ -4,11 +4,24 @@ import {
   addDaysToLocalDate,
   escapeLike,
   matchGoals,
+  matchRecurring,
   noteKeywords,
   pickRecurringMatch,
 } from "./query-helpers";
 
 describe("query helpers", () => {
+  test("matchRecurring is a 3-state match: exact wins, single contains, ambiguous", () => {
+    const rows = [{ label: "Netflix" }, { label: "Netgear lease" }];
+    expect(matchRecurring(rows, "netflix")).toEqual({ kind: "one", item: { label: "Netflix" } });
+    expect(matchRecurring([{ label: "Rent" }], "ren")).toEqual({
+      kind: "one",
+      item: { label: "Rent" },
+    });
+    expect(matchRecurring(rows, "net").kind).toBe("ambiguous");
+    expect(matchRecurring(rows, "spotify")).toEqual({ kind: "none" });
+    expect(matchRecurring(rows, "  ")).toEqual({ kind: "none" });
+  });
+
   test("pickRecurringMatch prefers exact label matches before contains matches", () => {
     const rows = [{ label: "Netflix Family" }, { label: "Netflix" }];
 

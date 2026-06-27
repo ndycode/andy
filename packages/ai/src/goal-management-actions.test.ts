@@ -20,7 +20,7 @@ describe("goal management actions", () => {
       target: "₱30,000.00",
       targetDate: null,
     });
-    expect(calls).toEqual([{ fn: "findGoalByName", userId: "user-1", name: "laptop" }]);
+    expect(calls).toEqual([{ fn: "findGoalsByName", userId: "user-1", name: "laptop" }]);
     expect(drain()).toEqual([
       {
         type: "editGoal",
@@ -29,6 +29,21 @@ describe("goal management actions", () => {
         patch: { name: "MacBook", targetCentavos: 3_000_000, targetDate: null },
       },
     ]);
+  });
+
+  test("editSavingsGoal asks 'which one?' on an ambiguous match instead of editing arbitrarily", async () => {
+    const { ctx: toolCtx, drain } = ctx();
+    const result = await editSavingsGoal(
+      toolCtx,
+      { goalName: "trip", target: "10k" },
+      goalActionDeps([], null, [
+        goal({ id: "g1", name: "Japan Trip" }),
+        goal({ id: "g2", name: "Trip" }),
+      ]),
+    );
+    expect(result.ok).toBe(false);
+    expect(String((result as { error: string }).error)).toContain("which one?");
+    expect(drain()).toEqual([]);
   });
 
   test("editSavingsGoal rejects missing matches or empty patches before buffering", async () => {
