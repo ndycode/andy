@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { WriteIntent } from "@repo/db";
-import { handleInbound } from "./handler";
+import { handleInbound, type InboundDeps } from "./handler";
 import {
   callCount,
   callNames,
@@ -59,6 +59,22 @@ describe("handleInbound — three-phase orchestration", () => {
     // A real inbound GUID + a write → love tapback.
     expect(callCount(calls, "sendReaction")).toBe(1);
     expect(callCount(calls, "learnHabit")).toBe(1); // expense had a note → habit learned
+  });
+
+  test("reply sends even if the typing cue stalls", async () => {
+    const deps: InboundDeps = {
+      ...handlerDeps(calls, { reply: "logged ₱180 transport 🛵", writes: [EXPENSE] }),
+      sendTyping: async (...args) => {
+        calls.push({ fn: "sendTyping", args });
+        await new Promise(() => undefined);
+      },
+    };
+
+    await handleInbound(PHONE, "grab 180", "m1", deps);
+
+    expect(callCount(calls, "sendTyping")).toBe(1);
+    expect(callCount(calls, "sendMessage")).toBe(1);
+    expect(calls.find((c) => c.fn === "sendMessage")?.args[1]).toBe("logged ₱180 transport 🛵");
   });
 
   test("superseded flush sends NO reply (the winning worker owns it)", async () => {
