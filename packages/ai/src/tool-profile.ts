@@ -39,6 +39,8 @@ const PAYDAY_MEMORY_RE =
   /\b(?:i\s+(?:get\s+paid|am\s+paid)|my\s+(?:payday|salary|sweldo|paycheck)|payday|salary|sweldo)\b.*\b(?:every|on|is|are|comes?|lands?|\d{1,2}(?:st|nd|rd|th)?)\b/;
 const PREFERENCE_MEMORY_RE =
   /\b(?:i\s+(?:like|love|prefer|usually|(?:always|often)\s+(?:get|order|drink|eat|buy|use|pay\s+with))|i\s+(?:do\s+not\s+like|don't\s+like|hate\s+(?!this\b|that\b|it\b|you\b|them\b))|my\s+(?:favou?rite|usual|default|go-?to)|[\w'-]+(?:\s+[\w'-]+){0,4}\s+is\s+my\s+(?:favou?rite|usual|default|go-?to))\b/;
+const PREFERENCE_MEMORY_READ_RE =
+  /\b(?:do|did)\s+i\s+(?:like|love|prefer|usually|(?:always|often)\s+(?:get|order|drink|eat|buy|use|pay\s+with)|hate)\b|\bwhat(?:'s| is)\s+my\s+(?:favou?rite|usual|default|go-?to)\b|\bis\s+[\w'-]+(?:\s+[\w'-]+){0,4}\s+my\s+(?:favou?rite|usual|default|go-?to)\b/;
 const PROFILE_MEMORY_RE =
   /\b(?:my\s+(?:name|nickname|office|home|address|city|location)\s+is|call\s+me|i\s+live\s+in|i\s+work\s+(?:in|at)|my\s+work\s+is)\b/;
 const PROFILE_MEMORY_READ_RE =
@@ -134,9 +136,11 @@ export function selectToolProfile(text: string): ToolProfile {
     !hasAmount &&
     !hasQuestion &&
     (PAYDAY_MEMORY_RE.test(t) || PREFERENCE_MEMORY_RE.test(t) || PROFILE_MEMORY_RE.test(t));
+  const hasPreferenceMemoryRead = hasQuestion && PREFERENCE_MEMORY_READ_RE.test(t);
   const hasProfileMemoryRead = hasQuestion && PROFILE_MEMORY_READ_RE.test(t);
   const hasMemory =
     hasDurableMemoryFact ||
+    hasPreferenceMemoryRead ||
     hasProfileMemoryRead ||
     /\b(remember|forget|memory|memories|what do you know|dont remember|don't remember)\b/.test(t);
   const hasMemoryManagement = /\b(forget|dont remember|don't remember|delete|remove)\b/.test(t);
@@ -149,6 +153,7 @@ export function selectToolProfile(text: string): ToolProfile {
       t,
     );
   const hasMemoryRead =
+    hasPreferenceMemoryRead ||
     hasProfileMemoryRead ||
     (hasMemory &&
       !hasMemoryManagement &&
