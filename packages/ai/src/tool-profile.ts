@@ -10,6 +10,8 @@ export type ToolProfile =
   | "readCompare"
   | "read"
   | "memoryRead"
+  | "memoryRemember"
+  | "memoryForget"
   | "memory"
   | "goalRead"
   | "goalCreate"
@@ -123,6 +125,13 @@ export function selectToolProfile(text: string): ToolProfile {
   const hasMemory =
     /\b(remember|forget|memory|memories|what do you know|dont remember|don't remember)\b/.test(t);
   const hasMemoryManagement = /\b(forget|dont remember|don't remember|delete|remove)\b/.test(t);
+  const hasMemoryRemember = /\bremember\b/.test(t) && !/\bwhat do you remember\b/.test(t);
+  const hasMemoryActionAndRead =
+    hasMemory &&
+    (hasMemoryRemember || hasMemoryManagement) &&
+    /(?:\band\b|\bthen\b|\balso\b|[,;]).*\b(what do you know|what do you remember|list|show|view|see|memory|memories)\b/.test(
+      t,
+    );
   const hasMemoryRead =
     hasMemory &&
     !hasMemoryManagement &&
@@ -143,7 +152,12 @@ export function selectToolProfile(text: string): ToolProfile {
     );
 
   if (hasMemory && !/\b(recurring|remind|reminder)\b/.test(t)) {
-    return hasMemoryRead ? "memoryRead" : "memory";
+    return selectMemoryProfile({
+      hasMemoryRead,
+      hasMemoryActionAndRead,
+      hasMemoryManagement,
+      hasMemoryRemember,
+    });
   }
   if (hasRecurring && !hasMemory && !hasBudget && !hasGoal && !(hasRead && hasGeneralRead)) {
     return selectRecurringProfile({
@@ -176,7 +190,14 @@ export function selectToolProfile(text: string): ToolProfile {
   // "set food budget 5k and how are my budgets".
   if (specificCount > 1) return "full";
 
-  if (hasMemory) return hasMemoryRead ? "memoryRead" : "memory";
+  if (hasMemory) {
+    return selectMemoryProfile({
+      hasMemoryRead,
+      hasMemoryActionAndRead,
+      hasMemoryManagement,
+      hasMemoryRemember,
+    });
+  }
   if (hasBudget) {
     if (hasBudgetRead) return "budgetRead";
     if (hasBudgetManagement && !hasAmount && !hasBudgetRemoveAndRead) return "budgetRemove";
@@ -240,4 +261,22 @@ function selectRecurringProfile({
     return "recurring";
   }
   return "recurringAdd";
+}
+
+function selectMemoryProfile({
+  hasMemoryRead,
+  hasMemoryActionAndRead,
+  hasMemoryManagement,
+  hasMemoryRemember,
+}: {
+  hasMemoryRead: boolean;
+  hasMemoryActionAndRead: boolean;
+  hasMemoryManagement: boolean;
+  hasMemoryRemember: boolean;
+}): ToolProfile {
+  if (hasMemoryActionAndRead) return "memory";
+  if (hasMemoryRead) return "memoryRead";
+  if (hasMemoryManagement) return "memoryForget";
+  if (hasMemoryRemember) return "memoryRemember";
+  return "memory";
 }

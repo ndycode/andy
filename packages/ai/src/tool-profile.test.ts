@@ -9,10 +9,15 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("iced matcha 120")).toBe("logWrite");
     expect(selectToolProfile("how am i doing this month?")).toBe("readBasic");
     expect(selectToolProfile("what did i spend recently?")).toBe("readBasic");
-    expect(selectToolProfile("remember i get paid every 15th")).toBe("memory");
+    expect(selectToolProfile("remember i get paid every 15th")).toBe("memoryRemember");
+    expect(selectToolProfile("remember i like iced matcha")).toBe("memoryRemember");
     expect(selectToolProfile("what do you know about me?")).toBe("memoryRead");
     expect(selectToolProfile("show my memories")).toBe("memoryRead");
-    expect(selectToolProfile("forget my payday memory")).toBe("memory");
+    expect(selectToolProfile("forget my payday memory")).toBe("memoryForget");
+    expect(selectToolProfile("don't remember my old office")).toBe("memoryForget");
+    expect(selectToolProfile("remember i like matcha and what do you know about me?")).toBe(
+      "memory",
+    );
     expect(selectToolProfile("save 20k for japan by december")).toBe("goalCreate");
     expect(selectToolProfile("put away 50k for emergency")).toBe("goalCreate");
     expect(selectToolProfile("put 1k to japan")).toBe("goalContribute");

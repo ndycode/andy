@@ -66,6 +66,9 @@ export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
       return { maxSteps: 4, maxOutputTokens: 512 };
     case "memoryRead":
       return { maxSteps: 4, maxOutputTokens: 512 };
+    case "memoryRemember":
+    case "memoryForget":
+      return { maxSteps: 4, maxOutputTokens: 512 };
     case "memory":
       return { maxSteps: 5, maxOutputTokens: 512 };
     case "budgetRead":

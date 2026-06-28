@@ -123,6 +123,18 @@ describe("agent context boundary", () => {
       history: true,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("memoryRemember")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("memoryForget")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("goalRead")).toEqual({
       memories: true,
       habits: false,
@@ -303,7 +315,13 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: false,
     });
-    expect(contextLoadPolicy("memory", "remember i get paid every 15th")).toEqual({
+    expect(contextLoadPolicy("memoryRemember", "remember i get paid every 15th")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("memoryForget", "forget my payday memory")).toEqual({
       memories: false,
       habits: false,
       history: false,
@@ -397,6 +415,8 @@ describe("agent context boundary", () => {
     expect(contextLoadPolicy("readCompare", "what about last month?").history).toBe(true);
     expect(contextLoadPolicy("memoryRead", "what about memories?").history).toBe(true);
     expect(contextLoadPolicy("memory", "forget that one").history).toBe(true);
+    expect(contextLoadPolicy("memoryForget", "forget that one").history).toBe(true);
+    expect(contextLoadPolicy("memoryRemember", "remember same for savings").history).toBe(true);
     expect(contextLoadPolicy("budgetRead", "what about budgets?").history).toBe(true);
     expect(contextLoadPolicy("budget", "same for transport").history).toBe(true);
     expect(contextLoadPolicy("budgetSet", "same for transport at 2k").history).toBe(true);

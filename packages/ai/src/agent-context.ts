@@ -94,6 +94,8 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
         lastTransaction: false,
       };
     case "memoryRead":
+    case "memoryRemember":
+    case "memoryForget":
     case "memory":
       return {
         memories: false,

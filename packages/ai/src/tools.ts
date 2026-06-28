@@ -56,6 +56,10 @@ export function buildTools(
       return narrowTools(buildReadToolProfile(ctx));
     case "memoryRead":
       return narrowTools(buildMemoryReadProfile(ctx));
+    case "memoryRemember":
+      return narrowTools(buildMemoryRememberProfile(ctx));
+    case "memoryForget":
+      return narrowTools(buildMemoryForgetProfile(ctx));
     case "memory":
       return narrowTools(buildMemoryTools(ctx));
     case "goalRead":
@@ -135,6 +139,14 @@ function buildCompareReadProfile(ctx: ToolContext) {
 
 function buildMemoryReadProfile(ctx: ToolContext) {
   return { listMemory: buildMemoryTools(ctx).listMemory };
+}
+
+function buildMemoryRememberProfile(ctx: ToolContext) {
+  return { remember: buildMemoryTools(ctx).remember };
+}
+
+function buildMemoryForgetProfile(ctx: ToolContext) {
+  return { forgetMemory: buildMemoryTools(ctx).forgetMemory };
 }
 
 function buildGoalToolProfile(ctx: ToolContext) {
