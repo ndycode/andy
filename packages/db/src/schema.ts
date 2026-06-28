@@ -219,6 +219,9 @@ export const habits = pgTable(
   // Composite PK so ON CONFLICT (user_id, merchant) works for upsert.
   (t) => [
     primaryKey({ columns: [t.userId, t.merchant] }),
+    // Pre-model log context reads the user's strongest learned mappings first. Keep that sorted read
+    // index-backed instead of scanning/sorting every habit keyword for each common log turn.
+    index("habits_user_count_idx").on(t.userId, t.count.desc(), t.updatedAt.desc(), t.merchant),
     // count is a reinforcement tally, always >= 1 (the one writer inserts 1 then increments).
     check("habit_count_positive", sql`${t.count} >= 1`),
     // merchant is always a lowercased keyword (noteKeywords folds case); enforce it so a raw write

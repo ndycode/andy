@@ -1,0 +1,1 @@
+CREATE INDEX "habits_user_count_idx" ON "habits" USING btree ("user_id","count" DESC NULLS LAST,"updated_at" DESC NULLS LAST,"merchant");

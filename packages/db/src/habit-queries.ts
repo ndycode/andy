@@ -39,7 +39,7 @@ export async function topHabits(
     .select({ merchant: habits.merchant, category: habits.category })
     .from(habits)
     .where(and(eq(habits.userId, userId), sql`${habits.count} >= ${minCount}`))
-    .orderBy(sql`${habits.count} desc`)
+    .orderBy(sql`${habits.count} desc`, sql`${habits.updatedAt} desc`, habits.merchant)
     .limit(limit);
   return rows;
 }
