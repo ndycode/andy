@@ -4,6 +4,7 @@ import {
   type LanguageModel,
   type ModelMessage,
   stepCountIs,
+  type ToolChoice,
   ToolLoopAgent,
 } from "ai";
 import type { AgentBaseContext } from "./agent-context";
@@ -12,6 +13,7 @@ import type { ToolProfile } from "./tool-profile";
 import { buildTools } from "./tools";
 
 export type AgentGeneration = GenerateTextResult<ReturnType<typeof buildTools>, never>;
+type AgentToolChoice = ToolChoice<ReturnType<typeof buildTools>>;
 
 interface ToolCallStep {
   readonly toolCalls?: readonly unknown[];
@@ -115,9 +117,63 @@ export function firstStepToolChoice(
   profile: ToolProfile,
   text: string,
   stepNumber: number,
-): "required" | undefined {
+): AgentToolChoice | undefined {
   if (stepNumber !== 0) return undefined;
-  return requiresFirstToolCall(profile, text) ? "required" : undefined;
+  return (
+    firstStepRequiredTool(profile, text) ??
+    (requiresFirstToolCall(profile, text) ? "required" : undefined)
+  );
+}
+
+function toolChoice(
+  toolName: Extract<keyof ReturnType<typeof buildTools>, string>,
+): AgentToolChoice {
+  return { type: "tool", toolName };
+}
+
+function firstStepRequiredTool(profile: ToolProfile, text: string): AgentToolChoice | undefined {
+  switch (profile) {
+    case "readSearch":
+      return toolChoice("searchHistory");
+    case "readPace":
+      return toolChoice("getSpendingPace");
+    case "readInsight":
+      return toolChoice("insights");
+    case "readCompare":
+      return toolChoice("compareSpending");
+    case "memoryRead":
+      return toolChoice("listMemory");
+    case "memoryRemember":
+      return BARE_REMEMBER_RE.test(text) ? undefined : toolChoice("remember");
+    case "memoryForget":
+      return AMBIGUOUS_FORGET_RE.test(text) || PRONOUN_FORGET_RE.test(text)
+        ? undefined
+        : toolChoice("forgetMemory");
+    case "goalRead":
+      return toolChoice("getGoalStatus");
+    case "goalCreate":
+      return toolChoice("createGoal");
+    case "goalContribute":
+      return toolChoice("contributeToGoal");
+    case "budgetRead":
+      return toolChoice("getBudgets");
+    case "budgetSet":
+      return toolChoice("setBudget");
+    case "budgetRemove":
+      return toolChoice("removeBudget");
+    case "recurringRead":
+      return toolChoice("listRecurringBills");
+    case "recurringAdd":
+      return AMOUNT_RE.test(text) && RECURRING_CADENCE_RE.test(text)
+        ? toolChoice("addRecurringBill")
+        : undefined;
+    case "recurringEdit":
+      return toolChoice("editRecurringBill");
+    case "recurringRemove":
+      return toolChoice("removeRecurringBill");
+    default:
+      return undefined;
+  }
 }
 
 function requiresFirstToolCall(profile: ToolProfile, text: string): boolean {

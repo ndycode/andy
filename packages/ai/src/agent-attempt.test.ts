@@ -60,14 +60,78 @@ describe("agent attempt boundary", () => {
   test("requires first-step tools only for concrete tool profiles", () => {
     expect(firstStepToolChoice("logWrite", "grab 180", 0)).toBe("required");
     expect(firstStepToolChoice("readBasic", "how am i doing?", 0)).toBe("required");
-    expect(firstStepToolChoice("memoryRead", "do i like matcha?", 0)).toBe("required");
-    expect(firstStepToolChoice("memoryRemember", "i like iced matcha", 0)).toBe("required");
+    expect(firstStepToolChoice("readSearch", "biggest expense", 0)).toEqual({
+      type: "tool",
+      toolName: "searchHistory",
+    });
+    expect(firstStepToolChoice("readPace", "spending pace for food", 0)).toEqual({
+      type: "tool",
+      toolName: "getSpendingPace",
+    });
+    expect(firstStepToolChoice("readInsight", "where is my money leaking?", 0)).toEqual({
+      type: "tool",
+      toolName: "insights",
+    });
+    expect(firstStepToolChoice("readCompare", "compare this month vs last month", 0)).toEqual({
+      type: "tool",
+      toolName: "compareSpending",
+    });
+    expect(firstStepToolChoice("memoryRead", "do i like matcha?", 0)).toEqual({
+      type: "tool",
+      toolName: "listMemory",
+    });
+    expect(firstStepToolChoice("memoryRemember", "i like iced matcha", 0)).toEqual({
+      type: "tool",
+      toolName: "remember",
+    });
     expect(firstStepToolChoice("memoryRemember", "remember", 0)).toBeUndefined();
-    expect(firstStepToolChoice("memoryForget", "forget my payday memory", 0)).toBe("required");
+    expect(firstStepToolChoice("memoryForget", "forget my payday memory", 0)).toEqual({
+      type: "tool",
+      toolName: "forgetMemory",
+    });
     expect(firstStepToolChoice("memoryForget", "forget that", 0)).toBeUndefined();
     expect(firstStepToolChoice("memoryForget", "delete my memories", 0)).toBeUndefined();
-    expect(firstStepToolChoice("recurringAdd", "rent 8k every 1st", 0)).toBe("required");
+    expect(firstStepToolChoice("goalRead", "how is my japan fund?", 0)).toEqual({
+      type: "tool",
+      toolName: "getGoalStatus",
+    });
+    expect(firstStepToolChoice("goalCreate", "save 20k for japan", 0)).toEqual({
+      type: "tool",
+      toolName: "createGoal",
+    });
+    expect(firstStepToolChoice("goalContribute", "put 1k to japan", 0)).toEqual({
+      type: "tool",
+      toolName: "contributeToGoal",
+    });
+    expect(firstStepToolChoice("budgetRead", "how are my budgets?", 0)).toEqual({
+      type: "tool",
+      toolName: "getBudgets",
+    });
+    expect(firstStepToolChoice("budgetSet", "budget 5k for food", 0)).toEqual({
+      type: "tool",
+      toolName: "setBudget",
+    });
+    expect(firstStepToolChoice("budgetRemove", "drop food budget", 0)).toEqual({
+      type: "tool",
+      toolName: "removeBudget",
+    });
+    expect(firstStepToolChoice("recurringRead", "show recurring bills", 0)).toEqual({
+      type: "tool",
+      toolName: "listRecurringBills",
+    });
+    expect(firstStepToolChoice("recurringAdd", "rent 8k every 1st", 0)).toEqual({
+      type: "tool",
+      toolName: "addRecurringBill",
+    });
     expect(firstStepToolChoice("recurringAdd", "remind me", 0)).toBeUndefined();
+    expect(firstStepToolChoice("recurringEdit", "change rent reminder to 9k", 0)).toEqual({
+      type: "tool",
+      toolName: "editRecurringBill",
+    });
+    expect(firstStepToolChoice("recurringRemove", "cancel rent reminder", 0)).toEqual({
+      type: "tool",
+      toolName: "removeRecurringBill",
+    });
     expect(firstStepToolChoice("log", "paid 500", 0)).toBeUndefined();
     expect(firstStepToolChoice("full", "grab 180 and how am i doing?", 0)).toBeUndefined();
     expect(firstStepToolChoice("logWrite", "grab 180", 1)).toBeUndefined();
