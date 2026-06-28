@@ -36,7 +36,7 @@ describe("handleInbound — three-phase orchestration", () => {
     expect(callCount(calls, "sendMessage")).toBe(0);
   });
 
-  test("agent path: fast typing cue starts before the model call, then reply sends once", async () => {
+  test("agent path: fast typing cue starts after claim and before user/model work", async () => {
     await handleInbound(
       PHONE,
       "how am i doing?",
@@ -48,7 +48,8 @@ describe("handleInbound — three-phase orchestration", () => {
     expect(callCount(calls, "sendMessage")).toBe(1);
     expect(calls.find((c) => c.fn === "runAgent")?.args[3]).toBe(18_000);
     const names = callNames(calls);
-    expect(names.indexOf("sendTyping")).toBeGreaterThan(names.indexOf("resolveUserId"));
+    expect(names.indexOf("sendTyping")).toBeGreaterThan(names.indexOf("claimSlot"));
+    expect(names.indexOf("sendTyping")).toBeLessThan(names.indexOf("resolveUserId"));
     expect(names.indexOf("sendTyping")).toBeLessThan(names.indexOf("runAgent"));
     expect(names.indexOf("sendTyping")).toBeLessThan(names.indexOf("flushWrites"));
     const reply = calls.find((c) => c.fn === "sendMessage")?.args[1];

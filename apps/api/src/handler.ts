@@ -75,9 +75,10 @@ export async function handleInbound(
   }
 
   try {
-    // Phase 2 — agent (no DB connection held). Loads recent turns for conversation flow.
-    const userId = await resolveUserId(phone);
+    // Phase 2 — typing cue + agent (no DB connection held). Start typing as soon as a real message
+    // wins the dedup claim, so user resolution latency is covered too.
     void sendFastTypingCue(phone, sendTyping, corr);
+    const userId = await resolveUserId(phone);
     const { reply, writes } = await runAgent(
       text,
       {
