@@ -47,6 +47,16 @@ export interface AgentAttemptLimits {
   maxOutputTokens: number;
 }
 
+const AMOUNT_RE = /(?:₱|php\s*)?\d[\d,]*(?:\.\d+)?\s*[kKmM]?\b/i;
+const RECURRING_CADENCE_RE =
+  /\b(?:every\s+\d{1,2}(?:st|nd|rd|th)?|every\s+\w+day|weekly|monthly|on\s+the\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}(?:st|nd|rd|th))\b/i;
+const BARE_REMEMBER_RE =
+  /^\s*(?:remember(?:\s+(?:that|this))?|save(?:\s+(?:this|that))?(?:\s+fact)?)\s*[?.!]*\s*$/i;
+const AMBIGUOUS_FORGET_RE =
+  /^\s*(?:(?:forget|delete|remove)(?:\s+(?:that|this|it|my|the|all))?(?:\s+(?:memor(?:y|ies)))?|don'?t\s+remember|dont\s+remember|do\s+not\s+remember)\s*[?.!]*\s*$/i;
+const PRONOUN_FORGET_RE =
+  /^\s*(?:forget|delete|remove)\s+(?:that|this|it)(?:\s+memor(?:y|ies))?\b/i;
+
 export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
   switch (profile) {
     case "chat":
@@ -101,6 +111,54 @@ export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
   }
 }
 
+export function firstStepToolChoice(
+  profile: ToolProfile,
+  text: string,
+  stepNumber: number,
+): "required" | undefined {
+  if (stepNumber !== 0) return undefined;
+  return requiresFirstToolCall(profile, text) ? "required" : undefined;
+}
+
+function requiresFirstToolCall(profile: ToolProfile, text: string): boolean {
+  switch (profile) {
+    case "chat":
+    case "log":
+    case "memory":
+    case "goal":
+    case "budget":
+    case "recurring":
+    case "full":
+      return false;
+    case "memoryRemember":
+      return !BARE_REMEMBER_RE.test(text);
+    case "memoryForget":
+      return !AMBIGUOUS_FORGET_RE.test(text) && !PRONOUN_FORGET_RE.test(text);
+    case "recurringAdd":
+      return AMOUNT_RE.test(text) && RECURRING_CADENCE_RE.test(text);
+    case "logWrite":
+    case "logEdit":
+    case "readBasic":
+    case "readSearch":
+    case "readPace":
+    case "readInsight":
+    case "readCompare":
+    case "read":
+    case "memoryRead":
+    case "goalRead":
+    case "goalCreate":
+    case "goalContribute":
+    case "goalManage":
+    case "budgetRead":
+    case "budgetSet":
+    case "budgetRemove":
+    case "recurringRead":
+    case "recurringEdit":
+    case "recurringRemove":
+      return true;
+  }
+}
+
 export function countToolCalls(gen: ToolCallGeneration): number {
   return gen.steps?.reduce((n, s) => n + (s.toolCalls?.length ?? 0), 0) ?? 0;
 }
@@ -147,6 +205,13 @@ export async function runAgentAttempt({
     // edit-vs-relog / multi-entry-parse decisions repeatable, which both improves correctness and
     // makes a failed turn reproducible. (Reasoning effort is set on the model in model.ts.)
     temperature: 0,
+    // For concrete single-intent profiles, require a tool only on the first model step. That prevents
+    // a text-only miss on obvious log/read/memory turns, while the second step stays free to write the
+    // natural iMessage reply after the tool result.
+    prepareStep: ({ stepNumber }) => {
+      const toolChoice = firstStepToolChoice(toolProfile, text, stepNumber);
+      return toolChoice ? { toolChoice } : undefined;
+    },
   });
   const gen = await agent.generate({
     messages: [...priorMessages, { role: "user", content: text }],

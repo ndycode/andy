@@ -62,8 +62,10 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
 
   test("durable facts without the word remember use the model remember tool", async () => {
     let call = 0;
+    const toolChoices: unknown[] = [];
     const model = new MockLanguageModelV3({
-      doGenerate: async () => {
+      doGenerate: async (options) => {
+        toolChoices.push(options.toolChoice);
         call++;
         if (call === 1) {
           return result(
@@ -85,6 +87,7 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     const { reply, writes } = await runAgent("i like iced matcha", base, model);
 
     expect(call).toBe(2);
+    expect(toolChoices).toEqual([{ type: "required" }, { type: "auto" }]);
     expect(reply).toBe("noted, iced matcha is your thing.");
     expect(writes).toEqual([
       {
@@ -134,8 +137,10 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
 
   test("bare remember still falls through to the model instead of saving junk", async () => {
     let call = 0;
+    const toolChoices: unknown[] = [];
     const model = new MockLanguageModelV3({
-      doGenerate: async () => {
+      doGenerate: async (options) => {
+        toolChoices.push(options.toolChoice);
         call++;
         return result([{ type: "text", text: "what should i remember?" }], "stop");
       },
@@ -144,6 +149,7 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     const { reply, writes } = await runAgent("remember", base, model);
 
     expect(call).toBe(1);
+    expect(toolChoices).toEqual([{ type: "auto" }]);
     expect(reply).toBe("what should i remember?");
     expect(writes).toEqual([]);
   });
@@ -195,8 +201,10 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
 
   test("logExpense tool call -> buffered write + final-text reply", async () => {
     let call = 0;
+    const toolChoices: unknown[] = [];
     const model = new MockLanguageModelV3({
-      doGenerate: async () => {
+      doGenerate: async (options) => {
+        toolChoices.push(options.toolChoice);
         call++;
         if (call === 1) {
           return result(
@@ -216,6 +224,7 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     });
 
     const { reply, writes } = await runAgent("grab 180", base, model);
+    expect(toolChoices).toEqual([{ type: "required" }, { type: "auto" }]);
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({
       type: "expense",
