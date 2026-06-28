@@ -29,8 +29,8 @@ describe("agent attempt boundary", () => {
 
   test("uses tighter generation budgets for narrow profiles", () => {
     expect(agentAttemptLimits("chat")).toEqual({ maxSteps: 2, maxOutputTokens: 256 });
-    expect(agentAttemptLimits("logWrite")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("logEdit")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
+    expect(agentAttemptLimits("logWrite")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
+    expect(agentAttemptLimits("logEdit")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
     expect(agentAttemptLimits("log")).toEqual({ maxSteps: 6, maxOutputTokens: 512 });
     expect(agentAttemptLimits("readBasic")).toEqual({ maxSteps: 5, maxOutputTokens: 512 });
     expect(agentAttemptLimits("readSearch")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
@@ -39,20 +39,20 @@ describe("agent attempt boundary", () => {
     expect(agentAttemptLimits("readCompare")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
     expect(agentAttemptLimits("read")).toEqual({ maxSteps: 6, maxOutputTokens: 768 });
     expect(agentAttemptLimits("memoryRead")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("memoryRemember")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("memoryForget")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
+    expect(agentAttemptLimits("memoryRemember")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
+    expect(agentAttemptLimits("memoryForget")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
     expect(agentAttemptLimits("goalRead")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("goalCreate")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("goalContribute")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("goalManage")).toEqual({ maxSteps: 5, maxOutputTokens: 512 });
+    expect(agentAttemptLimits("goalCreate")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
+    expect(agentAttemptLimits("goalContribute")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
+    expect(agentAttemptLimits("goalManage")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
     expect(agentAttemptLimits("goal")).toEqual({ maxSteps: 7, maxOutputTokens: 768 });
     expect(agentAttemptLimits("budgetRead")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("budgetSet")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("budgetRemove")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
+    expect(agentAttemptLimits("budgetSet")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
+    expect(agentAttemptLimits("budgetRemove")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
     expect(agentAttemptLimits("recurringRead")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("recurringAdd")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("recurringEdit")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
-    expect(agentAttemptLimits("recurringRemove")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
+    expect(agentAttemptLimits("recurringAdd")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
+    expect(agentAttemptLimits("recurringEdit")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
+    expect(agentAttemptLimits("recurringRemove")).toEqual({ maxSteps: 3, maxOutputTokens: 384 });
     expect(agentAttemptLimits("full")).toEqual({ maxSteps: 12, maxOutputTokens: 1024 });
   });
 

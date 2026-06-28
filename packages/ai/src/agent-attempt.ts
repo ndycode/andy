@@ -52,8 +52,22 @@ export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
     case "chat":
       return { maxSteps: 2, maxOutputTokens: 256 };
     case "logWrite":
-      return { maxSteps: 4, maxOutputTokens: 512 };
     case "logEdit":
+      return { maxSteps: 3, maxOutputTokens: 384 };
+    case "memoryRemember":
+    case "memoryForget":
+      return { maxSteps: 3, maxOutputTokens: 384 };
+    case "budgetSet":
+    case "budgetRemove":
+      return { maxSteps: 3, maxOutputTokens: 384 };
+    case "recurringAdd":
+    case "recurringEdit":
+    case "recurringRemove":
+      return { maxSteps: 3, maxOutputTokens: 384 };
+    case "goalCreate":
+    case "goalContribute":
+      return { maxSteps: 3, maxOutputTokens: 384 };
+    case "goalManage":
       return { maxSteps: 4, maxOutputTokens: 512 };
     case "log":
       return { maxSteps: 6, maxOutputTokens: 512 };
@@ -66,23 +80,13 @@ export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
       return { maxSteps: 4, maxOutputTokens: 512 };
     case "memoryRead":
       return { maxSteps: 4, maxOutputTokens: 512 };
-    case "memoryRemember":
-    case "memoryForget":
-      return { maxSteps: 4, maxOutputTokens: 512 };
     case "memory":
       return { maxSteps: 5, maxOutputTokens: 512 };
     case "budgetRead":
       return { maxSteps: 4, maxOutputTokens: 512 };
-    case "budgetSet":
-    case "budgetRemove":
-      return { maxSteps: 4, maxOutputTokens: 512 };
     case "budget":
       return { maxSteps: 5, maxOutputTokens: 512 };
     case "recurringRead":
-      return { maxSteps: 4, maxOutputTokens: 512 };
-    case "recurringAdd":
-    case "recurringEdit":
-    case "recurringRemove":
       return { maxSteps: 4, maxOutputTokens: 512 };
     case "recurring":
       return { maxSteps: 5, maxOutputTokens: 512 };
@@ -90,11 +94,6 @@ export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
       return { maxSteps: 6, maxOutputTokens: 768 };
     case "goalRead":
       return { maxSteps: 4, maxOutputTokens: 512 };
-    case "goalCreate":
-    case "goalContribute":
-      return { maxSteps: 4, maxOutputTokens: 512 };
-    case "goalManage":
-      return { maxSteps: 5, maxOutputTokens: 512 };
     case "goal":
       return { maxSteps: 7, maxOutputTokens: 768 };
     case "full":
