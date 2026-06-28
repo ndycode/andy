@@ -35,8 +35,8 @@ const INBOUND_MODEL_DEADLINE_MS = 18_000;
  * Three-phase inbound handler (verification C1 — no DB connection held across the LLM run):
  *   0. allowlist gate (caller already token-checked)
  *   1. claim — atomic marker (closes the concurrent-redelivery double-log race)
- *   2. agent — buffers writes, no connection held
- *   3. flush — short txn applies writes + completes marker, then brief typing cue + reply
+ *   2. typing cue + agent — user sees activity while the real model call runs, no connection held
+ *   3. flush — short txn applies writes + completes marker, then reply
  */
 export async function handleInbound(
   phone: string,
@@ -77,6 +77,7 @@ export async function handleInbound(
   try {
     // Phase 2 — agent (no DB connection held). Loads recent turns for conversation flow.
     const userId = await resolveUserId(phone);
+    void sendFastTypingCue(phone, sendTyping, corr);
     const { reply, writes } = await runAgent(
       text,
       {
@@ -108,7 +109,6 @@ export async function handleInbound(
     // one Andy line to the SAME reply. This is useful but optional; don't let the extra read hold the
     // main committed-data acknowledgement hostage.
     const reactionTask = resolveBudgetReaction(userId, writes, budgetStatusesFor, corr);
-    void sendFastTypingCue(phone, sendTyping, corr);
     const { reaction, timedOut: reactionTimedOut } = await waitForBudgetReaction(
       reactionTask,
       corr,
@@ -249,9 +249,7 @@ async function sendFastTypingCue(
 ): Promise<void> {
   let timedOut = false;
   const timeoutMs = process.env.NODE_ENV === "test" ? 1 : TYPING_CUE_MAX_WAIT_MS;
-  const typing = Promise.resolve()
-    .then(() => sendTypingFn(phone))
-    .catch((err: unknown) => err);
+  const typing = startTypingCue(phone, sendTypingFn);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), timeoutMs);
@@ -281,5 +279,13 @@ async function sendFastTypingCue(
     log.error("inbound.typing_cue_failed", { corr, ...errInfo(result) });
   } else if (result !== undefined && result !== "timeout") {
     log.error("inbound.typing_cue_failed", { corr, message: String(result) });
+  }
+}
+
+function startTypingCue(phone: string, sendTypingFn: InboundDeps["sendTyping"]): Promise<unknown> {
+  try {
+    return Promise.resolve(sendTypingFn(phone)).catch((err: unknown) => err);
+  } catch (err) {
+    return Promise.resolve(err);
   }
 }

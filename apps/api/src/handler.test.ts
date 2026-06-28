@@ -36,7 +36,7 @@ describe("handleInbound — three-phase orchestration", () => {
     expect(callCount(calls, "sendMessage")).toBe(0);
   });
 
-  test("agent path: fast typing cue fires only after flush, then reply sends once", async () => {
+  test("agent path: fast typing cue starts before the model call, then reply sends once", async () => {
     await handleInbound(
       PHONE,
       "how am i doing?",
@@ -48,8 +48,9 @@ describe("handleInbound — three-phase orchestration", () => {
     expect(callCount(calls, "sendMessage")).toBe(1);
     expect(calls.find((c) => c.fn === "runAgent")?.args[3]).toBe(18_000);
     const names = callNames(calls);
-    expect(names.indexOf("sendTyping")).toBeGreaterThan(names.indexOf("flushWrites"));
-    expect(names.indexOf("sendTyping")).toBeLessThan(names.indexOf("sendMessage"));
+    expect(names.indexOf("sendTyping")).toBeGreaterThan(names.indexOf("resolveUserId"));
+    expect(names.indexOf("sendTyping")).toBeLessThan(names.indexOf("runAgent"));
+    expect(names.indexOf("sendTyping")).toBeLessThan(names.indexOf("flushWrites"));
     const reply = calls.find((c) => c.fn === "sendMessage")?.args[1];
     expect(reply).toBe("logged ₱180 transport 🛵");
     // The flush carries the agent's writes PLUS the two conversation turns (the M1 atomic-turn fix).
@@ -131,6 +132,7 @@ describe("handleInbound — three-phase orchestration", () => {
 
     expect(source.match(/clearTimeout\(timer\)/g)).toHaveLength(3);
     expect(source).toContain("void sendFastTypingCue(phone, sendTyping, corr)");
+    expect(source).toContain("startTypingCue(phone, sendTypingFn)");
     expect(source).not.toContain("await typingTask");
     expect(source.match(/timer\.unref\(\)/g)).toHaveLength(1);
   });
