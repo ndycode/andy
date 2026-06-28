@@ -9,6 +9,7 @@ import {
 } from "./agent-context";
 import { withRetry } from "./agent-retry";
 import type { ToolContext } from "./context";
+import { tryFastLog } from "./fast-log";
 import { defaultModel, FALLBACK_MODELS, MODEL_ID } from "./model";
 import { synthesizeReply } from "./reply-synthesis";
 import { selectToolProfile } from "./tool-profile";
@@ -34,7 +35,7 @@ export async function runAgent(
   // Default is the production OpenRouter model (primary + native fallback chain, built lazily so an
   // unset OPENROUTER_API_KEY never breaks import/tests). Tests inject a mock model, or an ARRAY of
   // models to exercise the cross-model fall-through in the retry loop below.
-  model: LanguageModel | LanguageModel[] = defaultModel(),
+  model?: LanguageModel | LanguageModel[],
   // Hard wall-clock budget for the whole retry/fallback chain. Must stay well under the function's
   // maxDuration so a slow run aborts CLEANLY into the handler's catch (marker stays 'claimed',
   // retryable, friendly reply) instead of being hard-killed by the platform (which skips the catch,
@@ -50,6 +51,10 @@ export async function runAgent(
   // The listMemory tool reads the FULL set fresh from the DB when the user actually asks, so this
   // small recall is only the prompt-context seed, not a cap on what "what do you know about me" shows.
   const toolProfile = selectToolProfile(text);
+  if (model === undefined && toolProfile === "logWrite") {
+    const fast = await tryFastLog(text, base);
+    if (fast) return fast;
+  }
   const { mems, habitList, history, lastTransaction } = await loadAgentContext(
     base,
     text,
@@ -62,7 +67,7 @@ export async function runAgent(
   // already carries its own native cross-model fallback (the `models` list), so there is no longer a
   // hand-rolled multi-tier array for the default case. A test may still inject one model (reused on
   // every retry) or an explicit array of models (one candidate each) to exercise fall-through.
-  const candidates = modelCandidates(model);
+  const candidates = modelCandidates(model ?? defaultModel());
 
   // Each attempt gets a FRESH write buffer: a 429/fallback mid-tool-loop must not replay
   // already-buffered writes into the next attempt (that would double-log).
