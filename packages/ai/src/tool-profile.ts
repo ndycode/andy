@@ -39,6 +39,10 @@ const PAYDAY_MEMORY_RE =
   /\b(?:i\s+(?:get\s+paid|am\s+paid)|my\s+(?:payday|salary|sweldo|paycheck)|payday|salary|sweldo)\b.*\b(?:every|on|is|are|comes?|lands?|\d{1,2}(?:st|nd|rd|th)?)\b/;
 const PREFERENCE_MEMORY_RE =
   /\b(?:i\s+(?:like|love|prefer|usually|(?:always|often)\s+(?:get|order|drink|eat|buy|use|pay\s+with))|i\s+(?:do\s+not\s+like|don't\s+like|hate\s+(?!this\b|that\b|it\b|you\b|them\b))|my\s+(?:favou?rite|usual|default|go-?to)|[\w'-]+(?:\s+[\w'-]+){0,4}\s+is\s+my\s+(?:favou?rite|usual|default|go-?to))\b/;
+const PROFILE_MEMORY_RE =
+  /\b(?:my\s+(?:name|nickname|office|home|address|city|location)\s+is|call\s+me|i\s+live\s+in|i\s+work\s+(?:in|at)|my\s+work\s+is)\b/;
+const PROFILE_MEMORY_READ_RE =
+  /\b(?:what'?s|what is)\s+my\s+(?:name|nickname|address|city|location)\b|\bwhere\s+do\s+i\s+(?:live|work)\b|\bwhere(?:'s| is| was)\s+my\s+(?:home|office|address|city|location|work)\b/;
 
 export function selectToolProfile(text: string): ToolProfile {
   const t = normalize(text);
@@ -127,9 +131,13 @@ export function selectToolProfile(text: string): ToolProfile {
     !hasRecurringManagement &&
     (hasQuestion || /\b(list|show|view|see|which)\b/.test(t));
   const hasDurableMemoryFact =
-    !hasAmount && !hasQuestion && (PAYDAY_MEMORY_RE.test(t) || PREFERENCE_MEMORY_RE.test(t));
+    !hasAmount &&
+    !hasQuestion &&
+    (PAYDAY_MEMORY_RE.test(t) || PREFERENCE_MEMORY_RE.test(t) || PROFILE_MEMORY_RE.test(t));
+  const hasProfileMemoryRead = hasQuestion && PROFILE_MEMORY_READ_RE.test(t);
   const hasMemory =
     hasDurableMemoryFact ||
+    hasProfileMemoryRead ||
     /\b(remember|forget|memory|memories|what do you know|dont remember|don't remember)\b/.test(t);
   const hasMemoryManagement = /\b(forget|dont remember|don't remember|delete|remove)\b/.test(t);
   const hasMemoryRemember =
@@ -141,11 +149,12 @@ export function selectToolProfile(text: string): ToolProfile {
       t,
     );
   const hasMemoryRead =
-    hasMemory &&
-    !hasMemoryManagement &&
-    /\b(what do you know|what do you remember|what have you remembered|list|show|view|see|memory|memories)\b/.test(
-      t,
-    );
+    hasProfileMemoryRead ||
+    (hasMemory &&
+      !hasMemoryManagement &&
+      /\b(what do you know|what do you remember|what have you remembered|list|show|view|see|memory|memories)\b/.test(
+        t,
+      ));
   const hasCorrection = CORRECTION_RE.test(t);
   const noteText = t
     .replace(AMOUNT_GLOBAL_RE, " ")

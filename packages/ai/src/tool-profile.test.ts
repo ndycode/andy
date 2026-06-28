@@ -22,7 +22,14 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("iced matcha is my go-to drink")).toBe("memoryRemember");
     expect(selectToolProfile("i always get iced matcha after lunch")).toBe("memoryRemember");
     expect(selectToolProfile("i hate milk tea")).toBe("memoryRemember");
+    expect(selectToolProfile("my name is neil")).toBe("memoryRemember");
+    expect(selectToolProfile("call me neil")).toBe("memoryRemember");
+    expect(selectToolProfile("i live in bgc")).toBe("memoryRemember");
+    expect(selectToolProfile("my office is in makati")).toBe("memoryRemember");
     expect(selectToolProfile("what do you know about me?")).toBe("memoryRead");
+    expect(selectToolProfile("what's my name?")).toBe("memoryRead");
+    expect(selectToolProfile("where do i live?")).toBe("memoryRead");
+    expect(selectToolProfile("where's my office?")).toBe("memoryRead");
     expect(selectToolProfile("show my memories")).toBe("memoryRead");
     expect(selectToolProfile("forget my payday memory")).toBe("memoryForget");
     expect(selectToolProfile("don't remember my old office")).toBe("memoryForget");
@@ -64,6 +71,7 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("no wait make it 200")).toBe("logEdit");
     expect(selectToolProfile("grab 180, no make it 200")).toBe("log");
     expect(selectToolProfile("i like iced matcha 120")).toBe("logWrite");
+    expect(selectToolProfile("my office rent 1200")).toBe("logWrite");
     expect(selectToolProfile("do i like matcha?")).toBe("readBasic");
     expect(selectToolProfile("is gcash my default payment?")).toBe("readBasic");
     expect(selectToolProfile("i paid rent every 1st")).toBe("recurringAdd");

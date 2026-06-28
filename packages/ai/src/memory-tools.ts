@@ -5,7 +5,8 @@ import { forgetSavedMemory, listSavedMemories, rememberFact } from "./memory-act
 
 export function buildMemoryTools(ctx: ToolContext) {
   const remember = tool({
-    description: "Save a durable fact (preferences, paydays, plans). For 'remember that...'.",
+    description:
+      "Save a durable fact (identity/profile facts, preferences, paydays, plans). For 'remember that...'.",
     inputSchema: z.object({
       fact: z.string(),
       kind: z
