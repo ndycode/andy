@@ -38,7 +38,7 @@ const CORRECTION_GLOBAL_RE =
 const PAYDAY_MEMORY_RE =
   /\b(?:i\s+(?:get\s+paid|am\s+paid)|my\s+(?:payday|salary|sweldo|paycheck)|payday|salary|sweldo)\b.*\b(?:every|on|is|are|comes?|lands?|\d{1,2}(?:st|nd|rd|th)?)\b/;
 const PREFERENCE_MEMORY_RE =
-  /\b(?:i\s+(?:like|love|prefer|usually|(?:always|often)\s+(?:get|order|drink|eat|buy|use|pay\s+with))|i\s+(?:do\s+not\s+like|don't\s+like|hate\s+(?!this\b|that\b|it\b|you\b|them\b))|my\s+(?:favou?rite|usual|default|go-?to))\b/;
+  /\b(?:i\s+(?:like|love|prefer|usually|(?:always|often)\s+(?:get|order|drink|eat|buy|use|pay\s+with))|i\s+(?:do\s+not\s+like|don't\s+like|hate\s+(?!this\b|that\b|it\b|you\b|them\b))|my\s+(?:favou?rite|usual|default|go-?to)|[\w'-]+(?:\s+[\w'-]+){0,4}\s+is\s+my\s+(?:favou?rite|usual|default|go-?to))\b/;
 
 export function selectToolProfile(text: string): ToolProfile {
   const t = normalize(text);

@@ -18,6 +18,8 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("my usual drink is iced matcha")).toBe("memoryRemember");
     expect(selectToolProfile("my default payment is gcash")).toBe("memoryRemember");
     expect(selectToolProfile("my go-to drink is iced matcha")).toBe("memoryRemember");
+    expect(selectToolProfile("gcash is my default payment")).toBe("memoryRemember");
+    expect(selectToolProfile("iced matcha is my go-to drink")).toBe("memoryRemember");
     expect(selectToolProfile("i always get iced matcha after lunch")).toBe("memoryRemember");
     expect(selectToolProfile("i hate milk tea")).toBe("memoryRemember");
     expect(selectToolProfile("what do you know about me?")).toBe("memoryRead");
@@ -63,6 +65,7 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("grab 180, no make it 200")).toBe("log");
     expect(selectToolProfile("i like iced matcha 120")).toBe("logWrite");
     expect(selectToolProfile("do i like matcha?")).toBe("readBasic");
+    expect(selectToolProfile("is gcash my default payment?")).toBe("readBasic");
     expect(selectToolProfile("i paid rent every 1st")).toBe("recurringAdd");
     expect(selectToolProfile("i hate this")).toBe("chat");
     expect(selectToolProfile("i always feel tired")).toBe("chat");
