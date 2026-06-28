@@ -10,7 +10,9 @@
 
 ## Demo
 
-https://github.com/user-attachments/assets/aaec29e8-fcaa-4cfe-8a50-0288a6d0bede
+<a href="https://cdn.jsdelivr.net/gh/ndycode/andy@main/public/demo/messages.mp4">
+  <img src="./public/demo/messages-poster.jpg" alt="Andy iMessage demo preview" width="360">
+</a>
 
 Andy is a single-user, serverless finance assistant. You talk to it like a friend; it turns natural language into typed financial transactions, budgets, savings goals, recurring reminders, and memories; persists everything with exact integer-centavo money math; and answers questions from real SQL aggregation — never from chat history. It's built for the Philippines (PHP, Asia/Manila, GCash/sweldo idioms).
 
