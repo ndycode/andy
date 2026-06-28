@@ -108,7 +108,7 @@ export async function handleInbound(
     // one Andy line to the SAME reply. This is useful but optional; don't let the extra read hold the
     // main committed-data acknowledgement hostage.
     const reactionTask = resolveBudgetReaction(userId, writes, budgetStatusesFor, corr);
-    const typingTask = sendFastTypingCue(phone, sendTyping, corr);
+    void sendFastTypingCue(phone, sendTyping, corr);
     const { reaction, timedOut: reactionTimedOut } = await waitForBudgetReaction(
       reactionTask,
       corr,
@@ -124,7 +124,6 @@ export async function handleInbound(
     // was actually saved, prompting a resend (the marker now dedups the data, but the reply is a lie).
     // Log it and move on; the turn is persisted, so the next message has full context regardless.
     try {
-      await typingTask;
       await sendMessage(phone, reaction ? `${reply}\n\n${reaction}` : reply);
     } catch (sendErr) {
       if (!(sendErr instanceof Error)) throw sendErr;
@@ -160,6 +159,19 @@ export async function handleInbound(
 }
 
 type PostCommitWaitResult = "done" | "timeout" | { error: unknown };
+
+type UnrefTimer = { unref: () => void };
+
+function hasUnref(
+  timer: ReturnType<typeof setTimeout>,
+): timer is ReturnType<typeof setTimeout> & UnrefTimer {
+  return (
+    typeof timer === "object" &&
+    timer !== null &&
+    "unref" in timer &&
+    typeof timer.unref === "function"
+  );
+}
 
 async function waitForPostCommitEffects(task: Promise<void>, corr: string): Promise<void> {
   const timeoutMs = process.env.NODE_ENV === "test" ? 1 : POST_COMMIT_MAX_WAIT_MS;
@@ -243,6 +255,7 @@ async function sendFastTypingCue(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    if (hasUnref(timer)) timer.unref();
   });
   let result: unknown;
   try {
