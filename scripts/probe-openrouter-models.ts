@@ -22,9 +22,9 @@
 // Current chain (keep in sync with packages/ai/src/model.ts) plus extra free tool-callers to consider
 // as deny-compatible replacements. Edit freely — this is a scratch list for the probe.
 const CANDIDATES: readonly string[] = [
-  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", // current MODEL_ID
-  "openai/gpt-oss-20b:free", // current fallback
+  "openai/gpt-oss-20b:free", // current MODEL_ID
   "openai/gpt-oss-120b:free", // current fallback
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
   "qwen/qwen3-next-80b-a3b-instruct:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
   "meta-llama/llama-3.3-70b-instruct:free",

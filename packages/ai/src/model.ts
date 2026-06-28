@@ -17,8 +17,8 @@ import type { LanguageModel } from "ai";
  * is used in production.
  */
 
-export const DEFAULT_MODEL_ID = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free";
-export const DEFAULT_FALLBACK_MODELS = ["openai/gpt-oss-20b:free", "openai/gpt-oss-120b:free"];
+export const DEFAULT_MODEL_ID = "openai/gpt-oss-20b:free";
+export const DEFAULT_FALLBACK_MODELS = ["openai/gpt-oss-120b:free"];
 
 type ModelEnv = {
   readonly OPENROUTER_MODEL?: string;

@@ -29,11 +29,8 @@ describe("model wiring (OpenRouter)", () => {
       modelId: DEFAULT_MODEL_ID,
       fallbackModels: DEFAULT_FALLBACK_MODELS,
     });
-    expect(DEFAULT_MODEL_ID).toBe("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free");
-    expect(DEFAULT_FALLBACK_MODELS).toEqual([
-      "openai/gpt-oss-20b:free",
-      "openai/gpt-oss-120b:free",
-    ]);
+    expect(DEFAULT_MODEL_ID).toBe("openai/gpt-oss-20b:free");
+    expect(DEFAULT_FALLBACK_MODELS).toEqual(["openai/gpt-oss-120b:free"]);
   });
 
   test("fallback chain does not repeat the primary", () => {
