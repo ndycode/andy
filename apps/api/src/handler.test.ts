@@ -131,6 +131,7 @@ describe("handleInbound — three-phase orchestration", () => {
   test("all bounded optional wait helpers clear their timeout handles", () => {
     const source = readFileSync(new URL("./handler.ts", import.meta.url), "utf8");
 
+    expect(source).toContain("const BUDGET_REACTION_MAX_WAIT_MS = 200;");
     expect(source.match(/clearTimeout\(timer\)/g)).toHaveLength(3);
     expect(source).toContain("void sendFastTypingCue(phone, sendTyping, corr)");
     expect(source).toContain("startTypingCue(phone, sendTypingFn)");
