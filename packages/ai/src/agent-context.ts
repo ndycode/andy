@@ -30,6 +30,8 @@ export interface ContextLoadPolicy {
 
 const LOG_CONTEXT_RE =
   /\b(spent|paid|bought|got|grab|taxi|fare|gas|fuel|parking|toll|lunch|dinner|breakfast|coffee|snack|groceries|grocery|load|rent|netflix|subscription|salary|sweldo|income)\b/i;
+const AMOUNT_TOKEN_RE = /(?:₱|php\s*)?\d[\d,]*(?:\.\d+)?\s*[kKmM]?\b/i;
+const AMOUNT_TOKEN_GLOBAL_RE = /(?:₱|php\s*)?\d[\d,]*(?:\.\d+)?\s*[kKmM]?\b/gi;
 const CORRECTION_RE =
   /\b(delete that|scratch that|undo|make that|change it|actually|no,?|no wait)\b/i;
 const FOLLOWUP_CONTEXT_RE =
@@ -38,6 +40,12 @@ const MEMORY_REFERENCE_RE = /\b(mentioned|remember|told you|you know|usual)\b/i;
 
 function needsRecentTurns(text: string | undefined): boolean {
   return text === undefined || FOLLOWUP_CONTEXT_RE.test(text);
+}
+
+function needsLogHabits(text: string | undefined): boolean {
+  if (text === undefined || LOG_CONTEXT_RE.test(text)) return true;
+  const noteText = text.replace(AMOUNT_TOKEN_GLOBAL_RE, " ").replace(CORRECTION_RE, " ");
+  return AMOUNT_TOKEN_RE.test(text) && noteText.match(/[a-z]{2,}/i) !== null;
 }
 
 function needsGoalPromptMemories(text: string | undefined): boolean {
@@ -52,7 +60,7 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
       const textKnown = text !== undefined;
       return {
         memories: false,
-        habits: !textKnown || LOG_CONTEXT_RE.test(text),
+        habits: !textKnown || needsLogHabits(text),
         history: false,
         lastTransaction: !textKnown || CORRECTION_RE.test(text),
       };

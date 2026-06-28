@@ -90,6 +90,30 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("log", "120")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("log", "iced matcha 120")).toEqual({
+      memories: false,
+      habits: true,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("log", "mcdo 200")).toEqual({
+      memories: false,
+      habits: true,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("log", "actually 200")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: true,
+    });
     expect(contextLoadPolicy("log", "delete that")).toEqual({
       memories: false,
       habits: false,
