@@ -10,7 +10,7 @@
 
 ## Demo
 
-https://github.com/user-attachments/assets/62ad2525-b939-438d-b5a5-9b9f28279a25
+https://github.com/user-attachments/assets/aaec29e8-fcaa-4cfe-8a50-0288a6d0bede
 
 Andy is a single-user, serverless finance assistant. You talk to it like a friend; it turns natural language into typed financial transactions, persists them with exact integer-centavo money math, and answers questions from real SQL aggregation — never from chat history. It's built for the Philippines (PHP, Asia/Manila, GCash/sweldo idioms).
 
