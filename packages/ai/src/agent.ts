@@ -9,7 +9,6 @@ import {
 } from "./agent-context";
 import { withRetry } from "./agent-retry";
 import type { ToolContext } from "./context";
-import { tryFastLog } from "./fast-log";
 import { defaultModel, FALLBACK_MODELS, MODEL_ID } from "./model";
 import { synthesizeReply } from "./reply-synthesis";
 import { selectToolProfile } from "./tool-profile";
@@ -51,10 +50,6 @@ export async function runAgent(
   // The listMemory tool reads the FULL set fresh from the DB when the user actually asks, so this
   // small recall is only the prompt-context seed, not a cap on what "what do you know about me" shows.
   const toolProfile = selectToolProfile(text);
-  if (model === undefined && toolProfile === "logWrite") {
-    const fast = await tryFastLog(text, base);
-    if (fast) return fast;
-  }
   const { mems, habitList, history, lastTransaction } = await loadAgentContext(
     base,
     text,

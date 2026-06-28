@@ -2,22 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { base, MockLanguageModelV3, result, runAgent } from "./agent-run-test-harness";
 
 describe("runAgent end-to-end with a mocked model (smoke)", () => {
-  test("simple recognized logs use the deterministic fast path without an injected model", async () => {
-    const { reply, writes } = await runAgent("iced matcha 120", base);
-
-    expect(reply).toBe("logged ₱120.00 on food");
-    expect(writes).toEqual([
-      {
-        type: "expense",
-        userId: "user-1",
-        amountCentavos: 12000,
-        category: "Food",
-        note: "iced matcha",
-        localDate: "2026-06-11",
-      },
-    ]);
-  });
-
   test("logExpense tool call -> buffered write + final-text reply", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({
