@@ -129,6 +129,9 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
         lastTransaction: false,
       };
     case "recurringRead":
+    case "recurringAdd":
+    case "recurringEdit":
+    case "recurringRemove":
     case "recurring":
       return {
         memories: false,

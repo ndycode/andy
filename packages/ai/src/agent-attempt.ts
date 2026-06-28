@@ -77,6 +77,10 @@ export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
       return { maxSteps: 5, maxOutputTokens: 512 };
     case "recurringRead":
       return { maxSteps: 4, maxOutputTokens: 512 };
+    case "recurringAdd":
+    case "recurringEdit":
+    case "recurringRemove":
+      return { maxSteps: 4, maxOutputTokens: 512 };
     case "recurring":
       return { maxSteps: 5, maxOutputTokens: 512 };
     case "read":

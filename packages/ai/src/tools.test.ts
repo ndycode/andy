@@ -86,6 +86,9 @@ describe("buildTools profile routing", () => {
     expect(Object.keys(buildTools(ctx(), {}, "budgetSet"))).toEqual(["setBudget"]);
     expect(Object.keys(buildTools(ctx(), {}, "budgetRemove"))).toEqual(["removeBudget"]);
     expect(Object.keys(buildTools(ctx(), {}, "recurringRead"))).toEqual(["listRecurringBills"]);
+    expect(Object.keys(buildTools(ctx(), {}, "recurringAdd"))).toEqual(["addRecurringBill"]);
+    expect(Object.keys(buildTools(ctx(), {}, "recurringEdit"))).toEqual(["editRecurringBill"]);
+    expect(Object.keys(buildTools(ctx(), {}, "recurringRemove"))).toEqual(["removeRecurringBill"]);
   });
 
   test("chat profile exposes no tools for true small talk", () => {
@@ -115,6 +118,9 @@ describe("buildTools profile routing", () => {
     expect(source).toContain("return narrowTools(buildBudgetSetProfile(ctx));");
     expect(source).toContain("return narrowTools(buildBudgetRemoveProfile(ctx));");
     expect(source).toContain("return narrowTools(buildRecurringReadTools(ctx));");
+    expect(source).toContain("return narrowTools(buildRecurringAddProfile(ctx));");
+    expect(source).toContain("return narrowTools(buildRecurringEditProfile(ctx));");
+    expect(source).toContain("return narrowTools(buildRecurringRemoveProfile(ctx));");
     expect(source).not.toContain("pickProfileTools");
     expect(source).not.toContain("TOOL_PROFILE_KEYS");
   });

@@ -21,6 +21,9 @@ export type ToolProfile =
   | "budgetRemove"
   | "budget"
   | "recurringRead"
+  | "recurringAdd"
+  | "recurringEdit"
+  | "recurringRemove"
   | "recurring"
   | "full";
 
@@ -104,6 +107,14 @@ export function selectToolProfile(text: string): ToolProfile {
     );
   const hasRecurringManagement =
     /\b(delete|remove|cancel|stop|pause|rename|make|move|change|edit|update)\b/.test(t);
+  const hasRecurringRemove = /\b(delete|remove|cancel|stop|pause)\b/.test(t);
+  const hasRecurringEdit = /\b(rename|make|move|change|edit|update)\b/.test(t);
+  const hasRecurringActionAndRead =
+    hasRecurring &&
+    (hasAmount || hasRecurringManagement) &&
+    /(?:\band\b|\bthen\b|\balso\b|[,;]).*\b(what|list|show|view|see|which|recurring|reminders?)\b/.test(
+      t,
+    );
   const hasRecurringRead =
     hasRecurring &&
     !hasAmount &&
@@ -134,8 +145,14 @@ export function selectToolProfile(text: string): ToolProfile {
   if (hasMemory && !/\b(recurring|remind|reminder)\b/.test(t)) {
     return hasMemoryRead ? "memoryRead" : "memory";
   }
-  if (hasRecurring && !hasMemory && !hasBudget && !hasGoal) {
-    return hasRecurringRead ? "recurringRead" : "recurring";
+  if (hasRecurring && !hasMemory && !hasBudget && !hasGoal && !(hasRead && hasGeneralRead)) {
+    return selectRecurringProfile({
+      hasRecurringRead,
+      hasRecurringActionAndRead,
+      hasRecurringManagement,
+      hasRecurringRemove,
+      hasRecurringEdit,
+    });
   }
   if (hasLogHint && hasRead) return "full";
   if (focusedAnalysisProfile && !hasGoal && !hasRecurring && !hasMemory) {
@@ -166,7 +183,15 @@ export function selectToolProfile(text: string): ToolProfile {
     if (hasAmount && !hasBudgetWriteAndRead) return "budgetSet";
     return "budget";
   }
-  if (hasRecurring) return "recurring";
+  if (hasRecurring) {
+    return selectRecurringProfile({
+      hasRecurringRead,
+      hasRecurringActionAndRead,
+      hasRecurringManagement,
+      hasRecurringRemove,
+      hasRecurringEdit,
+    });
+  }
   if (hasGoal) {
     if (hasGoalRead) return "goalRead";
     if (!hasCorrection && hasGoalManagement) return "goalManage";
@@ -192,4 +217,27 @@ function isQuestionLike(text: string): boolean {
     /\b(am|are|can|should|could|did|do)\s+i\b/.test(text) ||
     /\bhow much\b/.test(text)
   );
+}
+
+function selectRecurringProfile({
+  hasRecurringRead,
+  hasRecurringActionAndRead,
+  hasRecurringManagement,
+  hasRecurringRemove,
+  hasRecurringEdit,
+}: {
+  hasRecurringRead: boolean;
+  hasRecurringActionAndRead: boolean;
+  hasRecurringManagement: boolean;
+  hasRecurringRemove: boolean;
+  hasRecurringEdit: boolean;
+}): ToolProfile {
+  if (hasRecurringRead) return "recurringRead";
+  if (hasRecurringActionAndRead) return "recurring";
+  if (hasRecurringManagement) {
+    if (hasRecurringRemove) return "recurringRemove";
+    if (hasRecurringEdit) return "recurringEdit";
+    return "recurring";
+  }
+  return "recurringAdd";
 }

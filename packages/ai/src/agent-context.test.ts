@@ -171,6 +171,24 @@ describe("agent context boundary", () => {
       history: true,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("recurringAdd")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("recurringEdit")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("recurringRemove")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("full")).toEqual({
       memories: true,
       habits: true,
@@ -321,7 +339,19 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: false,
     });
-    expect(contextLoadPolicy("recurring", "rent 8k every 1st")).toEqual({
+    expect(contextLoadPolicy("recurringAdd", "rent 8k every 1st")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("recurringEdit", "change rent reminder to 9k")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("recurringRemove", "cancel rent recurring")).toEqual({
       memories: false,
       habits: false,
       history: false,
@@ -372,7 +402,8 @@ describe("agent context boundary", () => {
     expect(contextLoadPolicy("budgetSet", "same for transport at 2k").history).toBe(true);
     expect(contextLoadPolicy("budgetRemove", "drop that budget").history).toBe(true);
     expect(contextLoadPolicy("recurringRead", "what about recurring?").history).toBe(true);
-    expect(contextLoadPolicy("recurring", "change that one to every 15th").history).toBe(true);
+    expect(contextLoadPolicy("recurringEdit", "change that one to every 15th").history).toBe(true);
+    expect(contextLoadPolicy("recurringRemove", "cancel that reminder").history).toBe(true);
     expect(contextLoadPolicy("goalContribute", "put 1k to it").history).toBe(true);
     expect(contextLoadPolicy("goalManage", "delete that goal").history).toBe(true);
     expect(contextLoadPolicy("goalRead", "what about japan fund?").history).toBe(true);

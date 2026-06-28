@@ -13,8 +13,10 @@ import { buildHistoryReadTools } from "./read-history-tools";
 import { buildInsightReadTools } from "./read-insight-tools";
 import { buildPaceReadTools } from "./read-pace-tools";
 import { buildReadTools } from "./read-tools";
+import { buildRecurringManagementTools } from "./recurring-management-tools";
 import { buildRecurringReadTools } from "./recurring-read-tools";
 import { buildRecurringTools } from "./recurring-tools";
+import { buildRecurringWriteTools } from "./recurring-write-tools";
 import type { ToolProfile } from "./tool-profile";
 
 export type FinanceToolDeps = {
@@ -76,6 +78,12 @@ export function buildTools(
       return narrowTools(buildBudgetTools(ctx));
     case "recurringRead":
       return narrowTools(buildRecurringReadTools(ctx));
+    case "recurringAdd":
+      return narrowTools(buildRecurringAddProfile(ctx));
+    case "recurringEdit":
+      return narrowTools(buildRecurringEditProfile(ctx));
+    case "recurringRemove":
+      return narrowTools(buildRecurringRemoveProfile(ctx));
     case "recurring":
       return narrowTools(buildRecurringTools(ctx));
     case "full":
@@ -157,6 +165,18 @@ function buildBudgetSetProfile(ctx: ToolContext) {
 
 function buildBudgetRemoveProfile(ctx: ToolContext) {
   return { removeBudget: buildBudgetTools(ctx).removeBudget };
+}
+
+function buildRecurringAddProfile(ctx: ToolContext) {
+  return { addRecurringBill: buildRecurringWriteTools(ctx).addRecurringBill };
+}
+
+function buildRecurringEditProfile(ctx: ToolContext) {
+  return { editRecurringBill: buildRecurringManagementTools(ctx).editRecurringBill };
+}
+
+function buildRecurringRemoveProfile(ctx: ToolContext) {
+  return { removeRecurringBill: buildRecurringManagementTools(ctx).removeRecurringBill };
 }
 
 function buildFullTools(ctx: ToolContext, deps: FinanceToolDeps) {

@@ -31,11 +31,18 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("remove budget for transport")).toBe("budgetRemove");
     expect(selectToolProfile("budget 5k for food and how are my budgets?")).toBe("budget");
     expect(selectToolProfile("drop food budget and how are my budgets?")).toBe("budget");
-    expect(selectToolProfile("rent 8k every 1st")).toBe("recurring");
+    expect(selectToolProfile("rent 8k every 1st")).toBe("recurringAdd");
+    expect(selectToolProfile("sweldo 25k every 15th")).toBe("recurringAdd");
     expect(selectToolProfile("what are my recurring bills?")).toBe("recurringRead");
     expect(selectToolProfile("show my recurring reminders")).toBe("recurringRead");
-    expect(selectToolProfile("cancel rent recurring")).toBe("recurring");
-    expect(selectToolProfile("change rent reminder to 9k")).toBe("recurring");
+    expect(selectToolProfile("cancel rent recurring")).toBe("recurringRemove");
+    expect(selectToolProfile("remove the load reminder")).toBe("recurringRemove");
+    expect(selectToolProfile("change rent reminder to 9k")).toBe("recurringEdit");
+    expect(selectToolProfile("move netflix reminder to the 5th")).toBe("recurringEdit");
+    expect(selectToolProfile("rent 8k every 1st and what are my recurring bills?")).toBe(
+      "recurring",
+    );
+    expect(selectToolProfile("cancel rent recurring and show reminders")).toBe("recurring");
     expect(selectToolProfile("delete that")).toBe("logEdit");
     expect(selectToolProfile("actually 200")).toBe("logEdit");
     expect(selectToolProfile("no wait make it 200")).toBe("logEdit");
@@ -57,5 +64,6 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("grab 180 and how am i doing")).toBe("full");
     expect(selectToolProfile("grab 180 and how am i doing?")).toBe("full");
     expect(selectToolProfile("budget 5k for food and how am i doing?")).toBe("full");
+    expect(selectToolProfile("rent 8k every 1st and how am i doing?")).toBe("full");
   });
 });
