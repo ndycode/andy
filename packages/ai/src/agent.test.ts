@@ -50,6 +50,30 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     expect(reply).toBe("you like milk tea.");
   });
 
+  test("basic overview reads force the exact overview tool first", async () => {
+    let call = 0;
+    const toolChoices: unknown[] = [];
+    const model = new MockLanguageModelV3({
+      doGenerate: async (options) => {
+        toolChoices.push(options.toolChoice);
+        call++;
+        if (call === 1) {
+          return result(
+            [{ type: "tool-call", toolCallId: "c1", toolName: "getOverview", input: "{}" }],
+            "tool-calls",
+          );
+        }
+        return result([{ type: "text", text: "in ₱25,000, out ₱8,000, net ₱17,000" }], "stop");
+      },
+    });
+
+    const { reply, writes } = await runAgent("how am i doing?", base, model);
+
+    expect(toolChoices).toEqual([{ type: "tool", toolName: "getOverview" }, { type: "auto" }]);
+    expect(writes).toEqual([]);
+    expect(reply).toContain("net");
+  });
+
   test("broad memory reads still use the model before replying", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({

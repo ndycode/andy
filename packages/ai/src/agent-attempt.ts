@@ -56,6 +56,15 @@ const CLEAR_INCOME_LOG_RE =
   /\b(?:sweldo|salary|paycheck|bonus|income|got\s+paid|paid\s+me|payment\s+received|received\s+(?:a\s+)?(?:payment|salary|sweldo|paycheck|bonus)|client\s+paid|from\s+(?:client|boss|work|freelance))\b/i;
 const EXPENSE_CONTEXT_RE =
   /\b(?:spent|bought|grab|taxi|fare|gas|fuel|parking|toll|lunch|dinner|breakfast|coffee|snack|groceries|grocery|load|rent|netflix|subscription|bill|fee|charge|cost|food|meal|tea|matcha)\b/i;
+const BASIC_READ_PERIOD_RE = /\b(?:today|this\s+week|week\s+so\s+far|weekly)\b/i;
+const BASIC_READ_RECENT_RE =
+  /\b(?:recent|recently|latest|last\s+(?:few\s+)?transactions?|yesterday)\b/i;
+const BASIC_READ_BREAKDOWN_RE =
+  /\b(?:break\s*down|breakdown|by\s+categor(?:y|ies)|categor(?:y|ies)|where(?:'s|\s+is)?\s+my\s+money\s+going)\b/i;
+const BASIC_READ_OVERVIEW_RE =
+  /\b(?:how\s+am\s+i\s+doing|am\s+i\s+(?:broke|ok|okay)|afford|overview|spent\s+so\s+far|expenses?|income|net|cash|money|left|payday|sweldo|salary|how\s+was\s+\w+)\b/i;
+const BASIC_READ_CATEGORY_RE =
+  /\b(?:food|grocer(?:y|ies)|meal|lunch|dinner|breakfast|merienda|restaurant|coffee|tea|matcha|milktea|transport|transportation|transpo|commute|gas|gasoline|fuel|fare|grab|taxi|ride|parking|toll|bills?|utility|utilities|rent|netflix|electric(?:ity)?|water|internet|load|subscription|shopping|shop|clothes|clothing|health|medical|medicine|meds|pharmacy|doctor|entertainment|movies?|games?|gaming|savings?|goals?)\b/i;
 const BARE_REMEMBER_RE =
   /^\s*(?:remember(?:\s+(?:that|this))?|save(?:\s+(?:this|that))?(?:\s+fact)?)\s*[?.!]*\s*$/i;
 const AMBIGUOUS_FORGET_RE =
@@ -139,6 +148,8 @@ function firstStepRequiredTool(profile: ToolProfile, text: string): AgentToolCho
   switch (profile) {
     case "logWrite":
       return firstStepLogWriteTool(text);
+    case "readBasic":
+      return firstStepReadBasicTool(text);
     case "readSearch":
       return toolChoice("searchHistory");
     case "readPace":
@@ -187,6 +198,15 @@ function firstStepLogWriteTool(text: string): AgentToolChoice | undefined {
   const hasExpenseCue = EXPENSE_CONTEXT_RE.test(text);
   if (hasIncomeCue && hasExpenseCue) return undefined;
   return toolChoice(hasIncomeCue ? "logIncome" : "logExpense");
+}
+
+function firstStepReadBasicTool(text: string): AgentToolChoice | undefined {
+  if (BASIC_READ_PERIOD_RE.test(text)) return toolChoice("getPeriodSpending");
+  if (BASIC_READ_RECENT_RE.test(text)) return toolChoice("getRecent");
+  if (BASIC_READ_BREAKDOWN_RE.test(text)) return toolChoice("getCategoryBreakdown");
+  if (BASIC_READ_OVERVIEW_RE.test(text)) return toolChoice("getOverview");
+  if (BASIC_READ_CATEGORY_RE.test(text)) return toolChoice("getSpending");
+  return undefined;
 }
 
 function requiresFirstToolCall(profile: ToolProfile, text: string): boolean {

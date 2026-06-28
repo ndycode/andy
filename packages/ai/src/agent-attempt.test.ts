@@ -75,7 +75,47 @@ describe("agent attempt boundary", () => {
       toolName: "logIncome",
     });
     expect(firstStepToolChoice("logWrite", "salary advance fee 100", 0)).toBe("required");
-    expect(firstStepToolChoice("readBasic", "how am i doing?", 0)).toBe("required");
+    expect(firstStepToolChoice("readBasic", "how am i doing?", 0)).toEqual({
+      type: "tool",
+      toolName: "getOverview",
+    });
+    expect(firstStepToolChoice("readBasic", "am i broke?", 0)).toEqual({
+      type: "tool",
+      toolName: "getOverview",
+    });
+    expect(firstStepToolChoice("readBasic", "can i afford grab tonight?", 0)).toEqual({
+      type: "tool",
+      toolName: "getOverview",
+    });
+    expect(firstStepToolChoice("readBasic", "how much income this month?", 0)).toEqual({
+      type: "tool",
+      toolName: "getOverview",
+    });
+    expect(firstStepToolChoice("readBasic", "how much on food today?", 0)).toEqual({
+      type: "tool",
+      toolName: "getPeriodSpending",
+    });
+    expect(firstStepToolChoice("readBasic", "what did i spend this week?", 0)).toEqual({
+      type: "tool",
+      toolName: "getPeriodSpending",
+    });
+    expect(firstStepToolChoice("readBasic", "what did i spend recently?", 0)).toEqual({
+      type: "tool",
+      toolName: "getRecent",
+    });
+    expect(firstStepToolChoice("readBasic", "where's my money going?", 0)).toEqual({
+      type: "tool",
+      toolName: "getCategoryBreakdown",
+    });
+    expect(firstStepToolChoice("readBasic", "how much on food this month?", 0)).toEqual({
+      type: "tool",
+      toolName: "getSpending",
+    });
+    expect(firstStepToolChoice("readBasic", "what did i spend on food this month?", 0)).toEqual({
+      type: "tool",
+      toolName: "getSpending",
+    });
+    expect(firstStepToolChoice("readBasic", "what did i spend?", 0)).toBe("required");
     expect(firstStepToolChoice("readSearch", "biggest expense", 0)).toEqual({
       type: "tool",
       toolName: "searchHistory",
