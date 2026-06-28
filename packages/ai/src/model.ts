@@ -7,30 +7,64 @@ import type { LanguageModel } from "ai";
  * Andy routes every model call through OpenRouter, a single aggregator that fronts hundreds of
  * models behind one key (OPENROUTER_API_KEY) and one OpenAI-compatible endpoint.
  *
- * Fallback is native, not hand-rolled: the `models` setting (below) lists backup models OpenRouter
- * tries IN ORDER, within a single request, when the primary errors or is rate-limited. agent.ts's
- * retry/backoff loop still wraps this for transport faults and the hard deadline, but it no longer
- * needs a multi-tier candidate array — one OpenRouter model carries the whole chain.
+ * Fallback is native, not hand-rolled: the `models` setting lists backup models OpenRouter tries IN
+ * ORDER, within a single request, when the primary errors or is rate-limited. agent.ts's retry/backoff
+ * loop still wraps this for transport faults and the hard deadline, but it no longer needs a
+ * multi-tier candidate array — one OpenRouter model carries the whole chain.
  *
- * Model picks: free OpenRouter OSS only. `openai/gpt-oss-20b:free` is primary because it was
- * live-tested against Andy's tool schema and emitted a tool call. `openai/gpt-oss-120b:free` stays as
- * the only fallback; it is also free OSS, but it can 429 when the free pool is hot.
+ * Defaults stay on zero-cost, tool-capable OpenRouter models. Override with OPENROUTER_MODEL and
+ * OPENROUTER_FALLBACK_MODELS when rotating to another real OpenRouter model; no mock/demo preset path
+ * is used in production.
  */
 
-/** Primary model id. Exported (was the gateway model id before) so callers/tests can reference it. */
-export const MODEL_ID = "openai/gpt-oss-20b:free";
+export const DEFAULT_MODEL_ID = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free";
+export const DEFAULT_FALLBACK_MODELS = ["openai/gpt-oss-20b:free", "openai/gpt-oss-120b:free"];
 
-/** Backup model OpenRouter falls through to if the primary free OSS endpoint is unavailable. */
-export const FALLBACK_MODELS = ["openai/gpt-oss-120b:free"];
+type ModelEnv = {
+  readonly OPENROUTER_MODEL?: string;
+  readonly OPENROUTER_FALLBACK_MODELS?: string;
+};
+
+function splitModelList(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((model) => model.trim())
+    .filter((model) => model.length > 0);
+}
+
+export function resolveModelConfig(runtimeEnv: ModelEnv = process.env as ModelEnv): {
+  readonly modelId: string;
+  readonly fallbackModels: string[];
+} {
+  const modelId = runtimeEnv.OPENROUTER_MODEL?.trim() || DEFAULT_MODEL_ID;
+  const fallbackRaw = runtimeEnv.OPENROUTER_FALLBACK_MODELS?.trim();
+  const fallbackModels =
+    fallbackRaw == null || fallbackRaw.length === 0
+      ? DEFAULT_FALLBACK_MODELS
+      : /^(none|off)$/i.test(fallbackRaw)
+        ? []
+        : splitModelList(fallbackRaw);
+
+  return {
+    modelId,
+    fallbackModels: fallbackModels.filter((fallback) => fallback !== modelId),
+  };
+}
+
+const MODEL_CONFIG = resolveModelConfig();
+
+/** Primary model id. Exported (was the gateway model id before) so callers/tests can reference it. */
+export const MODEL_ID = MODEL_CONFIG.modelId;
+
+/** Backup models OpenRouter falls through to if the primary free OSS endpoint is unavailable. */
+export const FALLBACK_MODELS = MODEL_CONFIG.fallbackModels;
 
 /**
  * Per-request model settings shared by every model we build (primary + the proactive single-shot).
  * Keep this deliberately small. Do not set provider.data_collection:"deny" here: the free OSS
  * endpoints currently return "No endpoints found matching your data policy" under that filter.
  */
-const MODEL_SETTINGS = {
-  models: FALLBACK_MODELS,
-};
+const MODEL_SETTINGS = FALLBACK_MODELS.length > 0 ? { models: FALLBACK_MODELS } : {};
 
 /**
  * Lazily-built OpenRouter provider. Built on first use (not at import) so loading this module never

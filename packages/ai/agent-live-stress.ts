@@ -5,12 +5,13 @@ import { runLiveCorrectionEdgeChecks } from "./agent-live-stress-corrections-edg
 import { runLiveGoalMemoryChecks } from "./agent-live-stress-goals-memory";
 import { createAgentLiveStressHarness } from "./agent-live-stress-harness";
 import { runLiveLoggingReadChecks } from "./agent-live-stress-logging-read";
+import { FALLBACK_MODELS, MODEL_ID } from "./src/model";
 
 const harness = await createAgentLiveStressHarness();
 
 try {
   console.log(
-    `agent-live user: ${harness.userId}\nmodel: live OpenRouter (openai/gpt-oss-20b:free + free OSS fallback)\n`,
+    `agent-live user: ${harness.userId}\nmodel: live OpenRouter (${[MODEL_ID, ...FALLBACK_MODELS].join(" -> ")})\n`,
   );
   await runLiveLoggingReadChecks(harness);
   await runLiveGoalMemoryChecks(harness);

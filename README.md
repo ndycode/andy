@@ -33,14 +33,14 @@ iMessage ─▶ Sendblue webhook ─▶ Hono API (Vercel, sin1)
           packages/shared     packages/ai          packages/db
           money · time ·      AI SDK v6 agent      Drizzle + Postgres
           allowlist ·         28 finance tools     atomic dedup ·
-          budget · errors     multi-model chain    short txns
+          budget · errors     OpenRouter chain     short txns
 ```
 
 | Package | Responsibility |
 |---|---|
 | `packages/shared` | Pure, minimal-dependency core (only `zod` + `@t3-oss/env-core`; no internal cross-package deps): integer-centavo money math, Asia/Manila time, E.164 allowlist, budget logic, env validation, structured logging |
 | `packages/db` | Drizzle schema + queries on Postgres (Neon, Supabase, or any TCP Postgres). Atomic claim/flush dedup, idempotent writes, no N+1 |
-| `packages/ai` | AI SDK v6 `ToolLoopAgent` with 28 finance tools, a buffered-write pattern, and a multi-provider fallback chain |
+| `packages/ai` | AI SDK v6 `ToolLoopAgent` with 28 finance tools, a buffered-write pattern, and a real OpenRouter model chain |
 | `apps/api` | Hono webhook + cron. Three-phase inbound handler, Sendblue adapter, proactive nudges |
 
 **Stack:** Bun · TypeScript (strict) · Hono · Drizzle ORM · Postgres (Neon/Supabase/any) · Vercel (Build Output API) · AI SDK v6 · Zod · Biome · Turbo.
@@ -59,7 +59,7 @@ This is a finance app, so the bar is *the numbers are never wrong and nothing do
 
 **Same-message corrections that never clobber history.** "grab 180, no make it 200" in one message must edit the *just-logged* entry — not an unrelated historical row. The edit/delete path forward-replays the in-turn write buffer to target the correct row, and falls back to a stable snapshot id (replay-safe across retries) only when the turn logged nothing. Adversarially reviewed and regression-tested.
 
-**Resilient multi-model inference.** The agent routes through OpenRouter on a free, tool-capable OSS primary model (`openai/gpt-oss-20b:free`), with native fallback to `openai/gpt-oss-120b:free` — wrapped in jittered backoff, a hard time budget so a slow run aborts *cleanly* (never a platform hard-kill that strands state), and error classification that skips a dead model instead of dead-ending. A silent fall-back to a different model is logged. The per-message token footprint was profiled and roughly halved.
+**Resilient real-model inference.** The agent routes every production call through OpenRouter on a free, tool-capable primary model (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` by default), with native fallback to the verified GPT OSS free models (`openai/gpt-oss-20b:free`, then `openai/gpt-oss-120b:free`). `OPENROUTER_MODEL` and `OPENROUTER_FALLBACK_MODELS` can rotate the live model without a code patch. The call is wrapped in jittered backoff, a hard time budget so a slow run aborts *cleanly* (never a platform hard-kill that strands state), and error classification that skips a dead model instead of dead-ending. A silent fall-back to a different model is logged. The per-message token footprint was profiled and roughly halved.
 
 **Observability + graceful degradation.** Every run emits one structured JSON line (tokens, steps, tool calls). Failures map to honest user replies ("too many at once, give me a sec" vs "out of credits") rather than a generic error, and a throttled message is always retryable, never silently dropped.
 
