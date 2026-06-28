@@ -29,8 +29,8 @@ describe("model wiring (OpenRouter)", () => {
       modelId: DEFAULT_MODEL_ID,
       fallbackModels: DEFAULT_FALLBACK_MODELS,
     });
-    expect(DEFAULT_MODEL_ID).toBe("openai/gpt-oss-20b:free");
-    expect(DEFAULT_FALLBACK_MODELS).toEqual(["openai/gpt-oss-120b:free"]);
+    expect(DEFAULT_MODEL_ID).toBe("openai/gpt-oss-120b:free");
+    expect(DEFAULT_FALLBACK_MODELS).toEqual([]);
   });
 
   test("fallback chain does not repeat the primary", () => {
