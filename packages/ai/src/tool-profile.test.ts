@@ -4,10 +4,18 @@ import { selectToolProfile } from "./tool-profile";
 describe("tool profile selection", () => {
   test("uses narrow profiles for obvious single-intent turns", () => {
     expect(selectToolProfile("hello")).toBe("chat");
+    expect(selectToolProfile("can you help me?")).toBe("chat");
+    expect(selectToolProfile("what can you do?")).toBe("chat");
+    expect(selectToolProfile("who are you?")).toBe("chat");
+    expect(selectToolProfile("why are you slow?")).toBe("chat");
+    expect(selectToolProfile("how are you?")).toBe("chat");
     expect(selectToolProfile("grab 180")).toBe("logWrite");
     expect(selectToolProfile("rent 8k")).toBe("logWrite");
     expect(selectToolProfile("iced matcha 120")).toBe("logWrite");
     expect(selectToolProfile("how am i doing this month?")).toBe("readBasic");
+    expect(selectToolProfile("am i okay til payday?")).toBe("readBasic");
+    expect(selectToolProfile("can i afford grab tonight?")).toBe("readBasic");
+    expect(selectToolProfile("how much on food today?")).toBe("readBasic");
     expect(selectToolProfile("what did i spend recently?")).toBe("readBasic");
     expect(selectToolProfile("remember i get paid every 15th")).toBe("memoryRemember");
     expect(selectToolProfile("remember i like iced matcha")).toBe("memoryRemember");

@@ -2,6 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { base, MockLanguageModelV3, result, runAgent } from "./agent-run-test-harness";
 
 describe("runAgent end-to-end with a mocked model (smoke)", () => {
+  test("generic questions stay chat and do not force tools", async () => {
+    let call = 0;
+    const toolChoices: unknown[] = [];
+    const model = new MockLanguageModelV3({
+      doGenerate: async (options) => {
+        toolChoices.push(options.toolChoice);
+        call++;
+        return result([{ type: "text", text: "i can help track your money in imessage." }], "stop");
+      },
+    });
+
+    const { reply, writes } = await runAgent("what can you do?", base, model);
+
+    expect(call).toBe(1);
+    expect(toolChoices).not.toContainEqual({ type: "required" });
+    expect(reply).toBe("i can help track your money in imessage.");
+    expect(writes).toEqual([]);
+  });
+
   test("specific memory reads use the model tool loop", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({

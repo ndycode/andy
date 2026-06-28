@@ -45,6 +45,11 @@ const PROFILE_MEMORY_RE =
   /\b(?:my\s+(?:name|nickname|office|home|address|city|location)\s+is|call\s+me|i\s+live\s+in|i\s+work\s+(?:in|at)|my\s+work\s+is)\b/;
 const PROFILE_MEMORY_READ_RE =
   /\b(?:what'?s|what is)\s+my\s+(?:name|nickname|address|city|location)\b|\bwhere\s+do\s+i\s+(?:live|work)\b|\bwhere(?:'s| is| was)\s+my\s+(?:home|office|address|city|location|work)\b/;
+const BASIC_READ_STATEMENT_RE =
+  /\b(recent|breakdown|overview|spent so far|spending|expenses?|net|income|where.*money)\b/;
+const BASIC_READ_QUESTION_RE =
+  /\b(how much|how am i doing|am i broke|am i ok|am i okay|afford|spent|spend|spending|expenses?|net|income|cash|money|breakdown|overview|recent|left|payday|sweldo|salary)\b/;
+const DOMAIN_READ_RE = /\b(budget|budgets|goal|fund|recurring|remind|reminder)\b/;
 
 export function selectToolProfile(text: string): ToolProfile {
   const t = normalize(text);
@@ -72,16 +77,13 @@ export function selectToolProfile(text: string): ToolProfile {
   const focusedAnalysisProfile = analysisProfiles.length === 1 ? analysisProfiles[0] : null;
   const hasAnalysisRead = analysisProfiles.length > 0;
   const hasBasicRead =
-    hasQuestion ||
-    /\b(recent|breakdown|overview|spent so far|spending|expenses?|net|income|where.*money)\b/.test(
-      t,
-    );
+    BASIC_READ_STATEMENT_RE.test(t) || (hasQuestion && BASIC_READ_QUESTION_RE.test(t));
   const hasRead = hasBasicRead || hasAnalysisRead;
   const hasGeneralRead =
     /\b(how am i doing|am i broke|overview|spent so far|spending|expenses?|net|income|where.*money|breakdown)\b/.test(
       t,
     ) ||
-    (hasQuestion && !/\b(budget|budgets|goal|fund|recurring|remind|reminder)\b/.test(t));
+    (hasQuestion && BASIC_READ_QUESTION_RE.test(t) && !DOMAIN_READ_RE.test(t));
   const hasGoal =
     /\b(goal|fund|save|saving|saved|contribute|japan|trip|emergency|laptop)\b/.test(t) ||
     /\bput\s+.+\b(to|into|towards?)\b/.test(t);
