@@ -13,6 +13,7 @@ const lastTx = {
 
 mock.module("@repo/db", () => ({
   recallMemories: async () => ["likes milk tea"],
+  listMemories: async () => [{ id: "m1", content: "payday 15th", kind: "payday" }],
   topHabits: async () => [{ merchant: "grab", category: "Transport" }],
   recentTurns: async () => [],
   getLastTransaction: async () => lastTx,

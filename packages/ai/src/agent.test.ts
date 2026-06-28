@@ -2,6 +2,38 @@ import { describe, expect, test } from "bun:test";
 import { base, MockLanguageModelV3, result, runAgent } from "./agent-run-test-harness";
 
 describe("runAgent end-to-end with a mocked model (smoke)", () => {
+  test("specific memory reads bypass the model and answer from ranked recall", async () => {
+    let call = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        call++;
+        return result([{ type: "text", text: "model should not run" }], "stop");
+      },
+    });
+
+    const { reply, writes } = await runAgent("do i like matcha?", base, model);
+
+    expect(call).toBe(0);
+    expect(writes).toEqual([]);
+    expect(reply).toContain("likes milk tea");
+  });
+
+  test("broad memory reads bypass the model and keep the list path", async () => {
+    let call = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        call++;
+        return result([{ type: "text", text: "model should not run" }], "stop");
+      },
+    });
+
+    const { reply, writes } = await runAgent("show my memories", base, model);
+
+    expect(call).toBe(0);
+    expect(writes).toEqual([]);
+    expect(reply).toContain("payday 15th");
+  });
+
   test("durable facts without the word remember can save memory through the model", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({

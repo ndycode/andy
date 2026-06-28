@@ -4,7 +4,8 @@ import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 
 // Mock the DB reads runAgent does at loop start — no live Postgres. runAgent buffers all writes.
 mock.module("@repo/db", () => ({
-  recallMemories: async () => [],
+  recallMemories: async () => ["likes milk tea"],
+  listMemories: async () => [{ id: "m1", content: "payday 15th", kind: "payday" }],
   topHabits: async () => [{ merchant: "grab", category: "Transport" }],
   recentTurns: async () => [],
   getLastTransaction: async () => null,
