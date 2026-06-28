@@ -10,7 +10,7 @@ everyone should be able to participate without harassment. that includes people 
 
 - be respectful when you disagree
 - give feedback that helps the work get better
-- accept corrections without making it weird
+- accept corrections directly
 - own mistakes and fix them
 - keep issues and PRs focused on the code, docs, and product behavior
 

@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
 
     # ephemeral Postgres for gated DB integration: claim/flush/dedup, money writes, goal deltas.
-    # this keeps the money rails checked on every push.
+    # this keeps money correctness checked on every push.
     services:
       postgres:
         image: postgres:16-alpine

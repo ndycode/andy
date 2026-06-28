@@ -5,4 +5,4 @@ contact_links:
     about: report security issues privately. do not open a public issue.
   - name: read the contributing guide
     url: https://github.com/ndycode/andy/blob/main/CONTRIBUTING.md
-    about: dev loop, code style, and the money rails.
+    about: dev loop, code style, and correctness rules.

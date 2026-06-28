@@ -1,8 +1,8 @@
 # contributing
 
-thanks for caring enough to poke the code. andy is a personal, single-user showcase, so the lane is narrow. bug reports, questions, and small PRs are welcome. turning this into a hosted product or multi-tenant app is not the mission.
+thanks for the interest. andy is a personal, single-user showcase, so the scope is narrow. bug reports, questions, and small PRs are welcome. hosted-product and multi-tenant changes are out of scope.
 
-if the change is large, open an issue first. saves everyone a weird afternoon.
+if the change is large, open an issue first so the scope is clear.
 
 ## what you need
 
@@ -38,7 +38,7 @@ bun run ci:local       # full gate with ephemeral Postgres, needs Docker
 
 ## invariants
 
-these are the money rails. do not bend them.
+these correctness rules matter most.
 
 - **money stays integer centavos.** no floats in the money path. the model passes raw text like `"25k"` or `"180.50"`, then the parser converts it once.
 - **one message logs once.** the claim/flush marker is the source of truth for redelivery. true duplicate, skip. stale crash marker, retry safely.

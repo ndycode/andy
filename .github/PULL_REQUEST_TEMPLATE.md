@@ -6,7 +6,7 @@
 
 ## verification
 
-<!-- paste the commands you ran. no mystery green checks. -->
+<!-- paste the commands you ran. -->
 
 - [ ] `bun run typecheck`
 - [ ] `bun run lint`
@@ -15,7 +15,7 @@
 - [ ] `bun run build`
 - [ ] `bun run ci:local`, or explain why Docker/DB integration was not available
 
-## money rails
+## correctness checks
 
 - [ ] no floats in the money path, amounts stay integer centavos
 - [ ] dedup and the three-phase handler still hold

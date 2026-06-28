@@ -1,6 +1,6 @@
 # security
 
-andy handles money data, personal messages, phone numbers, and provider secrets. small repo, real stakes.
+andy handles money data, personal messages, phone numbers, and provider secrets. security matters even though this is a single-user project.
 
 ## supported versions
 

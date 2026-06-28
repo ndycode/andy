@@ -6,7 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6)](https://www.typescriptlang.org/)
 [![Biome](https://img.shields.io/badge/lint%20%2F%20format-Biome-60a5fa)](https://biomejs.dev/)
 
-> text your money like a normal person. andy logs it, answers from real data, and nudges before the budget gets spicy.
+> text a transaction in iMessage. andy logs it, answers from the ledger, and sends budget nudges when they matter.
 
 ## demo
 
@@ -14,13 +14,11 @@
   <img src="./public/demo/messages-poster.jpg" alt="andy iMessage demo preview" width="360">
 </a>
 
-tap the preview to play the demo. GitHub readmes strip normal video controls, so the preview links to the committed mp4 with a mobile-safe `video/mp4` response.
-
 ## what andy does
 
-andy is a single-user, serverless finance assistant for iMessage. it turns casual text into typed transactions, budgets, savings goals, recurring reminders, and memories. it stores money as exact integer centavos, then answers from SQL aggregation, never from chat vibes.
+andy is a single-user, serverless finance assistant for iMessage. it parses everyday spending text into typed transactions, budgets, savings goals, recurring reminders, and memories. it stores money as exact integer centavos, then answers from SQL aggregation instead of chat history.
 
-built for the Philippines by default: PHP, Asia/Manila, GCash, sweldo, Grab, and the kind of "wait, how much did i spend?" questions people actually text.
+built for the Philippines by default: PHP, Asia/Manila, GCash, sweldo, Grab, and direct questions like "how much did i spend?"
 
 **600+ tests. TypeScript strict. Biome plus custom no-excuse lint. unit, integration, and build gates in CI.**
 
@@ -51,15 +49,15 @@ Bun `1.3.14`. Node.js 22 on Vercel. TypeScript 6 strict. Hono. ky. Drizzle ORM. 
 
 ## why it is built this way
 
-**money cannot be fuzzy.** amounts are integer centavos end to end. the model extracts the raw token, like `"25k"` or `"180.50"`, then one parser turns it into exact money. display is the only place pesos get decimal formatting.
+**money cannot be fuzzy.** amounts are integer centavos end to end. the model extracts the raw token, like `"25k"` or `"180.50"`, then one parser converts it. display is the only place pesos get decimal formatting.
 
 **redelivery cannot double-log.** every inbound message claims a dedup marker first. true duplicate or in-flight sibling, skip. stale crash marker, safely retry. no two workers get to flush the same message.
 
 **the model call cannot pin the database.** the handler claims in one short transaction, runs the model with buffered write intents, then flushes in one short transaction. no connection sits around waiting for an LLM.
 
-**corrections hit the thing you just meant.** `grab 180, no make it 200` becomes one expense at the final amount. `make that 200` edits the just-logged row, not some random old transaction.
+**corrections target the current turn.** `grab 180, no make it 200` becomes one expense at the final amount. `make that 200` edits the just-logged row, not an old transaction.
 
-**read answers come from SQL.** "how much on food?" calls tools backed by real tables. no guessing from chat history. no vague "looks like". give the number or say nothing is logged.
+**read answers come from SQL.** "how much on food?" calls tools backed by real tables. no guessing from chat history. if there is no data, andy says so.
 
 **failures tell the truth.** out of credits gets an out-of-credits reply. burst limits ask for a resend. committed data never gets a fake "something broke" reply just because the outbound text failed.
 
@@ -87,7 +85,7 @@ bun run ci:local       # full gate with ephemeral Postgres, needs Docker
 
 small, focused PRs are welcome. big rewrites, multi-user hosting, and "make this deployable for everyone" are out of scope.
 
-read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a PR. if your change touches money, dedup, the handler, or DB writes, bring tests.
+read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a PR. if your change touches money, dedup, the handler, or DB writes, include tests.
 
 ## security
 
