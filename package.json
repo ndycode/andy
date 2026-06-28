@@ -2,7 +2,7 @@
   "name": "andy",
   "version": "0.0.0",
   "private": true,
-  "description": "An iMessage personal finance assistant: natural-language money tracking with an AI SDK agent, exact integer-centavo math, and atomic dedup. Bun monorepo, serverless on Vercel.",
+  "description": "An iMessage personal finance assistant: natural-language transactions, budgets, goals, recurring reminders, and memories with an AI SDK agent, exact integer-centavo math, and atomic dedup. Bun monorepo, serverless on Vercel.",
   "license": "MIT",
   "author": "ndycode",
   "homepage": "https://github.com/ndycode/andy#readme",
@@ -16,6 +16,9 @@
   "keywords": [
     "imessage",
     "personal-finance",
+    "budgeting",
+    "savings-goals",
+    "recurring-reminders",
     "ai-agent",
     "ai-sdk",
     "openrouter",

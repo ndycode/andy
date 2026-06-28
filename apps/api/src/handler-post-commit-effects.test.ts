@@ -60,7 +60,9 @@ describe("runPostCommitEffects", () => {
 
   test("starts tapback without waiting for habit learning to settle", async () => {
     const calls: Call[] = [];
-    let finishHabit!: () => void;
+    let finishHabit: () => void = () => {
+      throw new Error("finishHabit not initialized");
+    };
     const slowHabit = new Promise<void>((resolve) => {
       finishHabit = resolve;
     });

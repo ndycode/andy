@@ -24,7 +24,7 @@ bun run typecheck      # tsc --noEmit across every package (+ api/ and scripts/)
 bun run lint           # Biome (format + lint)
 bun run lint:fix       # auto-fix the safe lint/format findings
 bun run lint:no-excuse # repo-specific custom linter (no swallowed catches, no magic literals, …)
-bun test               # unit suite; the DB-integration suite is gated on TEST_DATABASE_URL
+bun test               # 600+ tests; the DB-integration suite is gated on TEST_DATABASE_URL
 bun run build          # production Vercel bundle (Build Output API)
 
 bun run ci:local       # the FULL gate, incl. integration tests vs an ephemeral Postgres (needs Docker)
@@ -44,8 +44,10 @@ the dependable green checkmark.
   If a rule genuinely must be bypassed, use an explicit `// no-excuse-ok: <rule>` annotation with a
   reason — don't disable the linter.
 - **Tests:** write behavior-focused tests with `bun test`. Pure logic is unit-tested directly; the DB
-  layer has `*.integration.test.ts` suites that run against real Postgres (gated on
-  `TEST_DATABASE_URL`). New behavior needs a test; bug fixes need a regression test.
+  layer has `*.integration.test.ts` suites for claim/flush/dedup, schema constraints, maintenance,
+  read queries, goals, recurring items, memories, and lifecycle behavior. Those integration suites
+  run against real Postgres only when `TEST_DATABASE_URL` is set. New behavior needs a test; bug
+  fixes need a regression test.
 - **Minimal-dependency core:** `@repo/shared` carries only `zod` + `@t3-oss/env-core` and must not
   import from `@repo/db`/`@repo/ai`. The package graph is acyclic and layered — `@repo/shared` (no
   internal deps) ← `@repo/db` ← `@repo/ai` ← `apps/api` — where higher layers may also depend on

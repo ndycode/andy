@@ -287,6 +287,7 @@ function startTypingCue(phone: string, sendTypingFn: InboundDeps["sendTyping"]):
   try {
     return Promise.resolve(sendTypingFn(phone)).catch((err: unknown) => err);
   } catch (err) {
+    if (!(err instanceof Error)) throw err;
     return Promise.resolve(err);
   }
 }

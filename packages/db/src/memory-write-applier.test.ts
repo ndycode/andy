@@ -11,7 +11,7 @@ function fakeMemoryTx(existing: false | { id: string; kind: "fact" | "preference
     where: () => selectChain,
     limit: async () => (existing ? [existing] : []),
   };
-  const tx = {
+  const tx = Object.assign(Object.create(null) as FlushWriteTx, {
     select: () => selectChain,
     update: () => ({
       set: (value: unknown) => ({
@@ -25,7 +25,7 @@ function fakeMemoryTx(existing: false | { id: string; kind: "fact" | "preference
         inserts.push(value);
       },
     }),
-  } as unknown as FlushWriteTx;
+  });
   return { tx, inserts, updates };
 }
 

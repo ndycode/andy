@@ -29,7 +29,8 @@ cat > "$OUT/functions/api.func/.vc-config.json" <<'JSON'
 }
 JSON
 
-# Static landing page.
+# Static fallback asset. Current routing below intentionally sends every path to the API function;
+# keep this copied so restoring a static route later does not require changing the build layout.
 cp public/index.html "$OUT/static/index.html"
 
 # Top-level output config: route everything to the function, keep cron + region.
