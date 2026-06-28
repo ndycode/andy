@@ -74,12 +74,13 @@ describe("model wiring (OpenRouter)", () => {
     }
   });
 
-  test("defaultModel() does not set free-model routing filters", () => {
+  test("defaultModel() keeps free routing open while using low reasoning", () => {
     const m = expectRecord(defaultModel(), "model");
     const settings = expectRecord(m.settings, "settings");
 
     expect(settings.provider).toBeUndefined();
-    expect(settings.reasoning).toBeUndefined();
+    expect(settings.reasoning).toEqual({ effort: "low", exclude: true });
+    expect(MODEL_SETTINGS_FOR_TEST.reasoning).toEqual({ effort: "low", exclude: true });
     if (FALLBACK_MODELS.length > 0) {
       expect(MODEL_SETTINGS_FOR_TEST.models).toEqual(FALLBACK_MODELS);
     } else {

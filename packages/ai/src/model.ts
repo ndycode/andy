@@ -1,4 +1,4 @@
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { createOpenRouter, type OpenRouterChatSettings } from "@openrouter/ai-sdk-provider";
 import type { LanguageModel } from "ai";
 
 /**
@@ -63,8 +63,13 @@ export const FALLBACK_MODELS = MODEL_CONFIG.fallbackModels;
  * Per-request model settings shared by every model we build (primary + the proactive single-shot).
  * Keep this deliberately small. Do not set provider.data_collection:"deny" here: the free OSS
  * endpoints currently return "No endpoints found matching your data policy" under that filter.
+ * OpenRouter's live metadata reports gpt-oss free defaults to medium reasoning; low is supported and
+ * keeps the iMessage loop faster while still allowing the model to satisfy mandatory reasoning.
  */
-const MODEL_SETTINGS = FALLBACK_MODELS.length > 0 ? { models: FALLBACK_MODELS } : {};
+const MODEL_SETTINGS: OpenRouterChatSettings = {
+  reasoning: { effort: "low", exclude: true },
+  ...(FALLBACK_MODELS.length > 0 ? { models: FALLBACK_MODELS } : {}),
+};
 
 /**
  * Lazily-built OpenRouter provider. Built on first use (not at import) so loading this module never
