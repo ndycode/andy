@@ -32,6 +32,10 @@ export function buildTools(
   switch (profile) {
     case "chat":
       return narrowTools({});
+    case "logWrite":
+      return narrowTools(buildLogTools(ctx, deps.log));
+    case "logEdit":
+      return narrowTools(buildEditToolProfile(ctx));
     case "log":
       return narrowTools(buildLogToolProfile(ctx, deps));
     case "readBasic":
@@ -70,10 +74,16 @@ export function buildTools(
 export type FinanceTools = ReturnType<typeof buildFullTools>;
 
 function buildLogToolProfile(ctx: ToolContext, deps: FinanceToolDeps) {
+  return {
+    ...buildLogTools(ctx, deps.log),
+    ...buildEditToolProfile(ctx),
+  };
+}
+
+function buildEditToolProfile(ctx: ToolContext) {
   const editTools = buildEditTools(ctx);
 
   return {
-    ...buildLogTools(ctx, deps.log),
     editLast: editTools.editLast,
     deleteLast: editTools.deleteLast,
   };

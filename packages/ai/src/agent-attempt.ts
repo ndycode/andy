@@ -51,6 +51,10 @@ export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
   switch (profile) {
     case "chat":
       return { maxSteps: 2, maxOutputTokens: 256 };
+    case "logWrite":
+      return { maxSteps: 4, maxOutputTokens: 512 };
+    case "logEdit":
+      return { maxSteps: 4, maxOutputTokens: 512 };
     case "log":
       return { maxSteps: 6, maxOutputTokens: 512 };
     case "readBasic":

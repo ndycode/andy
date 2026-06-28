@@ -56,6 +56,22 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
   switch (profile) {
     case "chat":
       return { memories: false, habits: false, history: false, lastTransaction: false };
+    case "logWrite": {
+      const textKnown = text !== undefined;
+      return {
+        memories: false,
+        habits: !textKnown || needsLogHabits(text),
+        history: false,
+        lastTransaction: false,
+      };
+    }
+    case "logEdit":
+      return {
+        memories: false,
+        habits: false,
+        history: false,
+        lastTransaction: true,
+      };
     case "log": {
       const textKnown = text !== undefined;
       return {

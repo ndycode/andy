@@ -1,5 +1,7 @@
 export type ToolProfile =
   | "chat"
+  | "logWrite"
+  | "logEdit"
   | "log"
   | "readBasic"
   | "readSearch"
@@ -18,6 +20,11 @@ export type ToolProfile =
   | "full";
 
 const AMOUNT_RE = /(?:₱|php\s*)?\d[\d,]*(?:\.\d+)?\s*[kKmM]?\b/i;
+const AMOUNT_GLOBAL_RE = /(?:₱|php\s*)?\d[\d,]*(?:\.\d+)?\s*[kKmM]?\b/gi;
+const CORRECTION_RE =
+  /\b(delete that|scratch that|undo|no wait|make that|make it|change it|actually|no,?)\b/i;
+const CORRECTION_GLOBAL_RE =
+  /\b(delete that|scratch that|undo|no wait|make that|make it|change it|actually|no,?)\b/gi;
 
 export function selectToolProfile(text: string): ToolProfile {
   const t = normalize(text);
@@ -93,8 +100,13 @@ export function selectToolProfile(text: string): ToolProfile {
     /\b(what do you know|what do you remember|what have you remembered|list|show|view|see|memory|memories)\b/.test(
       t,
     );
-  const hasCorrection =
-    /\b(delete that|scratch that|undo|make that|change it|actually|no,?|no wait)\b/.test(t);
+  const hasCorrection = CORRECTION_RE.test(t);
+  const noteText = t
+    .replace(AMOUNT_GLOBAL_RE, " ")
+    .replace(CORRECTION_GLOBAL_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const hasMerchantAmount = hasAmount && noteText.match(/[a-z]{2,}/i) !== null;
   const hasLogHint =
     hasAmount &&
     /\b(spent|paid|bought|got|grab|taxi|fare|gas|fuel|parking|toll|lunch|dinner|breakfast|coffee|snack|groceries|grocery|load|rent|netflix|subscription|salary|sweldo|income)\b/.test(
@@ -134,7 +146,9 @@ export function selectToolProfile(text: string): ToolProfile {
   if (hasRecurring) return "recurring";
   if (hasGoal) return hasGoalRead ? "goalRead" : "goal";
   if (hasRead && !hasLogHint) return hasAnalysisRead ? "read" : "readBasic";
-  if (hasLogHint || hasCorrection || hasAmount) return "log";
+  if (hasCorrection && !hasMerchantAmount) return "logEdit";
+  if (hasCorrection || (hasAmount && !hasMerchantAmount)) return "log";
+  if (hasLogHint || hasMerchantAmount) return "logWrite";
   return "chat";
 }
 

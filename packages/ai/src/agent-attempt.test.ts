@@ -29,6 +29,8 @@ describe("agent attempt boundary", () => {
 
   test("uses tighter generation budgets for narrow profiles", () => {
     expect(agentAttemptLimits("chat")).toEqual({ maxSteps: 2, maxOutputTokens: 256 });
+    expect(agentAttemptLimits("logWrite")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
+    expect(agentAttemptLimits("logEdit")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
     expect(agentAttemptLimits("log")).toEqual({ maxSteps: 6, maxOutputTokens: 512 });
     expect(agentAttemptLimits("readBasic")).toEqual({ maxSteps: 5, maxOutputTokens: 512 });
     expect(agentAttemptLimits("readSearch")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });

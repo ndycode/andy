@@ -63,6 +63,18 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("logWrite")).toEqual({
+      memories: false,
+      habits: true,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("logEdit")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: true,
+    });
     expect(contextLoadPolicy("log")).toEqual({
       memories: false,
       habits: true,
@@ -138,6 +150,30 @@ describe("agent context boundary", () => {
   });
 
   test("log context loads only DB state useful for the exact inbound text", () => {
+    expect(contextLoadPolicy("logWrite", "grab 180")).toEqual({
+      memories: false,
+      habits: true,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("logWrite", "120")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("logEdit", "actually 200")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: true,
+    });
+    expect(contextLoadPolicy("logEdit", "delete that")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: true,
+    });
     expect(contextLoadPolicy("log", "grab 180")).toEqual({
       memories: false,
       habits: true,

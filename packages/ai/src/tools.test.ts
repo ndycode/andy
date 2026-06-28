@@ -47,6 +47,8 @@ describe("buildTools profile routing", () => {
   });
 
   test("narrows the runtime tool map for simple log and read profiles", () => {
+    expect(Object.keys(buildTools(ctx(), {}, "logWrite"))).toEqual(["logExpense", "logIncome"]);
+    expect(Object.keys(buildTools(ctx(), {}, "logEdit"))).toEqual(["editLast", "deleteLast"]);
     expect(Object.keys(buildTools(ctx(), {}, "log"))).toEqual([
       "logExpense",
       "logIncome",
@@ -90,6 +92,8 @@ describe("buildTools profile routing", () => {
 
     expect(source).toContain('case "chat":');
     expect(source).toContain("return narrowTools({});");
+    expect(source).toContain("return narrowTools(buildLogTools(ctx, deps.log));");
+    expect(source).toContain("return narrowTools(buildEditToolProfile(ctx));");
     expect(source).toContain("return narrowTools(buildLogToolProfile(ctx, deps));");
     expect(source).toContain("return narrowTools(buildBasicReadTools(ctx));");
     expect(source).toContain("return narrowTools(buildHistoryReadTools(ctx));");
