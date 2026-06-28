@@ -99,4 +99,27 @@ describe("selectPromptMemories", () => {
       "payday is every 15th and 30th",
     ]);
   });
+
+  test("matches profile location aliases across work, office, home, and live wording", () => {
+    const rows = [
+      { content: "payday is every 15th and 30th", kind: "payday" },
+      { content: "likes milk tea after work", kind: "preference" },
+      { content: "my office is in makati", kind: "person" },
+      { content: "home is bgc", kind: "person" },
+    ];
+
+    expect(selectPromptMemories(rows, 1, "where do i work?")).toEqual(["my office is in makati"]);
+    expect(selectPromptMemories(rows, 1, "where do i live?")).toEqual(["home is bgc"]);
+  });
+
+  test("does not treat every after-work preference question as a profile location query", () => {
+    const rows = [
+      { content: "my office is in makati", kind: "person" },
+      { content: "likes milk tea after work", kind: "preference" },
+    ];
+
+    expect(selectPromptMemories(rows, 1, "do i like milk tea after work?")).toEqual([
+      "likes milk tea after work",
+    ]);
+  });
 });
