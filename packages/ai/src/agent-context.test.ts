@@ -130,7 +130,7 @@ describe("agent context boundary", () => {
       lastTransaction: false,
     });
     expect(contextLoadPolicy("goal", "save 20k for japan by december")).toEqual({
-      memories: true,
+      memories: false,
       habits: false,
       history: false,
       lastTransaction: false,
@@ -145,15 +145,22 @@ describe("agent context boundary", () => {
     expect(contextLoadPolicy("goal", "put 1k to it").history).toBe(true);
   });
 
+  test("goal context loads prompt memories only when wording references prior knowledge", () => {
+    expect(contextLoadPolicy("goal", "save 20k for japan by december").memories).toBe(false);
+    expect(contextLoadPolicy("goal", "put 1k to japan").memories).toBe(false);
+    expect(contextLoadPolicy("goal", "put 1k to it").memories).toBe(true);
+    expect(contextLoadPolicy("goal", "save 20k for the trip i mentioned").memories).toBe(true);
+  });
+
   test("goal context loads the last transaction only for correction-like text", () => {
     expect(contextLoadPolicy("goal", "put 1k to japan")).toEqual({
-      memories: true,
+      memories: false,
       habits: false,
       history: false,
       lastTransaction: false,
     });
     expect(contextLoadPolicy("goal", "put 1k to japan, actually 2k")).toEqual({
-      memories: true,
+      memories: false,
       habits: false,
       history: false,
       lastTransaction: true,
