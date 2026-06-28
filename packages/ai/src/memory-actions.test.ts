@@ -16,6 +16,10 @@ function deps(calls: Array<Record<string, unknown>> = []): MemoryActionDeps {
         { id: "m2", content: "payday 15th", kind: "payday" },
       ];
     },
+    recallMemories: async (userId, limit, query) => {
+      calls.push({ fn: "recallMemories", userId, limit, query });
+      return ["likes iced matcha"];
+    },
   };
 }
 
@@ -59,6 +63,19 @@ describe("memory actions", () => {
 
     expect(result).toEqual({ remembered: ["likes milk tea", "payday 15th"] });
     expect(calls).toEqual([{ fn: "listMemories", userId: "user-1" }]);
+    expect(drain()).toEqual([]);
+  });
+
+  test("listSavedMemories uses ranked recall for specific memory queries", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const { ctx: toolCtx, drain } = ctx();
+
+    const result = await listSavedMemories(toolCtx, { query: "do i like matcha?" }, deps(calls));
+
+    expect(result).toEqual({ remembered: ["likes iced matcha"] });
+    expect(calls).toEqual([
+      { fn: "recallMemories", userId: "user-1", limit: 12, query: "do i like matcha?" },
+    ]);
     expect(drain()).toEqual([]);
   });
 });

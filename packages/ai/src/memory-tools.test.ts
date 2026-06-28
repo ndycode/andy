@@ -43,4 +43,11 @@ describe("buildMemoryTools module boundary", () => {
     expect(result).toEqual({ ok: true, forgetting: "payday" });
     expect(drain()).toEqual([{ type: "forgetMemory", userId: "user-1", match: "payday" }]);
   });
+
+  test("listMemory accepts an optional query for specific memory reads", () => {
+    const source = readFileSync(new URL("./memory-tools.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("query:");
+    expect(source).toContain("pass the user's question as query");
+  });
 });

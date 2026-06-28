@@ -26,8 +26,14 @@ export function buildMemoryTools(ctx: ToolContext) {
   });
 
   const listMemory = tool({
-    description: "List what you remember about the user. For 'what do you know about me'.",
-    inputSchema: z.object({}),
+    description:
+      "List what you remember about the user. For specific memory questions, pass the user's question as query.",
+    inputSchema: z.object({
+      query: z
+        .string()
+        .optional()
+        .describe("Optional user question or keywords to return the most relevant memories first."),
+    }),
     execute: (input) => listSavedMemories(ctx, input),
   });
 

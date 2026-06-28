@@ -4,6 +4,7 @@ type DbModule = typeof import("@repo/db");
 
 export interface MemoryActionDeps {
   listMemories: DbModule["listMemories"];
+  recallMemories: DbModule["recallMemories"];
 }
 
 type MemoryKind = "fact" | "preference" | "payday" | "goal" | "person" | "other";
@@ -15,6 +16,10 @@ type RememberInput = {
 
 type ForgetInput = {
   match: string;
+};
+
+type ListInput = {
+  query?: string;
 };
 
 export function rememberFact(ctx: ToolContext, { fact, kind }: RememberInput) {
@@ -29,15 +34,19 @@ export function forgetSavedMemory(ctx: ToolContext, { match }: ForgetInput) {
 
 export async function listSavedMemories(
   ctx: ToolContext,
-  _input: Record<string, never> = {},
+  input: ListInput = {},
   deps?: MemoryActionDeps,
 ) {
   const actionDeps = deps ?? (await loadMemoryActionDeps());
+  const query = input.query?.trim();
+  if (query) {
+    return { remembered: await actionDeps.recallMemories(ctx.userId, 12, query) };
+  }
   const rows = await actionDeps.listMemories(ctx.userId);
   return { remembered: rows.map((m) => m.content) };
 }
 
 async function loadMemoryActionDeps(): Promise<MemoryActionDeps> {
   const db = await import("@repo/db");
-  return { listMemories: db.listMemories };
+  return { listMemories: db.listMemories, recallMemories: db.recallMemories };
 }
