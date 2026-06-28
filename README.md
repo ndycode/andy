@@ -8,12 +8,7 @@
 
 > Text your money in plain language. An AI agent logs it, answers questions from real data, and nudges you — all over iMessage.
 
-```
-you  ▸ grab 180, lunch jollibee 250, sweldo 25k
-andy ▸ logged ₱180 transport, ₱250 food, and ₱25,000 income 🫡
-you  ▸ am i broke?
-andy ▸ you're at ₱2,408 net this month. you get paid the 15th, so you're fine — but those grabs are adding up 👀
-```
+
 
 Andy is a single-user, serverless finance assistant. You talk to it like a friend; it turns natural language into typed financial transactions, persists them with exact integer-centavo money math, and answers questions from real SQL aggregation — never from chat history. It's built for the Philippines (PHP, Asia/Manila, GCash/sweldo idioms).
 
