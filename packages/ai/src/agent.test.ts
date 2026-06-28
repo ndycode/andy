@@ -2,6 +2,41 @@ import { describe, expect, test } from "bun:test";
 import { base, MockLanguageModelV3, result, runAgent } from "./agent-run-test-harness";
 
 describe("runAgent end-to-end with a mocked model (smoke)", () => {
+  test("durable facts without the word remember can save memory through the model", async () => {
+    let call = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        call++;
+        if (call === 1) {
+          return result(
+            [
+              {
+                type: "tool-call",
+                toolCallId: "c1",
+                toolName: "remember",
+                input: JSON.stringify({ fact: "i like iced matcha", kind: "preference" }),
+              },
+            ],
+            "tool-calls",
+          );
+        }
+        return result([{ type: "text", text: "noted, iced matcha stays on the record" }], "stop");
+      },
+    });
+
+    const { reply, writes } = await runAgent("i like iced matcha", base, model);
+
+    expect(reply).toBe("noted, iced matcha stays on the record");
+    expect(writes).toEqual([
+      {
+        type: "saveMemory",
+        userId: "user-1",
+        content: "i like iced matcha",
+        kind: "preference",
+      },
+    ]);
+  });
+
   test("logExpense tool call -> buffered write + final-text reply", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({

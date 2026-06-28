@@ -35,6 +35,10 @@ const CORRECTION_RE =
   /\b(delete that|scratch that|undo|no wait|make that|make it|change it|actually|no,?)\b/i;
 const CORRECTION_GLOBAL_RE =
   /\b(delete that|scratch that|undo|no wait|make that|make it|change it|actually|no,?)\b/gi;
+const PAYDAY_MEMORY_RE =
+  /\b(?:i\s+(?:get\s+paid|am\s+paid)|my\s+(?:payday|salary|sweldo|paycheck)|payday|salary|sweldo)\b.*\b(?:every|on|is|are|comes?|lands?|\d{1,2}(?:st|nd|rd|th)?)\b/;
+const PREFERENCE_MEMORY_RE =
+  /\b(?:i\s+(?:like|love|prefer|usually)|i\s+do\s+not\s+like|i\s+don't\s+like|my\s+favou?rite)\b/;
 
 export function selectToolProfile(text: string): ToolProfile {
   const t = normalize(text);
@@ -122,10 +126,14 @@ export function selectToolProfile(text: string): ToolProfile {
     !hasAmount &&
     !hasRecurringManagement &&
     (hasQuestion || /\b(list|show|view|see|which)\b/.test(t));
+  const hasDurableMemoryFact =
+    !hasAmount && !hasQuestion && (PAYDAY_MEMORY_RE.test(t) || PREFERENCE_MEMORY_RE.test(t));
   const hasMemory =
+    hasDurableMemoryFact ||
     /\b(remember|forget|memory|memories|what do you know|dont remember|don't remember)\b/.test(t);
   const hasMemoryManagement = /\b(forget|dont remember|don't remember|delete|remove)\b/.test(t);
-  const hasMemoryRemember = /\bremember\b/.test(t) && !/\bwhat do you remember\b/.test(t);
+  const hasMemoryRemember =
+    hasDurableMemoryFact || (/\bremember\b/.test(t) && !/\bwhat do you remember\b/.test(t));
   const hasMemoryActionAndRead =
     hasMemory &&
     (hasMemoryRemember || hasMemoryManagement) &&

@@ -11,6 +11,10 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("what did i spend recently?")).toBe("readBasic");
     expect(selectToolProfile("remember i get paid every 15th")).toBe("memoryRemember");
     expect(selectToolProfile("remember i like iced matcha")).toBe("memoryRemember");
+    expect(selectToolProfile("i get paid every 15th and 30th")).toBe("memoryRemember");
+    expect(selectToolProfile("my payday is every 15th")).toBe("memoryRemember");
+    expect(selectToolProfile("i like iced matcha")).toBe("memoryRemember");
+    expect(selectToolProfile("i prefer cash")).toBe("memoryRemember");
     expect(selectToolProfile("what do you know about me?")).toBe("memoryRead");
     expect(selectToolProfile("show my memories")).toBe("memoryRead");
     expect(selectToolProfile("forget my payday memory")).toBe("memoryForget");
@@ -52,6 +56,10 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("actually 200")).toBe("logEdit");
     expect(selectToolProfile("no wait make it 200")).toBe("logEdit");
     expect(selectToolProfile("grab 180, no make it 200")).toBe("log");
+    expect(selectToolProfile("i like iced matcha 120")).toBe("logWrite");
+    expect(selectToolProfile("do i like matcha?")).toBe("readBasic");
+    expect(selectToolProfile("i paid rent every 1st")).toBe("recurringAdd");
+    expect(selectToolProfile("i hate this")).toBe("chat");
   });
 
   test("uses focused read profiles for single analysis intents", () => {
