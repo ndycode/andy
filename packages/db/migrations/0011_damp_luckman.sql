@@ -1,0 +1,1 @@
+CREATE INDEX "tx_duplicate_lookup_idx" ON "transactions" USING btree ("user_id","local_date","kind","amount_centavos",lower(coalesce(trim("note"), '')),"seq" DESC NULLS LAST);

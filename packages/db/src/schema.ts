@@ -66,6 +66,16 @@ export const transactions = pgTable(
     index("tx_user_cat_date_idx").on(t.userId, t.category, t.localDate),
     // Live reply loop (recent / edit-last / delete-last) sorts by recency per user.
     index("tx_user_seq_idx").on(t.userId, t.seq),
+    // Duplicate heads-up on every successful log checks same user/day/kind/amount/normalized note
+    // and wants the newest match. This expression index keeps that post-model tool read narrow.
+    index("tx_duplicate_lookup_idx").on(
+      t.userId,
+      t.localDate,
+      t.kind,
+      t.amountCentavos,
+      sql`lower(coalesce(trim(${t.note}), ''))`,
+      t.seq.desc(),
+    ),
     // Goal deletion detaches by goal_id (UPDATE ... SET goal_id = NULL) and the ON DELETE SET NULL
     // referential action both look up by goal_id; index the non-null links so it's not a table scan.
     index("tx_goal_idx").on(t.goalId).where(sql`${t.goalId} IS NOT NULL`),
