@@ -70,6 +70,9 @@ export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
       return { maxSteps: 5, maxOutputTokens: 512 };
     case "budgetRead":
       return { maxSteps: 4, maxOutputTokens: 512 };
+    case "budgetSet":
+    case "budgetRemove":
+      return { maxSteps: 4, maxOutputTokens: 512 };
     case "budget":
       return { maxSteps: 5, maxOutputTokens: 512 };
     case "recurringRead":

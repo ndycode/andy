@@ -68,6 +68,10 @@ export function buildTools(
       return narrowTools(buildGoalToolProfile(ctx));
     case "budgetRead":
       return narrowTools(buildBudgetReadProfile(ctx));
+    case "budgetSet":
+      return narrowTools(buildBudgetSetProfile(ctx));
+    case "budgetRemove":
+      return narrowTools(buildBudgetRemoveProfile(ctx));
     case "budget":
       return narrowTools(buildBudgetTools(ctx));
     case "recurringRead":
@@ -145,6 +149,14 @@ function buildGoalContributeProfile(ctx: ToolContext) {
 
 function buildBudgetReadProfile(ctx: ToolContext) {
   return { getBudgets: buildBudgetTools(ctx).getBudgets };
+}
+
+function buildBudgetSetProfile(ctx: ToolContext) {
+  return { setBudget: buildBudgetTools(ctx).setBudget };
+}
+
+function buildBudgetRemoveProfile(ctx: ToolContext) {
+  return { removeBudget: buildBudgetTools(ctx).removeBudget };
 }
 
 function buildFullTools(ctx: ToolContext, deps: FinanceToolDeps) {

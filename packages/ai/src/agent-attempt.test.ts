@@ -45,6 +45,8 @@ describe("agent attempt boundary", () => {
     expect(agentAttemptLimits("goalManage")).toEqual({ maxSteps: 5, maxOutputTokens: 512 });
     expect(agentAttemptLimits("goal")).toEqual({ maxSteps: 7, maxOutputTokens: 768 });
     expect(agentAttemptLimits("budgetRead")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
+    expect(agentAttemptLimits("budgetSet")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
+    expect(agentAttemptLimits("budgetRemove")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
     expect(agentAttemptLimits("recurringRead")).toEqual({ maxSteps: 4, maxOutputTokens: 512 });
     expect(agentAttemptLimits("full")).toEqual({ maxSteps: 12, maxOutputTokens: 1024 });
   });

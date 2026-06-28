@@ -83,6 +83,8 @@ describe("buildTools profile routing", () => {
     expect(Object.keys(buildTools(ctx(), {}, "goalManage"))).toEqual(["editGoal", "deleteGoal"]);
     expect(Object.keys(buildTools(ctx(), {}, "memoryRead"))).toEqual(["listMemory"]);
     expect(Object.keys(buildTools(ctx(), {}, "budgetRead"))).toEqual(["getBudgets"]);
+    expect(Object.keys(buildTools(ctx(), {}, "budgetSet"))).toEqual(["setBudget"]);
+    expect(Object.keys(buildTools(ctx(), {}, "budgetRemove"))).toEqual(["removeBudget"]);
     expect(Object.keys(buildTools(ctx(), {}, "recurringRead"))).toEqual(["listRecurringBills"]);
   });
 
@@ -110,6 +112,8 @@ describe("buildTools profile routing", () => {
     expect(source).toContain("return narrowTools(buildGoalContributeProfile(ctx));");
     expect(source).toContain("return narrowTools(buildGoalManagementTools(ctx));");
     expect(source).toContain("return narrowTools(buildBudgetReadProfile(ctx));");
+    expect(source).toContain("return narrowTools(buildBudgetSetProfile(ctx));");
+    expect(source).toContain("return narrowTools(buildBudgetRemoveProfile(ctx));");
     expect(source).toContain("return narrowTools(buildRecurringReadTools(ctx));");
     expect(source).not.toContain("pickProfileTools");
     expect(source).not.toContain("TOOL_PROFILE_KEYS");

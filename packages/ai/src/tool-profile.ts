@@ -17,6 +17,8 @@ export type ToolProfile =
   | "goalManage"
   | "goal"
   | "budgetRead"
+  | "budgetSet"
+  | "budgetRemove"
   | "budget"
   | "recurringRead"
   | "recurring"
@@ -83,6 +85,14 @@ export function selectToolProfile(text: string): ToolProfile {
     /\b(how'?s|how is|what'?s|status|progress|on track|pace|doing)\b/.test(t);
   const hasBudget = /\b(budget|budgets|cap|limit|within budget|overspend)\b/.test(t);
   const hasBudgetManagement = /\b(drop|remove|delete|stop|clear|cancel)\b/.test(t);
+  const hasBudgetWriteAndRead =
+    hasBudget &&
+    hasAmount &&
+    /(?:\band\b|\bthen\b|\balso\b|[,;]).*\b(how|within|check|status|budgets?)\b/.test(t);
+  const hasBudgetRemoveAndRead =
+    hasBudget &&
+    hasBudgetManagement &&
+    /(?:\band\b|\bthen\b|\balso\b|[,;]).*\b(how|within|check|status|show|list|budgets?)\b/.test(t);
   const hasBudgetRead =
     hasBudget &&
     !hasAmount &&
@@ -150,7 +160,12 @@ export function selectToolProfile(text: string): ToolProfile {
   if (specificCount > 1) return "full";
 
   if (hasMemory) return hasMemoryRead ? "memoryRead" : "memory";
-  if (hasBudget) return hasBudgetRead ? "budgetRead" : "budget";
+  if (hasBudget) {
+    if (hasBudgetRead) return "budgetRead";
+    if (hasBudgetManagement && !hasAmount && !hasBudgetRemoveAndRead) return "budgetRemove";
+    if (hasAmount && !hasBudgetWriteAndRead) return "budgetSet";
+    return "budget";
+  }
   if (hasRecurring) return "recurring";
   if (hasGoal) {
     if (hasGoalRead) return "goalRead";

@@ -119,6 +119,8 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
         lastTransaction: text === undefined || CORRECTION_RE.test(text),
       };
     case "budgetRead":
+    case "budgetSet":
+    case "budgetRemove":
     case "budget":
       return {
         memories: false,

@@ -153,6 +153,18 @@ describe("agent context boundary", () => {
       history: true,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("budgetSet")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("budgetRemove")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("recurringRead")).toEqual({
       memories: false,
       habits: false,
@@ -285,7 +297,19 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: false,
     });
-    expect(contextLoadPolicy("budget", "budget 5k for food")).toEqual({
+    expect(contextLoadPolicy("budgetSet", "budget 5k for food")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("budgetRemove", "drop the food budget")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("budget", "budget 5k for food and how are my budgets?")).toEqual({
       memories: false,
       habits: false,
       history: false,
@@ -345,6 +369,8 @@ describe("agent context boundary", () => {
     expect(contextLoadPolicy("memory", "forget that one").history).toBe(true);
     expect(contextLoadPolicy("budgetRead", "what about budgets?").history).toBe(true);
     expect(contextLoadPolicy("budget", "same for transport").history).toBe(true);
+    expect(contextLoadPolicy("budgetSet", "same for transport at 2k").history).toBe(true);
+    expect(contextLoadPolicy("budgetRemove", "drop that budget").history).toBe(true);
     expect(contextLoadPolicy("recurringRead", "what about recurring?").history).toBe(true);
     expect(contextLoadPolicy("recurring", "change that one to every 15th").history).toBe(true);
     expect(contextLoadPolicy("goalContribute", "put 1k to it").history).toBe(true);

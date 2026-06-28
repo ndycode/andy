@@ -22,11 +22,15 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("delete my laptop goal?")).toBe("goalManage");
     expect(selectToolProfile("make laptop goal 30k?")).toBe("goalManage");
     expect(selectToolProfile("put 1k to japan, actually 2k")).toBe("goal");
-    expect(selectToolProfile("budget 5k for food")).toBe("budget");
+    expect(selectToolProfile("budget 5k for food")).toBe("budgetSet");
+    expect(selectToolProfile("budget 5k for food?")).toBe("budgetSet");
+    expect(selectToolProfile("cap shopping at 3k a month")).toBe("budgetSet");
     expect(selectToolProfile("how are my budgets?")).toBe("budgetRead");
     expect(selectToolProfile("budget check")).toBe("budgetRead");
-    expect(selectToolProfile("drop the food budget")).toBe("budget");
+    expect(selectToolProfile("drop the food budget")).toBe("budgetRemove");
+    expect(selectToolProfile("remove budget for transport")).toBe("budgetRemove");
     expect(selectToolProfile("budget 5k for food and how are my budgets?")).toBe("budget");
+    expect(selectToolProfile("drop food budget and how are my budgets?")).toBe("budget");
     expect(selectToolProfile("rent 8k every 1st")).toBe("recurring");
     expect(selectToolProfile("what are my recurring bills?")).toBe("recurringRead");
     expect(selectToolProfile("show my recurring reminders")).toBe("recurringRead");
