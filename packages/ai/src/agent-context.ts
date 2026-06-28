@@ -66,6 +66,10 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
       };
     }
     case "readBasic":
+    case "readSearch":
+    case "readPace":
+    case "readInsight":
+    case "readCompare":
     case "read":
       return {
         memories: false,

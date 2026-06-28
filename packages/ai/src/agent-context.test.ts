@@ -75,6 +75,30 @@ describe("agent context boundary", () => {
       history: true,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("readSearch")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("readPace")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("readInsight")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("readCompare")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("read")).toEqual({
       memories: false,
       habits: false,
@@ -171,6 +195,30 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("readSearch", "biggest expense this month")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("readPace", "spending pace for food")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("readInsight", "where's my money leaking?")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("readCompare", "compare this month vs last month")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("memory", "remember i get paid every 15th")).toEqual({
       memories: false,
       habits: false,
@@ -223,6 +271,10 @@ describe("agent context boundary", () => {
 
   test("narrow follow-up turns keep recent conversation history", () => {
     expect(contextLoadPolicy("read", "what about food?").history).toBe(true);
+    expect(contextLoadPolicy("readSearch", "what about that grab?").history).toBe(true);
+    expect(contextLoadPolicy("readPace", "what about transport pace?").history).toBe(true);
+    expect(contextLoadPolicy("readInsight", "what about leaks?").history).toBe(true);
+    expect(contextLoadPolicy("readCompare", "what about last month?").history).toBe(true);
     expect(contextLoadPolicy("memoryRead", "what about memories?").history).toBe(true);
     expect(contextLoadPolicy("memory", "forget that one").history).toBe(true);
     expect(contextLoadPolicy("budgetRead", "what about budgets?").history).toBe(true);

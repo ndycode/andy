@@ -55,6 +55,11 @@ export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
       return { maxSteps: 6, maxOutputTokens: 512 };
     case "readBasic":
       return { maxSteps: 5, maxOutputTokens: 512 };
+    case "readSearch":
+    case "readPace":
+    case "readInsight":
+    case "readCompare":
+      return { maxSteps: 4, maxOutputTokens: 512 };
     case "memoryRead":
       return { maxSteps: 4, maxOutputTokens: 512 };
     case "memory":

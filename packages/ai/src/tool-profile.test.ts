@@ -31,11 +31,15 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("actually 200")).toBe("log");
   });
 
-  test("uses the fuller read profile for analysis and history searches", () => {
-    expect(selectToolProfile("biggest expense this month")).toBe("read");
-    expect(selectToolProfile("anything over 1k on food")).toBe("read");
-    expect(selectToolProfile("compare this month vs last month")).toBe("read");
-    expect(selectToolProfile("spending pace for food")).toBe("read");
+  test("uses focused read profiles for single analysis intents", () => {
+    expect(selectToolProfile("biggest expense this month")).toBe("readSearch");
+    expect(selectToolProfile("anything over 1k on food")).toBe("readSearch");
+    expect(selectToolProfile("find that grab last week")).toBe("readSearch");
+    expect(selectToolProfile("compare this month vs last month")).toBe("readCompare");
+    expect(selectToolProfile("spending pace for food")).toBe("readPace");
+    expect(selectToolProfile("am i gonna blow my food budget?")).toBe("readPace");
+    expect(selectToolProfile("where's my money leaking?")).toBe("readInsight");
+    expect(selectToolProfile("weekday vs weekend patterns")).toBe("read");
   });
 
   test("falls back to full profile for mixed turns that need multiple tool families", () => {

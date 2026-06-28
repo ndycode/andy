@@ -60,6 +60,10 @@ describe("buildTools profile routing", () => {
       "getCategoryBreakdown",
       "getRecent",
     ]);
+    expect(Object.keys(buildTools(ctx(), {}, "readSearch"))).toEqual(["searchHistory"]);
+    expect(Object.keys(buildTools(ctx(), {}, "readPace"))).toEqual(["getSpendingPace"]);
+    expect(Object.keys(buildTools(ctx(), {}, "readInsight"))).toEqual(["insights"]);
+    expect(Object.keys(buildTools(ctx(), {}, "readCompare"))).toEqual(["compareSpending"]);
     expect(Object.keys(buildTools(ctx(), {}, "read"))).toEqual([
       "getSpending",
       "getPeriodSpending",
@@ -88,6 +92,10 @@ describe("buildTools profile routing", () => {
     expect(source).toContain("return narrowTools({});");
     expect(source).toContain("return narrowTools(buildLogToolProfile(ctx, deps));");
     expect(source).toContain("return narrowTools(buildBasicReadTools(ctx));");
+    expect(source).toContain("return narrowTools(buildHistoryReadTools(ctx));");
+    expect(source).toContain("return narrowTools(buildPaceReadTools(ctx));");
+    expect(source).toContain("return narrowTools(buildInsightReadProfile(ctx));");
+    expect(source).toContain("return narrowTools(buildCompareReadProfile(ctx));");
     expect(source).toContain("return narrowTools(buildReadToolProfile(ctx));");
     expect(source).toContain("return narrowTools(buildMemoryReadProfile(ctx));");
     expect(source).toContain("return narrowTools(buildGoalReadTools(ctx));");

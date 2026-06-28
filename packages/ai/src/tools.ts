@@ -7,6 +7,9 @@ import type { LogActionDeps } from "./log-actions";
 import { buildLogTools } from "./log-tools";
 import { buildMemoryTools } from "./memory-tools";
 import { buildBasicReadTools } from "./read-basic-tools";
+import { buildHistoryReadTools } from "./read-history-tools";
+import { buildInsightReadTools } from "./read-insight-tools";
+import { buildPaceReadTools } from "./read-pace-tools";
 import { buildReadTools } from "./read-tools";
 import { buildRecurringReadTools } from "./recurring-read-tools";
 import { buildRecurringTools } from "./recurring-tools";
@@ -33,6 +36,14 @@ export function buildTools(
       return narrowTools(buildLogToolProfile(ctx, deps));
     case "readBasic":
       return narrowTools(buildBasicReadTools(ctx));
+    case "readSearch":
+      return narrowTools(buildHistoryReadTools(ctx));
+    case "readPace":
+      return narrowTools(buildPaceReadTools(ctx));
+    case "readInsight":
+      return narrowTools(buildInsightReadProfile(ctx));
+    case "readCompare":
+      return narrowTools(buildCompareReadProfile(ctx));
     case "read":
       return narrowTools(buildReadToolProfile(ctx));
     case "memoryRead":
@@ -82,6 +93,14 @@ function buildReadToolProfile(ctx: ToolContext) {
     searchHistory: readTools.searchHistory,
     getSpendingPace: readTools.getSpendingPace,
   };
+}
+
+function buildInsightReadProfile(ctx: ToolContext) {
+  return { insights: buildInsightReadTools(ctx).insights };
+}
+
+function buildCompareReadProfile(ctx: ToolContext) {
+  return { compareSpending: buildInsightReadTools(ctx).compareSpending };
 }
 
 function buildMemoryReadProfile(ctx: ToolContext) {

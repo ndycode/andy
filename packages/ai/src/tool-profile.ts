@@ -2,6 +2,10 @@ export type ToolProfile =
   | "chat"
   | "log"
   | "readBasic"
+  | "readSearch"
+  | "readPace"
+  | "readInsight"
+  | "readCompare"
   | "read"
   | "memoryRead"
   | "memory"
@@ -21,10 +25,25 @@ export function selectToolProfile(text: string): ToolProfile {
 
   const hasAmount = AMOUNT_RE.test(t);
   const hasQuestion = isQuestionLike(t);
-  const hasAnalysisRead =
-    /\b(insights?|compare|compared|versus|vs|pace|on track|trend|trends|find|search|biggest|largest|over|above|under|below|anything|transactions?|history|leak|weekend|weekday)\b/.test(
+  const hasInsightRead =
+    /\b(insights?|patterns?|leak|leaking|weekend|weekday|where'?s my money leaking|where is my money leaking)\b/.test(
       t,
     );
+  const hasCompareRead = /\b(compare|compared|versus|vs|trend|trends|spending more than)\b/.test(t);
+  const hasPaceRead =
+    /\b(pace|on track|will i overspend|gonna blow|blow\b.*\bbudget|project|projected)\b/.test(t);
+  const hasSearchRead =
+    /\b(find|search|biggest|largest|transactions?|history)\b/.test(t) ||
+    /\b(anything|expenses?)\b.*\b(over|above|under|below)\b/.test(t) ||
+    /\b(over|above|under|below)\s+(?:₱|php\s*)?\d/.test(t);
+  const analysisProfiles = [
+    hasSearchRead && "readSearch",
+    hasPaceRead && "readPace",
+    hasInsightRead && "readInsight",
+    hasCompareRead && "readCompare",
+  ].filter(Boolean) as Array<"readSearch" | "readPace" | "readInsight" | "readCompare">;
+  const focusedAnalysisProfile = analysisProfiles.length === 1 ? analysisProfiles[0] : null;
+  const hasAnalysisRead = analysisProfiles.length > 0;
   const hasBasicRead =
     hasQuestion ||
     /\b(recent|breakdown|overview|spent so far|spending|expenses?|net|income|where.*money)\b/.test(
@@ -89,6 +108,9 @@ export function selectToolProfile(text: string): ToolProfile {
     return hasRecurringRead ? "recurringRead" : "recurring";
   }
   if (hasLogHint && hasRead) return "full";
+  if (focusedAnalysisProfile && !hasGoal && !hasRecurring && !hasMemory) {
+    return focusedAnalysisProfile;
+  }
 
   const readNeedsSeparateProfile =
     hasRead &&
