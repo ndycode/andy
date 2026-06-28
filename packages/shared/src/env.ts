@@ -26,7 +26,6 @@ type Env = {
   ALLOWED_PHONE: string;
   OPENROUTER_API_KEY?: string;
   OPENROUTER_MODEL?: string;
-  OPENROUTER_FALLBACK_MODELS?: string;
   APP_TIMEZONE?: string;
   APP_TIMEZONE_OFFSET_MINUTES?: string;
 };
@@ -46,11 +45,9 @@ function build(): Env {
       // Single key for all model calls — Andy routes every request through OpenRouter. Optional so
       // /health and tests run without it; the provider reads it from env and a real run fails loudly.
       OPENROUTER_API_KEY: z.string().min(1).optional(),
-      // Optional real OpenRouter model override. Defaults live in @repo/ai; keep `:free` ids here if
-      // you want the production service to stay on OpenRouter's free pool.
+      // Optional real OpenRouter model override. Defaults live in @repo/ai; use `:free` ids so the
+      // production service stays on OpenRouter's free pool.
       OPENROUTER_MODEL: z.string().min(1).optional(),
-      // Comma-separated OpenRouter fallback ids, or `none`/`off` to disable native fallback.
-      OPENROUTER_FALLBACK_MODELS: z.string().min(1).optional(),
       // Timezone config (fixed-offset model). APP_TIMEZONE is a display label for the agent prompt;
       // APP_TIMEZONE_OFFSET_MINUTES is minutes east of UTC for the date math. Both default to Manila
       // (read directly in @repo/shared/time at module load; declared here for validation + docs).

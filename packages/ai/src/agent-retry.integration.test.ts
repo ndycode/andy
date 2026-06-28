@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { base, MockLanguageModelV3, result, runAgent } from "./agent-run-test-harness";
 
-describe("runAgent retry and tier fallback with a mocked model", () => {
+describe("runAgent retry and injected tier behavior with a mocked model", () => {
   test("recovers from a transient 429 burst", async () => {
     let calls = 0;
     const model = new MockLanguageModelV3({

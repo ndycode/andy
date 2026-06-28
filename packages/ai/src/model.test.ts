@@ -1,17 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
-  DEFAULT_FALLBACK_MODELS,
   DEFAULT_MODEL_ID,
   defaultModel,
-  FALLBACK_MODELS,
   MODEL_ID,
   MODEL_SETTINGS_FOR_TEST,
   resolveModelConfig,
 } from "./model";
 
 // These pin the OpenRouter wiring that has NO other test coverage and is silently deletable:
-// the primary model id and native cross-model fallback chain. Constructing the model needs no live key,
-// so this runs offline. A dummy key avoids any chance the provider complains during construction.
+// the primary model id and free-only production settings. Constructing the model needs no live key, so
+// this runs offline. A dummy key avoids any chance the provider complains during construction.
 process.env.OPENROUTER_API_KEY ||= "sk-or-test-dummy";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -27,51 +25,46 @@ describe("model wiring (OpenRouter)", () => {
   test("default config uses the verified free OpenRouter tool-caller", () => {
     expect(resolveModelConfig({})).toEqual({
       modelId: DEFAULT_MODEL_ID,
-      fallbackModels: DEFAULT_FALLBACK_MODELS,
     });
     expect(DEFAULT_MODEL_ID).toBe("openai/gpt-oss-120b:free");
-    expect(DEFAULT_FALLBACK_MODELS).toEqual([]);
   });
 
-  test("fallback chain does not repeat the primary", () => {
-    // primary must not also appear as its own fallback
-    expect(FALLBACK_MODELS).not.toContain(MODEL_ID);
-  });
-
-  test("env config can rotate to another real OpenRouter model without code changes", () => {
+  test("env config can rotate to another real free OpenRouter model without code changes", () => {
     expect(
       resolveModelConfig({
         OPENROUTER_MODEL: "nvidia/nemotron-nano-12b-v2-vl:free",
-        OPENROUTER_FALLBACK_MODELS: "openai/gpt-oss-20b:free, nvidia/nemotron-nano-12b-v2-vl:free",
       }),
     ).toEqual({
       modelId: "nvidia/nemotron-nano-12b-v2-vl:free",
-      fallbackModels: ["openai/gpt-oss-20b:free"],
     });
   });
 
-  test("env config can disable native fallback explicitly", () => {
-    expect(
+  test("env config rejects paid/non-free model ids", () => {
+    expect(() =>
       resolveModelConfig({
-        OPENROUTER_MODEL: "openai/gpt-oss-20b:free",
-        OPENROUTER_FALLBACK_MODELS: "none",
+        OPENROUTER_MODEL: "openai/gpt-oss-120b",
       }),
-    ).toEqual({
-      modelId: "openai/gpt-oss-20b:free",
-      fallbackModels: [],
+    ).toThrow('ending in ":free"');
+  });
+
+  test("env config rejects fallback model presets", () => {
+    expect(() =>
+      resolveModelConfig({
+        OPENROUTER_FALLBACK_MODELS: "openai/gpt-oss-20b:free",
+      }),
+    ).toThrow("OPENROUTER_FALLBACK_MODELS is no longer supported");
+
+    expect(resolveModelConfig({ OPENROUTER_FALLBACK_MODELS: "none" })).toEqual({
+      modelId: DEFAULT_MODEL_ID,
     });
   });
 
-  test("defaultModel() wires the fallback chain into the provider settings", () => {
+  test("defaultModel() wires one free model without fallback presets", () => {
     const m = expectRecord(defaultModel(), "model");
     const settings = expectRecord(m.settings, "settings");
 
     expect(m.modelId).toBe(MODEL_ID);
-    if (FALLBACK_MODELS.length > 0) {
-      expect(settings.models).toEqual(FALLBACK_MODELS);
-    } else {
-      expect(settings.models).toBeUndefined();
-    }
+    expect(settings.models).toBeUndefined();
   });
 
   test("defaultModel() keeps free routing open while using low reasoning", () => {
@@ -81,10 +74,6 @@ describe("model wiring (OpenRouter)", () => {
     expect(settings.provider).toBeUndefined();
     expect(settings.reasoning).toEqual({ effort: "low", exclude: true });
     expect(MODEL_SETTINGS_FOR_TEST.reasoning).toEqual({ effort: "low", exclude: true });
-    if (FALLBACK_MODELS.length > 0) {
-      expect(MODEL_SETTINGS_FOR_TEST.models).toEqual(FALLBACK_MODELS);
-    } else {
-      expect(MODEL_SETTINGS_FOR_TEST.models).toBeUndefined();
-    }
+    expect(MODEL_SETTINGS_FOR_TEST.models).toBeUndefined();
   });
 });

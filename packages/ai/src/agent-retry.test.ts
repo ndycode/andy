@@ -32,7 +32,7 @@ describe("agent retry boundary", () => {
     expect(typeof withRetry).toBe("function");
   });
 
-  test("budgets one retry for native OpenRouter fallback and one final-tier retry for arrays", () => {
+  test("budgets one retry for one model and one final-tier retry for injected arrays", () => {
     expect(retryAttemptBudget(1)).toBe(2);
     expect(retryAttemptBudget(2)).toBe(3);
     expect(retryAttemptBudget(4)).toBe(5);

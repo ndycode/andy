@@ -99,7 +99,7 @@ async function main(): Promise<number> {
     console.log(`${r.verdict.padEnd(11)} ${r.model}  —  ${r.detail}`);
   }
   console.log(
-    "\nPick MODEL_ID + FALLBACK_MODELS from the OK rows (RATELIMIT is acceptable as a fallback).\nDo NOT use EXCLUDED ids — they cannot serve under deny.",
+    "\nPick one `:free` OPENROUTER_MODEL from the OK rows.\nDo NOT use EXCLUDED ids — they cannot serve under deny.",
   );
   return 0;
 }

@@ -7,57 +7,44 @@ import type { LanguageModel } from "ai";
  * Andy routes every model call through OpenRouter, a single aggregator that fronts hundreds of
  * models behind one key (OPENROUTER_API_KEY) and one OpenAI-compatible endpoint.
  *
- * Fallback is native, not hand-rolled: the `models` setting lists backup models OpenRouter tries IN
- * ORDER, within a single request, when the primary errors or is rate-limited. agent.ts's retry/backoff
- * loop still wraps this for transport faults and the hard deadline, but it no longer needs a
- * multi-tier candidate array — one OpenRouter model carries the whole chain.
- *
- * Defaults stay on zero-cost, tool-capable OpenRouter models. Override with OPENROUTER_MODEL and
- * OPENROUTER_FALLBACK_MODELS when rotating to another real OpenRouter model; no mock/demo preset path
- * is used in production.
+ * Production stays on one real zero-cost, tool-capable OpenRouter model. OPENROUTER_MODEL may rotate
+ * that single model, but it must remain an OpenRouter `:free` id; no mock/demo preset or paid-model
+ * fallback path is used in production.
  */
 
 export const DEFAULT_MODEL_ID = "openai/gpt-oss-120b:free";
-export const DEFAULT_FALLBACK_MODELS: string[] = [];
 
 type ModelEnv = {
   readonly OPENROUTER_MODEL?: string;
   readonly OPENROUTER_FALLBACK_MODELS?: string;
 };
 
-function splitModelList(raw: string): string[] {
-  return raw
-    .split(",")
-    .map((model) => model.trim())
-    .filter((model) => model.length > 0);
+function assertFreeOpenRouterModel(modelId: string): void {
+  if (modelId.endsWith(":free")) return;
+  throw new Error(
+    `OPENROUTER_MODEL must be an OpenRouter free model id ending in ":free"; got "${modelId}".`,
+  );
 }
 
 export function resolveModelConfig(runtimeEnv: ModelEnv = process.env as ModelEnv): {
   readonly modelId: string;
-  readonly fallbackModels: string[];
 } {
   const modelId = runtimeEnv.OPENROUTER_MODEL?.trim() || DEFAULT_MODEL_ID;
   const fallbackRaw = runtimeEnv.OPENROUTER_FALLBACK_MODELS?.trim();
-  const fallbackModels =
-    fallbackRaw == null || fallbackRaw.length === 0
-      ? DEFAULT_FALLBACK_MODELS
-      : /^(none|off)$/i.test(fallbackRaw)
-        ? []
-        : splitModelList(fallbackRaw);
+  if (fallbackRaw != null && fallbackRaw.length > 0 && !/^(none|off)$/i.test(fallbackRaw)) {
+    throw new Error(
+      "OPENROUTER_FALLBACK_MODELS is no longer supported; set one free OpenRouter model with OPENROUTER_MODEL.",
+    );
+  }
+  assertFreeOpenRouterModel(modelId);
 
-  return {
-    modelId,
-    fallbackModels: fallbackModels.filter((fallback) => fallback !== modelId),
-  };
+  return { modelId };
 }
 
 const MODEL_CONFIG = resolveModelConfig();
 
 /** Primary model id. Exported (was the gateway model id before) so callers/tests can reference it. */
 export const MODEL_ID = MODEL_CONFIG.modelId;
-
-/** Backup models OpenRouter falls through to if the primary free OSS endpoint is unavailable. */
-export const FALLBACK_MODELS = MODEL_CONFIG.fallbackModels;
 
 /**
  * Per-request model settings shared by every model we build (primary + the proactive single-shot).
@@ -68,7 +55,6 @@ export const FALLBACK_MODELS = MODEL_CONFIG.fallbackModels;
  */
 const MODEL_SETTINGS: OpenRouterChatSettings = {
   reasoning: { effort: "low", exclude: true },
-  ...(FALLBACK_MODELS.length > 0 ? { models: FALLBACK_MODELS } : {}),
 };
 
 /**
@@ -84,9 +70,8 @@ function provider(): ReturnType<typeof createOpenRouter> {
 }
 
 /**
- * The default production model: the primary id plus its native fallback chain. agent.ts passes this
- * single LanguageModel into the tool loop; OpenRouter handles cross-model fall-through server-side.
- * Built lazily so the provider is only constructed when a real run needs it.
+ * The default production model: one real free OpenRouter model. Built lazily so the provider is only
+ * constructed when a real run needs it.
  */
 export function defaultModel(): LanguageModel {
   return provider()(MODEL_ID, MODEL_SETTINGS);
