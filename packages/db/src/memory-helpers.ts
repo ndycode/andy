@@ -68,20 +68,23 @@ function memoryKindRank(kind: string): number {
   return MEMORY_KIND_RANK[kind] ?? 3;
 }
 
-const KEYWORD_ALIASES: Record<string, readonly string[]> = {
-  address: ["home", "live", "location", "city"],
+const GENERAL_KEYWORD_ALIASES: Record<string, readonly string[]> = {
   boba: ["milktea"],
+  paid: ["payday", "salary"],
+  pay: ["payday"],
+  paycheck: ["payday", "salary"],
+  salary: ["payday"],
+  sweldo: ["payday", "salary"],
+};
+
+const LOCATION_KEYWORD_ALIASES: Record<string, readonly string[]> = {
+  address: ["home", "live", "location", "city"],
   city: ["home", "live", "location", "address"],
   home: ["live", "address", "location", "city"],
   job: ["work", "office"],
   live: ["home", "address", "location", "city"],
   location: ["home", "live", "address", "city"],
   office: ["work", "job"],
-  paid: ["payday", "salary"],
-  pay: ["payday"],
-  paycheck: ["payday", "salary"],
-  salary: ["payday"],
-  sweldo: ["payday", "salary"],
   work: ["office", "job"],
 };
 
@@ -90,8 +93,9 @@ export function selectPromptMemories(
   limit: number,
   query = "",
 ): string[] {
-  const queryTokens = keywords(query);
   const profileLocationQuery = isProfileLocationQuery(query);
+  const queryTokens = keywords(query, true, profileLocationQuery);
+  const focusedQuery = isFocusedMemoryQuery(query);
   const seen = new Set<string>();
   const unique = rows.flatMap((r, index) => {
     const key = compactMemoryContent(r.content);
@@ -112,6 +116,11 @@ export function selectPromptMemories(
       (MEMORY_KIND_RANK[a.row.kind] ?? 3) - (MEMORY_KIND_RANK[b.row.kind] ?? 3) ||
       a.index - b.index,
   );
+  if (queryTokens.length > 0) {
+    const relevant = unique.filter((r) => r.relevance > 0);
+    if (relevant.length > 0) return relevant.slice(0, limit).map((r) => r.row.content);
+    if (focusedQuery) return [];
+  }
   return unique.slice(0, limit).map((r) => r.row.content);
 }
 
@@ -145,12 +154,18 @@ function relevanceScore(
 }
 
 function isProfileLocationQuery(query: string): boolean {
-  const tokens = new Set(keywords(query));
+  const tokens = new Set(keywords(query, false, false));
   if (![...tokens].some((token) => PROFILE_QUERY_TOKENS.has(token))) return false;
   return /\b(?:where|what(?:'s| is))\b/i.test(query);
 }
 
-function keywords(value: string, expandAliases = true): string[] {
+function isFocusedMemoryQuery(query: string): boolean {
+  return /\b(?:do|did)\s+i\b|\bwhat(?:'s| is)\s+my\b|\bwhere\s+do\s+i\b|\bwhere(?:'s| is| was)\s+my\b|\b(?:mentioned|remember|told you|you know|usual|default|favou?rite|go-?to|prefer|like|love|hate|payday|salary|sweldo|address|home|office|live|work|location)\b/i.test(
+    query,
+  );
+}
+
+function keywords(value: string, expandAliases = true, expandLocationAliases = true): string[] {
   const base = value
     .toLowerCase()
     .split(/[^a-z0-9]+/)
@@ -159,9 +174,11 @@ function keywords(value: string, expandAliases = true): string[] {
 
   if (expandAliases) {
     for (const token of base) {
-      for (const alias of KEYWORD_ALIASES[token] ?? []) {
+      for (const alias of GENERAL_KEYWORD_ALIASES[token] ?? []) {
         expanded.add(alias);
       }
+      if (!expandLocationAliases) continue;
+      for (const alias of LOCATION_KEYWORD_ALIASES[token] ?? []) expanded.add(alias);
     }
   }
 

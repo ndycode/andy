@@ -62,7 +62,7 @@ describe("selectPromptMemories", () => {
     expect(selectPromptMemories(rows, 2)).toEqual(["payday note", "fact note"]);
   });
 
-  test("promotes memories relevant to the current message before generic high-rank memories", () => {
+  test("returns only memories relevant to the current message when matches exist", () => {
     const rows = [
       { content: "payday is every 15th and 30th", kind: "payday" },
       { content: "wants a japan fund by december", kind: "goal" },
@@ -71,8 +71,16 @@ describe("selectPromptMemories", () => {
 
     expect(selectPromptMemories(rows, 2, "put 1k to japan na")).toEqual([
       "wants a japan fund by december",
-      "payday is every 15th and 30th",
     ]);
+  });
+
+  test("strict personal-memory questions do not fall back to unrelated memories", () => {
+    const rows = [
+      { content: "payday is every 15th and 30th", kind: "payday" },
+      { content: "home is bgc", kind: "person" },
+    ];
+
+    expect(selectPromptMemories(rows, 10, "do i like matcha?")).toEqual([]);
   });
 
   test("matches compound user wording against spaced memory phrases", () => {
@@ -118,7 +126,7 @@ describe("selectPromptMemories", () => {
       { content: "likes milk tea after work", kind: "preference" },
     ];
 
-    expect(selectPromptMemories(rows, 1, "do i like milk tea after work?")).toEqual([
+    expect(selectPromptMemories(rows, 10, "do i like milk tea after work?")).toEqual([
       "likes milk tea after work",
     ]);
   });
