@@ -80,6 +80,13 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
         history: needsRecentTurns(text),
         lastTransaction: false,
       };
+    case "goalRead":
+      return {
+        memories: needsGoalPromptMemories(text),
+        habits: false,
+        history: needsRecentTurns(text),
+        lastTransaction: false,
+      };
     case "goal":
       return {
         memories: needsGoalPromptMemories(text),

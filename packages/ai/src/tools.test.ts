@@ -71,6 +71,7 @@ describe("buildTools profile routing", () => {
       "searchHistory",
       "getSpendingPace",
     ]);
+    expect(Object.keys(buildTools(ctx(), {}, "goalRead"))).toEqual(["getGoalStatus"]);
   });
 
   test("chat profile exposes no tools for true small talk", () => {
@@ -85,6 +86,7 @@ describe("buildTools profile routing", () => {
     expect(source).toContain("return narrowTools(buildLogToolProfile(ctx, deps));");
     expect(source).toContain("return narrowTools(buildBasicReadTools(ctx));");
     expect(source).toContain("return narrowTools(buildReadToolProfile(ctx));");
+    expect(source).toContain("return narrowTools(buildGoalReadTools(ctx));");
     expect(source).not.toContain("pickProfileTools");
     expect(source).not.toContain("TOOL_PROFILE_KEYS");
   });

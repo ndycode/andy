@@ -63,6 +63,8 @@ export function agentAttemptLimits(profile: ToolProfile): AgentAttemptLimits {
       return { maxSteps: 5, maxOutputTokens: 512 };
     case "read":
       return { maxSteps: 6, maxOutputTokens: 768 };
+    case "goalRead":
+      return { maxSteps: 4, maxOutputTokens: 512 };
     case "goal":
       return { maxSteps: 7, maxOutputTokens: 768 };
     case "full":

@@ -1,6 +1,7 @@
 import { buildBudgetTools } from "./budget-tools";
 import type { ToolContext } from "./context";
 import { buildEditTools } from "./edit-tools";
+import { buildGoalReadTools } from "./goal-read-tools";
 import { buildGoalTools } from "./goal-tools";
 import type { LogActionDeps } from "./log-actions";
 import { buildLogTools } from "./log-tools";
@@ -35,6 +36,8 @@ export function buildTools(
       return narrowTools(buildReadToolProfile(ctx));
     case "memory":
       return narrowTools(buildMemoryTools(ctx));
+    case "goalRead":
+      return narrowTools(buildGoalReadTools(ctx));
     case "goal":
       return narrowTools(buildGoalToolProfile(ctx));
     case "budget":

@@ -4,6 +4,7 @@ export type ToolProfile =
   | "readBasic"
   | "read"
   | "memory"
+  | "goalRead"
   | "goal"
   | "budget"
   | "recurring"
@@ -35,6 +36,14 @@ export function selectToolProfile(text: string): ToolProfile {
   const hasGoal =
     /\b(goal|fund|save|saving|saved|contribute|japan|trip|emergency|laptop)\b/.test(t) ||
     /\bput\s+.+\b(to|into|towards?)\b/.test(t);
+  const hasGoalManagement = /\b(delete|remove|cancel|rename|make|move|change|edit|update)\b/.test(
+    t,
+  );
+  const hasGoalRead =
+    hasGoal &&
+    !hasAmount &&
+    !hasGoalManagement &&
+    /\b(how'?s|how is|what'?s|status|progress|on track|pace|doing)\b/.test(t);
   const hasBudget = /\b(budget|budgets|cap|limit|within budget|overspend)\b/.test(t);
   const hasRecurring =
     /\b(recurring|remind|reminder|every\s+\d+(?:st|nd|rd|th)?|every\s+\w+day|weekly|monthly)\b/.test(
@@ -73,7 +82,7 @@ export function selectToolProfile(text: string): ToolProfile {
   if (hasMemory) return "memory";
   if (hasBudget) return "budget";
   if (hasRecurring) return "recurring";
-  if (hasGoal) return "goal";
+  if (hasGoal) return hasGoalRead ? "goalRead" : "goal";
   if (hasRead && !hasLogHint) return hasAnalysisRead ? "read" : "readBasic";
   if (hasLogHint || hasCorrection || hasAmount) return "log";
   return "chat";

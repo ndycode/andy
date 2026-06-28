@@ -81,6 +81,12 @@ describe("agent context boundary", () => {
       history: true,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("goalRead")).toEqual({
+      memories: true,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("full")).toEqual({
       memories: true,
       habits: true,
@@ -171,6 +177,12 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("goalRead", "how's my laptop fund?")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
   });
 
   test("narrow follow-up turns keep recent conversation history", () => {
@@ -179,12 +191,15 @@ describe("agent context boundary", () => {
     expect(contextLoadPolicy("budget", "same for transport").history).toBe(true);
     expect(contextLoadPolicy("recurring", "change that one to every 15th").history).toBe(true);
     expect(contextLoadPolicy("goal", "put 1k to it").history).toBe(true);
+    expect(contextLoadPolicy("goalRead", "what about japan fund?").history).toBe(true);
   });
 
   test("goal context loads prompt memories only when wording references prior knowledge", () => {
     expect(contextLoadPolicy("goal", "save 20k for japan by december").memories).toBe(false);
+    expect(contextLoadPolicy("goalRead", "how's my laptop fund?").memories).toBe(false);
     expect(contextLoadPolicy("goal", "put 1k to japan").memories).toBe(false);
     expect(contextLoadPolicy("goal", "put 1k to it").memories).toBe(true);
+    expect(contextLoadPolicy("goalRead", "how's the trip i mentioned?").memories).toBe(true);
     expect(contextLoadPolicy("goal", "save 20k for the trip i mentioned").memories).toBe(true);
   });
 

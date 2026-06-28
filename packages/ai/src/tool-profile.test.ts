@@ -10,7 +10,10 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("what did i spend recently?")).toBe("readBasic");
     expect(selectToolProfile("remember i get paid every 15th")).toBe("memory");
     expect(selectToolProfile("save 20k for japan by december")).toBe("goal");
-    expect(selectToolProfile("how's my laptop fund?")).toBe("goal");
+    expect(selectToolProfile("how's my laptop fund?")).toBe("goalRead");
+    expect(selectToolProfile("am i on track for japan fund?")).toBe("goalRead");
+    expect(selectToolProfile("delete my laptop goal?")).toBe("goal");
+    expect(selectToolProfile("make laptop goal 30k?")).toBe("goal");
     expect(selectToolProfile("budget 5k for food")).toBe("budget");
     expect(selectToolProfile("how are my budgets?")).toBe("budget");
     expect(selectToolProfile("budget check")).toBe("budget");
