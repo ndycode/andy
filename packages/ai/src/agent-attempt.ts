@@ -122,6 +122,7 @@ export async function runAgentAttempt({
   const { addWrite, peek, drain } = createWriteBuffer();
   const ctx: ToolContext = {
     ...base,
+    inboundText: text,
     lastTransaction,
     addWrite,
     peekWrites: peek,

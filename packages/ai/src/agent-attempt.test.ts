@@ -60,6 +60,7 @@ describe("agent attempt boundary", () => {
     const source = readFileSync(new URL("./agent-attempt.ts", import.meta.url), "utf8");
 
     expect(source).toContain("toolProfile");
+    expect(source).toContain("inboundText: text");
     expect(source).toContain("buildTools(ctx, {}, toolProfile)");
     expect(source).toContain("const limits = agentAttemptLimits(toolProfile)");
     expect(source).toContain("stepCountIs(limits.maxSteps)");

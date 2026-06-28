@@ -10,6 +10,8 @@ export interface ToolContext {
   timezone: string;
   /** localDate (YYYY-MM-DD) for "today" in the user's timezone, computed at request start. */
   today: string;
+  /** Original inbound user text for this turn, available to tools as server-side context. */
+  inboundText?: string;
   /**
    * Snapshot of the user's most-recent transaction at agent-loop start (or null).
    * edit/delete tools pin its id so a 429-retry replay can't target a different row,

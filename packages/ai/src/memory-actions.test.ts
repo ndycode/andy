@@ -78,4 +78,53 @@ describe("memory actions", () => {
     ]);
     expect(drain()).toEqual([]);
   });
+
+  test("listSavedMemories falls back to inbound text for omitted specific query", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const { ctx: toolCtx, drain } = ctx({ inboundText: "do i like matcha?" });
+
+    const result = await listSavedMemories(toolCtx, {}, deps(calls));
+
+    expect(result).toEqual({ remembered: ["likes iced matcha"] });
+    expect(calls).toEqual([
+      { fn: "recallMemories", userId: "user-1", limit: 12, query: "do i like matcha?" },
+    ]);
+    expect(drain()).toEqual([]);
+  });
+
+  test("listSavedMemories keeps broad memory requests on the full list path", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const { ctx: toolCtx, drain } = ctx({ inboundText: "show my memories" });
+
+    const result = await listSavedMemories(toolCtx, {}, deps(calls));
+
+    expect(result).toEqual({ remembered: ["likes milk tea", "payday 15th"] });
+    expect(calls).toEqual([{ fn: "listMemories", userId: "user-1" }]);
+    expect(drain()).toEqual([]);
+  });
+
+  test("listSavedMemories keeps generic remember questions broad but specific ones ranked", async () => {
+    const broadCalls: Array<Record<string, unknown>> = [];
+    const { ctx: broadCtx } = ctx({ inboundText: "what do you remember?" });
+
+    await expect(listSavedMemories(broadCtx, {}, deps(broadCalls))).resolves.toEqual({
+      remembered: ["likes milk tea", "payday 15th"],
+    });
+    expect(broadCalls).toEqual([{ fn: "listMemories", userId: "user-1" }]);
+
+    const specificCalls: Array<Record<string, unknown>> = [];
+    const { ctx: specificCtx } = ctx({ inboundText: "what do you remember about my office?" });
+
+    await expect(listSavedMemories(specificCtx, {}, deps(specificCalls))).resolves.toEqual({
+      remembered: ["likes iced matcha"],
+    });
+    expect(specificCalls).toEqual([
+      {
+        fn: "recallMemories",
+        userId: "user-1",
+        limit: 12,
+        query: "what do you remember about my office?",
+      },
+    ]);
+  });
 });

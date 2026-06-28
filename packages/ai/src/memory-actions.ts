@@ -22,6 +22,11 @@ type ListInput = {
   query?: string;
 };
 
+const BROAD_MEMORY_LIST_RE =
+  /\b(?:show (?:my )?memories|list (?:my )?memories|all memories|everything you remember)\b/i;
+const BROAD_MEMORY_QUESTION_RE =
+  /^\s*(?:what do you (?:know|remember)|what have you remembered)(?:\s+about\s+me)?\s*\??\s*$/i;
+
 export function rememberFact(ctx: ToolContext, { fact, kind }: RememberInput) {
   ctx.addWrite({ type: "saveMemory", userId: ctx.userId, content: fact, kind: kind ?? "fact" });
   return { ok: true, remembered: fact };
@@ -38,7 +43,7 @@ export async function listSavedMemories(
   deps?: MemoryActionDeps,
 ) {
   const actionDeps = deps ?? (await loadMemoryActionDeps());
-  const query = input.query?.trim();
+  const query = memoryListQuery(input, ctx);
   if (query) {
     return { remembered: await actionDeps.recallMemories(ctx.userId, 12, query) };
   }
@@ -49,4 +54,14 @@ export async function listSavedMemories(
 async function loadMemoryActionDeps(): Promise<MemoryActionDeps> {
   const db = await import("@repo/db");
   return { listMemories: db.listMemories, recallMemories: db.recallMemories };
+}
+
+function memoryListQuery(input: ListInput, ctx: ToolContext): string {
+  const explicit = input.query?.trim();
+  if (explicit) return explicit;
+  const inbound = ctx.inboundText?.trim();
+  if (!inbound || BROAD_MEMORY_LIST_RE.test(inbound) || BROAD_MEMORY_QUESTION_RE.test(inbound)) {
+    return "";
+  }
+  return inbound;
 }

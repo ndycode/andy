@@ -5,6 +5,7 @@ type ToolContextOpts = {
   userId?: string;
   timezone?: string;
   today?: string;
+  inboundText?: string;
   lastTransaction?: LastTransaction | null;
 };
 
@@ -23,6 +24,7 @@ export function toolContextBuffer(opts: ToolContextOpts | string = {}) {
     userId: normalized.userId ?? "user-1",
     timezone: normalized.timezone ?? "Asia/Manila",
     today: normalized.today ?? "2026-06-11",
+    inboundText: normalized.inboundText,
     lastTransaction: normalized.lastTransaction ?? null,
     addWrite,
     peekWrites: peek,
