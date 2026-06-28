@@ -29,23 +29,17 @@ cat > "$OUT/functions/api.func/.vc-config.json" <<'JSON'
 }
 JSON
 
-# Static files.
-cp -R public/. "$OUT/static/"
+# Static landing page.
+cp public/index.html "$OUT/static/index.html"
 
-# Top-level output config: serve static demo pages directly and route API paths to the function.
+# Top-level output config: route everything to the function, keep cron + region.
 # Cron at 00:07 UTC = 08:07 Manila — a minute off the contended :00 slot (the daily tick
 # self-heals the weekly recap via summary_runs, so exact minute is not load-bearing).
 cat > "$OUT/config.json" <<'JSON'
 {
   "version": 3,
   "routes": [
-    { "src": "/", "dest": "/index.html" },
-    { "src": "/demo", "dest": "/demo/index.html" },
-    { "src": "/demo/", "dest": "/demo/index.html" },
-    { "src": "/demo/(.*)", "dest": "/demo/$1" },
-    { "src": "/health", "dest": "/api" },
-    { "src": "/webhooks/sendblue", "dest": "/api" },
-    { "src": "/api/(.*)", "dest": "/api" }
+    { "src": "/(.*)", "dest": "/api" }
   ],
   "crons": [
     { "path": "/api/cron/daily", "schedule": "7 0 * * *" }
