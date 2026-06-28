@@ -2,51 +2,90 @@ import { describe, expect, test } from "bun:test";
 import { base, MockLanguageModelV3, result, runAgent } from "./agent-run-test-harness";
 
 describe("runAgent end-to-end with a mocked model (smoke)", () => {
-  test("specific memory reads bypass the model and answer from ranked recall", async () => {
+  test("specific memory reads use the model tool loop", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({
       doGenerate: async () => {
         call++;
-        return result([{ type: "text", text: "model should not run" }], "stop");
+        if (call === 1) {
+          return result(
+            [
+              {
+                type: "tool-call",
+                toolCallId: "c1",
+                toolName: "listMemory",
+                input: JSON.stringify({ query: "do i like matcha?" }),
+              },
+            ],
+            "tool-calls",
+          );
+        }
+        return result([{ type: "text", text: "you like milk tea." }], "stop");
       },
     });
 
     const { reply, writes } = await runAgent("do i like matcha?", base, model);
 
-    expect(call).toBe(0);
+    expect(call).toBe(2);
     expect(writes).toEqual([]);
-    expect(reply).toContain("likes milk tea");
+    expect(reply).toBe("you like milk tea.");
   });
 
-  test("broad memory reads bypass the model and keep the list path", async () => {
+  test("broad memory reads still use the model before replying", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({
       doGenerate: async () => {
         call++;
-        return result([{ type: "text", text: "model should not run" }], "stop");
+        if (call === 1) {
+          return result(
+            [
+              {
+                type: "tool-call",
+                toolCallId: "c1",
+                toolName: "listMemory",
+                input: "{}",
+              },
+            ],
+            "tool-calls",
+          );
+        }
+        return result([{ type: "text", text: "i remember your payday is the 15th." }], "stop");
       },
     });
 
     const { reply, writes } = await runAgent("show my memories", base, model);
 
-    expect(call).toBe(0);
+    expect(call).toBe(2);
     expect(writes).toEqual([]);
-    expect(reply).toContain("payday 15th");
+    expect(reply).toContain("payday");
   });
 
-  test("durable facts without the word remember bypass the model and save memory", async () => {
+  test("durable facts without the word remember use the model remember tool", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({
       doGenerate: async () => {
         call++;
-        return result([{ type: "text", text: "model should not run" }], "stop");
+        if (call === 1) {
+          return result(
+            [
+              {
+                type: "tool-call",
+                toolCallId: "c1",
+                toolName: "remember",
+                input: JSON.stringify({ fact: "i like iced matcha", kind: "preference" }),
+              },
+            ],
+            "tool-calls",
+          );
+        }
+        return result([{ type: "text", text: "noted, iced matcha is your thing." }], "stop");
       },
     });
 
     const { reply, writes } = await runAgent("i like iced matcha", base, model);
 
-    expect(call).toBe(0);
-    expect(reply).toBe("noted, i'll remember that.");
+    expect(call).toBe(2);
+    expect(reply).toBe("noted, iced matcha is your thing.");
     expect(writes).toEqual([
       {
         type: "saveMemory",
@@ -57,19 +96,32 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     ]);
   });
 
-  test("explicit remember turns strip the prefix and infer payday memory", async () => {
+  test("explicit remember turns use the model remember tool", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({
       doGenerate: async () => {
         call++;
-        return result([{ type: "text", text: "model should not run" }], "stop");
+        if (call === 1) {
+          return result(
+            [
+              {
+                type: "tool-call",
+                toolCallId: "c1",
+                toolName: "remember",
+                input: JSON.stringify({ fact: "i get paid every 15th", kind: "payday" }),
+              },
+            ],
+            "tool-calls",
+          );
+        }
+        return result([{ type: "text", text: "noted, payday is every 15th." }], "stop");
       },
     });
 
     const { reply, writes } = await runAgent("remember that i get paid every 15th", base, model);
 
-    expect(call).toBe(0);
-    expect(reply).toBe("noted, i'll remember that.");
+    expect(call).toBe(2);
+    expect(reply).toBe("noted, payday is every 15th.");
     expect(writes).toEqual([
       {
         type: "saveMemory",
@@ -93,6 +145,51 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
 
     expect(call).toBe(1);
     expect(reply).toBe("what should i remember?");
+    expect(writes).toEqual([]);
+  });
+
+  test("concrete forget-memory turns use the model forget tool", async () => {
+    let call = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        call++;
+        if (call === 1) {
+          return result(
+            [
+              {
+                type: "tool-call",
+                toolCallId: "c1",
+                toolName: "forgetMemory",
+                input: JSON.stringify({ match: "payday" }),
+              },
+            ],
+            "tool-calls",
+          );
+        }
+        return result([{ type: "text", text: "okay, i'll forget the payday memory." }], "stop");
+      },
+    });
+
+    const { reply, writes } = await runAgent("forget my payday memory", base, model);
+
+    expect(call).toBe(2);
+    expect(reply).toBe("okay, i'll forget the payday memory.");
+    expect(writes).toEqual([{ type: "forgetMemory", userId: "user-1", match: "payday" }]);
+  });
+
+  test("ambiguous forget-memory turns still fall through to the model", async () => {
+    let call = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        call++;
+        return result([{ type: "text", text: "which memory should i forget?" }], "stop");
+      },
+    });
+
+    const { reply, writes } = await runAgent("forget that", base, model);
+
+    expect(call).toBe(1);
+    expect(reply).toBe("which memory should i forget?");
     expect(writes).toEqual([]);
   });
 

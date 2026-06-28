@@ -1,12 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { toolContextBuffer as ctx } from "./context-test-harness";
 import {
-  directMemoryFact,
   forgetSavedMemory,
   listSavedMemories,
   type MemoryActionDeps,
   rememberFact,
-  rememberText,
 } from "./memory-actions";
 
 function deps(calls: Array<Record<string, unknown>> = []): MemoryActionDeps {
@@ -46,45 +44,6 @@ describe("memory actions", () => {
     expect(drain()).toEqual([
       { type: "saveMemory", userId: "user-1", content: "prefers cash", kind: "fact" },
     ]);
-  });
-
-  test("rememberText strips remember prefixes and infers actionable kinds", () => {
-    const { ctx: toolCtx, drain } = ctx();
-
-    expect(rememberText(toolCtx, "remember that i get paid every 15th")).toEqual({
-      ok: true,
-      remembered: "i get paid every 15th",
-    });
-    expect(rememberText(toolCtx, "my name is neil")).toEqual({
-      ok: true,
-      remembered: "my name is neil",
-    });
-    expect(rememberText(toolCtx, "i like iced matcha")).toEqual({
-      ok: true,
-      remembered: "i like iced matcha",
-    });
-
-    expect(drain()).toEqual([
-      {
-        type: "saveMemory",
-        userId: "user-1",
-        content: "i get paid every 15th",
-        kind: "payday",
-      },
-      { type: "saveMemory", userId: "user-1", content: "my name is neil", kind: "person" },
-      {
-        type: "saveMemory",
-        userId: "user-1",
-        content: "i like iced matcha",
-        kind: "preference",
-      },
-    ]);
-  });
-
-  test("directMemoryFact rejects bare remember commands", () => {
-    expect(directMemoryFact("remember")).toBeNull();
-    expect(directMemoryFact("remember that")).toBeNull();
-    expect(directMemoryFact("remember that i like matcha")).toBe("i like matcha");
   });
 
   test("forgetSavedMemory buffers a forget intent", () => {
