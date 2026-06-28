@@ -27,6 +27,11 @@ export function selectToolProfile(text: string): ToolProfile {
       t,
     );
   const hasRead = hasBasicRead || hasAnalysisRead;
+  const hasGeneralRead =
+    /\b(how am i doing|am i broke|overview|spent so far|spending|expenses?|net|income|where.*money|breakdown)\b/.test(
+      t,
+    ) ||
+    (hasQuestion && !/\b(budget|budgets|goal|fund|recurring|remind|reminder)\b/.test(t));
   const hasGoal =
     /\b(goal|fund|save|saving|saved|contribute|japan|trip|emergency|laptop)\b/.test(t) ||
     /\bput\s+.+\b(to|into|towards?)\b/.test(t);
@@ -48,12 +53,16 @@ export function selectToolProfile(text: string): ToolProfile {
   if (hasRecurring && !hasMemory && !hasBudget && !hasGoal) return "recurring";
   if (hasLogHint && hasRead) return "full";
 
+  const readNeedsSeparateProfile =
+    hasRead &&
+    !hasLogHint &&
+    !(hasQuestion && (hasBudget || hasGoal || hasRecurring) && !hasGeneralRead);
   const specificCount = [
     hasMemory,
     hasBudget,
     hasRecurring,
     hasGoal,
-    hasRead && !hasLogHint,
+    readNeedsSeparateProfile,
     hasLogHint || hasCorrection,
   ].filter(Boolean).length;
 
