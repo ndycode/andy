@@ -457,10 +457,14 @@ describe("agent context boundary", () => {
 
   test("referenced log and read turns load prompt memories without widening normal turns", () => {
     expect(contextLoadPolicy("logWrite", "usual 120").memories).toBe(true);
+    expect(contextLoadPolicy("logWrite", "default 120").memories).toBe(true);
+    expect(contextLoadPolicy("logWrite", "favorite 120").memories).toBe(true);
+    expect(contextLoadPolicy("logWrite", "go-to 120").memories).toBe(true);
     expect(contextLoadPolicy("log", "that thing i mentioned 120").memories).toBe(true);
     expect(contextLoadPolicy("readBasic", "how much on the place i mentioned?").memories).toBe(
       true,
     );
+    expect(contextLoadPolicy("readBasic", "how much on my default?").memories).toBe(true);
     expect(contextLoadPolicy("logWrite", "grab 180").memories).toBe(false);
     expect(contextLoadPolicy("readBasic", "how much did i spend this month?").memories).toBe(false);
   });

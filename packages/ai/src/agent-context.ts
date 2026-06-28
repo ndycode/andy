@@ -36,7 +36,8 @@ const CORRECTION_RE =
   /\b(delete that|scratch that|undo|make that|change it|actually|no,?|no wait)\b/i;
 const FOLLOWUP_CONTEXT_RE =
   /\b(what about|how about|same|that|that one|last one|previous|earlier|again|also|too|instead|it|them|those)\b/i;
-const MEMORY_REFERENCE_RE = /\b(mentioned|remember|told you|you know|usual)\b/i;
+const MEMORY_REFERENCE_RE =
+  /\b(mentioned|remember|told you|you know|usual|default|fav(?:ou?rite)?|go-?to)\b/i;
 
 function needsRecentTurns(text: string | undefined): boolean {
   return text === undefined || FOLLOWUP_CONTEXT_RE.test(text);

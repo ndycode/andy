@@ -17,6 +17,7 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("i prefer cash")).toBe("memoryRemember");
     expect(selectToolProfile("my usual drink is iced matcha")).toBe("memoryRemember");
     expect(selectToolProfile("my default payment is gcash")).toBe("memoryRemember");
+    expect(selectToolProfile("my go-to drink is iced matcha")).toBe("memoryRemember");
     expect(selectToolProfile("i always get iced matcha after lunch")).toBe("memoryRemember");
     expect(selectToolProfile("i hate milk tea")).toBe("memoryRemember");
     expect(selectToolProfile("what do you know about me?")).toBe("memoryRead");
