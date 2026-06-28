@@ -34,31 +34,19 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     expect(reply).toContain("payday 15th");
   });
 
-  test("durable facts without the word remember can save memory through the model", async () => {
+  test("durable facts without the word remember bypass the model and save memory", async () => {
     let call = 0;
     const model = new MockLanguageModelV3({
       doGenerate: async () => {
         call++;
-        if (call === 1) {
-          return result(
-            [
-              {
-                type: "tool-call",
-                toolCallId: "c1",
-                toolName: "remember",
-                input: JSON.stringify({ fact: "i like iced matcha", kind: "preference" }),
-              },
-            ],
-            "tool-calls",
-          );
-        }
-        return result([{ type: "text", text: "noted, iced matcha stays on the record" }], "stop");
+        return result([{ type: "text", text: "model should not run" }], "stop");
       },
     });
 
     const { reply, writes } = await runAgent("i like iced matcha", base, model);
 
-    expect(reply).toBe("noted, iced matcha stays on the record");
+    expect(call).toBe(0);
+    expect(reply).toBe("noted, i'll remember that.");
     expect(writes).toEqual([
       {
         type: "saveMemory",
@@ -67,6 +55,45 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
         kind: "preference",
       },
     ]);
+  });
+
+  test("explicit remember turns strip the prefix and infer payday memory", async () => {
+    let call = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        call++;
+        return result([{ type: "text", text: "model should not run" }], "stop");
+      },
+    });
+
+    const { reply, writes } = await runAgent("remember that i get paid every 15th", base, model);
+
+    expect(call).toBe(0);
+    expect(reply).toBe("noted, i'll remember that.");
+    expect(writes).toEqual([
+      {
+        type: "saveMemory",
+        userId: "user-1",
+        content: "i get paid every 15th",
+        kind: "payday",
+      },
+    ]);
+  });
+
+  test("bare remember still falls through to the model instead of saving junk", async () => {
+    let call = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        call++;
+        return result([{ type: "text", text: "what should i remember?" }], "stop");
+      },
+    });
+
+    const { reply, writes } = await runAgent("remember", base, model);
+
+    expect(call).toBe(1);
+    expect(reply).toBe("what should i remember?");
+    expect(writes).toEqual([]);
   });
 
   test("logExpense tool call -> buffered write + final-text reply", async () => {

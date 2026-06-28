@@ -9,7 +9,7 @@ import {
 } from "./agent-context";
 import { withRetry } from "./agent-retry";
 import { createWriteBuffer, type ToolContext } from "./context";
-import { listSavedMemories } from "./memory-actions";
+import { directMemoryFact, listSavedMemories, rememberText } from "./memory-actions";
 import { defaultModel, MODEL_ID } from "./model";
 import { synthesizeReply } from "./reply-synthesis";
 import { selectToolProfile } from "./tool-profile";
@@ -48,6 +48,9 @@ export async function runAgent(
   const toolProfile = selectToolProfile(text);
   if (toolProfile === "memoryRead") {
     return runDirectMemoryRead(text, base, startedAt, toolProfile);
+  }
+  if (toolProfile === "memoryRemember" && directMemoryFact(text) !== null) {
+    return runDirectMemoryRemember(text, base, startedAt, toolProfile);
   }
   const { mems, habitList, history, lastTransaction } = await loadAgentContext(
     base,
@@ -158,4 +161,39 @@ async function runDirectMemoryRead(
   });
 
   return { reply, writes };
+}
+
+async function runDirectMemoryRemember(
+  text: string,
+  base: Omit<ToolContext, "addWrite" | "lastTransaction" | "peekWrites">,
+  startedAt: number,
+  toolProfile: "memoryRemember",
+): Promise<RunResult> {
+  const { addWrite, peek, drain } = createWriteBuffer();
+  rememberText(
+    {
+      ...base,
+      inboundText: text,
+      lastTransaction: null,
+      addWrite,
+      peekWrites: peek,
+    },
+    text,
+  );
+  const writes = drain();
+
+  log.info("agent.run", {
+    userId: base.userId,
+    servedModel: "direct",
+    attempts: 0,
+    durationMs: Date.now() - startedAt,
+    finishReason: "direct",
+    steps: 0,
+    toolCalls: 0,
+    toolProfile,
+    toolCount: 1,
+    writes: writes.length,
+  });
+
+  return { reply: "noted, i'll remember that.", writes };
 }
