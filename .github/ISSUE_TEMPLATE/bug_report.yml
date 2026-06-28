@@ -1,35 +1,34 @@
-name: Bug report
-description: Something is incorrect or broken (logic, money math, build, tests).
+name: bug report
+description: something is wrong in logic, money math, build, or tests.
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. **Do not include real secrets** (`.env` values, API keys, phone
-        numbers). For security vulnerabilities, use
-        [the private advisory flow](https://github.com/ndycode/andy/security/advisories/new) instead
-        of a public issue.
+        thanks for the report. do not include real secrets, `.env` values, API keys, or phone
+        numbers. for security issues, use
+        [private vulnerability reporting](https://github.com/ndycode/andy/security/advisories/new).
   - type: textarea
     id: what-happened
     attributes:
-      label: What happened?
-      description: A clear description of the bug and what you expected instead.
+      label: what happened?
+      description: say what broke and what should have happened.
     validations:
       required: true
   - type: textarea
     id: repro
     attributes:
-      label: Steps to reproduce
-      description: Ideally a failing test, command, or minimal sequence.
+      label: steps to reproduce
+      description: best case is a failing test, command, or tiny sequence.
       placeholder: |
-        1. …
-        2. …
+        1. ...
+        2. ...
     validations:
       required: true
   - type: dropdown
     id: area
     attributes:
-      label: Area
+      label: area
       options:
         - "packages/shared (money/time/budget/etc.)"
         - "packages/db (schema/queries/dedup)"
@@ -43,7 +42,7 @@ body:
   - type: textarea
     id: env
     attributes:
-      label: Environment
-      description: Output of `bun --version` and your OS, if relevant.
+      label: environment
+      description: output of `bun --version` and your OS, if relevant.
     validations:
       required: false

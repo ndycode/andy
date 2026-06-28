@@ -1,12 +1,9 @@
-# Dependabot — https://docs.github.com/code-security/dependabot
-# Keeps dependencies and CI actions current. Updates are GROUPED and weekly to avoid a flood of PRs;
-# review and let CI (typecheck · lint · test · build · DB integration) gate each batch before merge.
+# dependabot: https://docs.github.com/code-security/dependabot
+# weekly grouped bumps. let CI check typecheck, lint, tests, build, and DB integration before merge.
 version: 2
 updates:
-  # JS dependencies across the Bun workspaces (root + apps/* + packages/*). The "bun" ecosystem
-  # updates bun.lock too, so a bump won't drift the lockfile and break CI's `bun install
-  # --frozen-lockfile`. (If your Dependabot doesn't support "bun" yet, switch to "npm" and add a
-  # bun.lock-refresh step, or manage JS bumps manually.)
+  # JS dependencies across Bun workspaces. the bun ecosystem updates bun.lock too.
+  # if Dependabot's bun support ever breaks, switch to npm and refresh bun.lock manually.
   - package-ecosystem: "bun"
     directory: "/"
     schedule:
@@ -14,7 +11,7 @@ updates:
       day: "monday"
     open-pull-requests-limit: 5
     groups:
-      # One PR for routine non-breaking bumps; majors come as their own PRs to debug in isolation.
+      # one PR for routine non-breaking bumps. majors get their own PR.
       minor-and-patch:
         update-types:
           - "minor"
@@ -22,7 +19,7 @@ updates:
     labels:
       - "dependencies"
 
-  # GitHub Actions used by the CI workflow.
+  # GitHub Actions used by CI.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

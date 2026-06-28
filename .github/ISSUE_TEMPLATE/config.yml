@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Report a security vulnerability
+  - name: report a security vulnerability
     url: https://github.com/ndycode/andy/security/advisories/new
-    about: Please report security issues privately — see SECURITY.md. Do not open a public issue.
-  - name: Read the contributing guide
+    about: report security issues privately. do not open a public issue.
+  - name: read the contributing guide
     url: https://github.com/ndycode/andy/blob/main/CONTRIBUTING.md
-    about: Dev loop, coding standards, and the money-correctness invariants.
+    about: dev loop, code style, and the money rails.

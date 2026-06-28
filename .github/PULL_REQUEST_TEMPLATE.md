@@ -1,23 +1,25 @@
-<!-- Thanks for contributing! Keep PRs focused. See CONTRIBUTING.md. -->
+<!-- thanks for the PR. keep it focused, say what changed, and show the checks. -->
 
-## What & why
+## what changed
 
-<!-- What does this change, and why? Link any related issue (e.g. "Closes #12"). -->
+<!-- what did you change, and why? link an issue if there is one. -->
 
-## Verification
+## verification
 
-<!-- What did you run? Paste relevant output if useful. -->
+<!-- paste the commands you ran. no mystery green checks. -->
 
-- [ ] `bun run typecheck` passes
-- [ ] `bun run lint` and `bun run lint:no-excuse` pass
-- [ ] `bun test` passes
-- [ ] `bun run build` succeeds
-- [ ] `bun run ci:local` passes (full gate incl. DB integration — needs Docker), or N/A
-- [ ] Added/updated tests for the change (behavior or regression)
+- [ ] `bun run typecheck`
+- [ ] `bun run lint`
+- [ ] `bun run lint:no-excuse`
+- [ ] `bun test`
+- [ ] `bun run build`
+- [ ] `bun run ci:local`, or explain why Docker/DB integration was not available
 
-## Invariants
+## money rails
 
-- [ ] No floating point introduced into the money path (amounts stay integer centavos)
-- [ ] Dedup / three-phase handler guarantees preserved (no DB connection held across the LLM call)
-- [ ] `@repo/shared` stays dependency-free and doesn't import `@repo/db`/`@repo/ai`
-- [ ] N/A — this PR doesn't touch those areas
+- [ ] no floats in the money path, amounts stay integer centavos
+- [ ] dedup and the three-phase handler still hold
+- [ ] no DB connection is held across the model call
+- [ ] `@repo/shared` stays free of `@repo/db` and `@repo/ai`
+- [ ] tests cover the behavior or regression
+- [ ] not applicable

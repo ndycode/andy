@@ -1,84 +1,65 @@
-# Contributing to Andy
+# contributing
 
-Thanks for your interest! Andy is a **personal, single-user showcase project**, so the scope is
-intentionally narrow — but bug reports, questions, and small, focused PRs are genuinely welcome.
+thanks for caring enough to poke the code. andy is a personal, single-user showcase, so the lane is narrow. bug reports, questions, and small PRs are welcome. turning this into a hosted product or multi-tenant app is not the mission.
 
-Before investing time in a large change, please open an issue to discuss it. The project is not
-designed to be deployed by others, so PRs aimed at generalizing it for multi-tenant or self-hosted
-use are out of scope.
+if the change is large, open an issue first. saves everyone a weird afternoon.
 
-## Prerequisites
+## what you need
 
-- [Bun](https://bun.sh) `1.3.14` (the version pinned in `package.json` → `packageManager`)
-- [Docker](https://www.docker.com/) — only for the Postgres-backed integration tests (`bun run ci:local`)
+- [Bun](https://bun.sh) `1.3.14`, pinned in `package.json`
+- [Docker](https://www.docker.com/), only for `bun run ci:local` and real Postgres integration tests
 
-No other accounts (Sendblue, OpenRouter, a database) are needed to build, lint, typecheck, or run the
-unit suite — the correctness-critical core is fully tested without them.
+you do not need Sendblue, OpenRouter, or a live database for typecheck, lint, build, or the unit suite.
 
-## Dev loop
+## dev loop
 
 ```bash
 bun install
 
-bun run typecheck      # tsc --noEmit across every package (+ api/ and scripts/)
-bun run lint           # Biome (format + lint)
-bun run lint:fix       # auto-fix the safe lint/format findings
-bun run lint:no-excuse # repo-specific custom linter (no swallowed catches, no magic literals, …)
-bun test               # 600+ tests; the DB-integration suite is gated on TEST_DATABASE_URL
-bun run build          # production Vercel bundle (Build Output API)
+bun run typecheck      # tsc --noEmit across every package, api, and scripts
+bun run lint           # Biome
+bun run lint:fix       # safe lint and format fixes
+bun run lint:no-excuse # custom repo safety lint
+bun test               # 600+ tests, DB integration gated by TEST_DATABASE_URL
+bun run build          # production Vercel Build Output API bundle
 
-bun run ci:local       # the FULL gate, incl. integration tests vs an ephemeral Postgres (needs Docker)
+bun run ci:local       # full gate with ephemeral Postgres, needs Docker
 ```
 
-`bun run ci:local` mirrors the checks in `.github/workflows/ci.yml`. Run it before opening a PR — it's
-the dependable green checkmark.
+`bun run ci:local` mirrors `.github/workflows/ci.yml`. run it before a PR when Docker is available.
 
-## Coding standards
+## code style
 
-- **Formatting & lint:** [Biome](https://biomejs.dev/). Double quotes, semicolons, 2-space indent,
-  100-col width — all enforced by `biome.json`. Run `bun run lint:fix`; don't hand-format.
-- **TypeScript:** strict mode, plus `noUncheckedIndexedAccess` and `verbatimModuleSyntax`. No `any`,
-  no non-null assertions in app code, no unsafe casts at trust boundaries.
-- **No-excuse rules:** the custom linter (`scripts/typescript/`) forbids empty/blind `catch` blocks
-  (narrow with `instanceof` or rethrow), unexplained magic literals, and stray non-null assertions.
-  If a rule genuinely must be bypassed, use an explicit `// no-excuse-ok: <rule>` annotation with a
-  reason — don't disable the linter.
-- **Tests:** write behavior-focused tests with `bun test`. Pure logic is unit-tested directly; the DB
-  layer has `*.integration.test.ts` suites for claim/flush/dedup, schema constraints, maintenance,
-  read queries, goals, recurring items, memories, and lifecycle behavior. Those integration suites
-  run against real Postgres only when `TEST_DATABASE_URL` is set. New behavior needs a test; bug
-  fixes need a regression test.
-- **Minimal-dependency core:** `@repo/shared` carries only `zod` + `@t3-oss/env-core` and must not
-  import from `@repo/db`/`@repo/ai`. The package graph is acyclic and layered — `@repo/shared` (no
-  internal deps) ← `@repo/db` ← `@repo/ai` ← `apps/api` — where higher layers may also depend on
-  lower ones directly.
+- **formatting:** Biome owns it. double quotes, semicolons, 2-space indent, 100-column width. run `bun run lint:fix`.
+- **TypeScript:** strict mode, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`. no `any`, no casual non-null assertions, no unsafe casts at trust boundaries.
+- **no-excuse lint:** empty catches, swallowed errors, unexplained magic literals, and stray non-null assertions get blocked. if a bypass is truly needed, use `// no-excuse-ok: <rule>` with the reason.
+- **tests:** behavior first. new behavior gets a test. bug fixes get a regression test. DB integration lives in `*.integration.test.ts` and runs only with `TEST_DATABASE_URL`.
+- **package graph:** keep it layered. `@repo/shared` has no internal deps. `@repo/db` can use shared. `@repo/ai` can use db and shared. `apps/api` sits at the edge.
 
-## Invariants you must not break
+## invariants
 
-This is a finance app — *the numbers are never wrong and nothing double-logs.* If your change touches
-these areas, preserve the invariants (and the tests that guard them):
+these are the money rails. do not bend them.
 
-- **Money is integer centavos end-to-end.** No floating point in the money path. The LLM never
-  computes amounts — it emits a raw token (`"25k"`, `"180.50"`) and a single parser converts it with
-  exact integer math. Fractional pesos appear only at display (`formatPHP`).
-- **Exactly-once under redelivery.** The three-phase inbound handler holds **no DB connection across
-  the LLM call**: claim a dedup marker → run the agent buffering writes → flush + complete the marker
-  atomically in one short, self-fencing transaction. Don't introduce a connection held across the
-  model round-trip, and don't weaken the marker self-fence.
-- **Corrections target the just-logged row**, never an unrelated historical one.
+- **money stays integer centavos.** no floats in the money path. the model passes raw text like `"25k"` or `"180.50"`, then the parser converts it once.
+- **one message logs once.** the claim/flush marker is the source of truth for redelivery. true duplicate, skip. stale crash marker, retry safely.
+- **no DB connection across the model call.** claim, release, run model, flush. do not pin a backend while waiting on OpenRouter.
+- **corrections target the just-logged row.** "make that 200" must not edit some old transaction by accident.
+- **answers come from tools.** money questions use SQL-backed reads. no chat-history guessing.
 
-## Migrations
+## migrations
 
-Schema changes use Drizzle. Generate with `bun run --filter @repo/db db:generate` and review the SQL.
-**Footgun:** Postgres forbids using a freshly-added enum label in the same transaction that adds it,
-and the migrator wraps each file in one transaction — so adding a category requires **two** migration
-files (one to `ALTER TYPE … ADD VALUE`, a later one to reference it). See the note atop
-`packages/db/src/schema.ts`.
+schema changes use Drizzle.
 
-## Commit & PR conventions
+```bash
+bun run --filter @repo/db db:generate
+```
 
-- Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `chore:`,
-  `refactor:`, `perf:`, `docs:`, `test:`. Keep commits atomic and the gate green at each one.
-- In the PR, describe the change and the verification you ran. The PR template has a checklist.
+review the SQL before committing it. Postgres enum changes are a footgun: adding a label and using it in the same migration file can fail because the migrator wraps the file in one transaction. add the enum value in one migration, reference it in a later one.
 
-By contributing, you agree your contributions are licensed under the [MIT License](./LICENSE).
+## commits and PRs
+
+use conventional commits: `feat:`, `fix:`, `chore:`, `refactor:`, `perf:`, `docs:`, `test:`.
+
+keep PRs focused. say what changed, why, and what you ran. if you touched money, dedup, DB writes, or the handler, call that out directly.
+
+by contributing, you agree your work is licensed under [MIT](./LICENSE).

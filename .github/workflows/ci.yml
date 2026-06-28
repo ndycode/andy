@@ -5,13 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch: # allow manual runs (and runs when a push didn't auto-trigger)
+  workflow_dispatch: # manual run button
 
-# Least privilege: this workflow only checks out and builds — it needs no write scopes on GITHUB_TOKEN.
+# least privilege: checkout, build, no write scopes.
 permissions:
   contents: read
 
-# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR) to save CI minutes.
+# cancel superseded runs on the same ref.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -20,10 +20,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
 
-    # Ephemeral Postgres for the gated DB-layer integration tests (the *.integration.test.ts suites:
-    # claim/flush/dedup, money-write appliers, goal-balance deltas). Without this the integration
-    # suite only ever runs on a developer's machine; here it gates every push — the claim/flush/dedup
-    # concurrency design is the most correctness-critical code.
+    # ephemeral Postgres for gated DB integration: claim/flush/dedup, money writes, goal deltas.
+    # this keeps the money rails checked on every push.
     services:
       postgres:
         image: postgres:16-alpine
@@ -55,19 +53,16 @@ jobs:
       - name: Lint
         run: bun run lint
 
-      - name: Lint (no-excuse rules — repo-specific custom linter)
+      - name: Lint (no-excuse rules, repo-specific custom linter)
         run: bun run lint:no-excuse
 
       - name: Test (unit + DB-layer integration vs real Postgres)
-        # bun test auto-discovers every *.test.ts. The describeDbIntegration blocks (claim/flush/dedup,
-        # money-write appliers, goal-balance deltas) activate ONLY when TEST_DATABASE_URL is set, so
-        # setting it here runs the full unit + integration gate in a single pass against the service
-        # container above — no per-file path that can silently rot when a test file is renamed.
+        # bun test auto-discovers every *.test.ts. DB suites wake up when TEST_DATABASE_URL is set,
+        # so CI runs the real integration gate without fragile per-file test paths.
         run: bun test
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/andy_test
 
       - name: Build (production Vercel bundle)
-        # Exercises the real Build Output API bundle (build-vercel.sh) so a bundling/import failure
-        # is caught in CI, not at deploy. No secrets needed — this is a pure bundle, no DB connection.
+        # exercises the real Build Output API bundle. no secrets, no DB connection.
         run: bun run build

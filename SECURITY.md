@@ -1,31 +1,39 @@
-# Security Policy
+# security
 
-Andy handles financial data, personal messages, and provider secrets, so security reports are taken
-seriously even though it's a single-user project.
+andy handles money data, personal messages, phone numbers, and provider secrets. small repo, real stakes.
 
-## Supported versions
+## supported versions
 
-Only the latest `main` is supported. There are no released/tagged versions to back-port fixes to.
+only latest `main` is supported. there are no release branches or backports.
 
-## Reporting a vulnerability
+## report privately
 
-**Please do not open a public issue for security problems.** Instead, report privately via GitHub:
+please do not open a public issue for a vulnerability.
 
-- Go to the repository's **Security → Advisories → Report a vulnerability**
-  ([Private Vulnerability Reporting](https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/privately-reporting-a-security-vulnerability)), or
-- Open a minimal private channel with the maintainer ([@ndycode](https://github.com/ndycode)).
+use GitHub's private vulnerability reporting:
 
-Please include: a description, affected file(s)/path, reproduction steps or a proof of concept, and
-the potential impact. You'll get an acknowledgement as soon as practical; since this is a personal
-project maintained in spare time, response times are best-effort.
+- open **Security -> Advisories -> Report a vulnerability**
+- or contact [@ndycode](https://github.com/ndycode) through a private channel
 
-## Scope & non-secrets
+include what happened, affected paths, reproduction steps or proof of concept, and the impact. response is best-effort because this is a personal project, but real security reports get treated seriously.
 
-- **Never include real secrets in a report or PR.** `.env`, `.env.local`, and any `.env.*` are
-  git-ignored (only `.env.example` is committed) — keep it that way.
-- Secret handling is centralized in `packages/shared/src/env.ts` (validated, lazy) and the inbound
-  webhook is authenticated with a constant-time token compare; the cron route uses a bearer secret.
-- In-scope examples: auth/allowlist bypass, secret leakage in logs/errors, injection, prompt-injection
-  that drives unintended tool actions, or anything that corrupts the money ledger.
-- Out of scope: issues that require the attacker to already control the host or the deploy secrets;
-  rate-limit tuning preferences; and general "please deploy this for me" requests.
+## keep secrets out
+
+never paste real secrets into issues, PRs, screenshots, or reports. `.env`, `.env.local`, and `.env.*` stay ignored. only `.env.example` belongs in git.
+
+secret handling lives in `packages/shared/src/env.ts`. inbound Sendblue webhooks use a self-minted URL token with constant-time compare. cron uses `CRON_SECRET` as a bearer token.
+
+## in scope
+
+- auth or allowlist bypass
+- provider secret leaks in logs, errors, or build output
+- injection that changes stored financial data
+- prompt injection that drives unintended tool actions
+- anything that corrupts the ledger or makes the numbers lie
+
+## out of scope
+
+- attacks that already require host or deploy-secret control
+- rate-limit preference tweaks
+- "please deploy this for me" requests
+- generic dependency reports with no reachable exploit path
