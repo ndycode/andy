@@ -10,6 +10,8 @@
 
 
 
+
+
 Andy is a single-user, serverless finance assistant. You talk to it like a friend; it turns natural language into typed financial transactions, persists them with exact integer-centavo money math, and answers questions from real SQL aggregation — never from chat history. It's built for the Philippines (PHP, Asia/Manila, GCash/sweldo idioms).
 
 **540+ tests · TypeScript strict · typecheck + lint + test + build green in CI.**
