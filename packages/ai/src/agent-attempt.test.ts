@@ -58,7 +58,23 @@ describe("agent attempt boundary", () => {
   });
 
   test("requires first-step tools only for concrete tool profiles", () => {
-    expect(firstStepToolChoice("logWrite", "grab 180", 0)).toBe("required");
+    expect(firstStepToolChoice("logWrite", "grab 180", 0)).toEqual({
+      type: "tool",
+      toolName: "logExpense",
+    });
+    expect(firstStepToolChoice("logWrite", "iced matcha 120", 0)).toEqual({
+      type: "tool",
+      toolName: "logExpense",
+    });
+    expect(firstStepToolChoice("logWrite", "sweldo 25k", 0)).toEqual({
+      type: "tool",
+      toolName: "logIncome",
+    });
+    expect(firstStepToolChoice("logWrite", "client paid me 500", 0)).toEqual({
+      type: "tool",
+      toolName: "logIncome",
+    });
+    expect(firstStepToolChoice("logWrite", "salary advance fee 100", 0)).toBe("required");
     expect(firstStepToolChoice("readBasic", "how am i doing?", 0)).toBe("required");
     expect(firstStepToolChoice("readSearch", "biggest expense", 0)).toEqual({
       type: "tool",

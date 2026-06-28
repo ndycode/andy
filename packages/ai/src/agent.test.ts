@@ -246,7 +246,7 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
     });
 
     const { reply, writes } = await runAgent("grab 180", base, model);
-    expect(toolChoices).toEqual([{ type: "required" }, { type: "auto" }]);
+    expect(toolChoices).toEqual([{ type: "tool", toolName: "logExpense" }, { type: "auto" }]);
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({
       type: "expense",
@@ -257,6 +257,46 @@ describe("runAgent end-to-end with a mocked model (smoke)", () => {
       localDate: "2026-06-11",
     });
     expect(reply).toBe("logged grab ₱180 transport 🛵");
+  });
+
+  test("clear income log turns force logIncome on the first model step", async () => {
+    let call = 0;
+    const toolChoices: unknown[] = [];
+    const model = new MockLanguageModelV3({
+      doGenerate: async (options) => {
+        toolChoices.push(options.toolChoice);
+        call++;
+        if (call === 1) {
+          return result(
+            [
+              {
+                type: "tool-call",
+                toolCallId: "c1",
+                toolName: "logIncome",
+                input: JSON.stringify({ amount: "25k", note: "sweldo" }),
+              },
+            ],
+            "tool-calls",
+          );
+        }
+        return result([{ type: "text", text: "logged sweldo ₱25,000 income." }], "stop");
+      },
+    });
+
+    const { reply, writes } = await runAgent("sweldo 25k", base, model);
+
+    expect(toolChoices).toEqual([{ type: "tool", toolName: "logIncome" }, { type: "auto" }]);
+    expect(writes).toEqual([
+      {
+        type: "income",
+        userId: "user-1",
+        amountCentavos: 2_500_000,
+        category: "Income",
+        note: "sweldo",
+        localDate: "2026-06-11",
+      },
+    ]);
+    expect(reply).toBe("logged sweldo ₱25,000 income.");
   });
 
   test("empty no-op turn (no tool call + no text) retries instead of replying 'got it.'", async () => {

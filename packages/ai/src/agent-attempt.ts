@@ -52,6 +52,10 @@ export interface AgentAttemptLimits {
 const AMOUNT_RE = /(?:₱|php\s*)?\d[\d,]*(?:\.\d+)?\s*[kKmM]?\b/i;
 const RECURRING_CADENCE_RE =
   /\b(?:every\s+\d{1,2}(?:st|nd|rd|th)?|every\s+\w+day|weekly|monthly|on\s+the\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}(?:st|nd|rd|th))\b/i;
+const CLEAR_INCOME_LOG_RE =
+  /\b(?:sweldo|salary|paycheck|bonus|income|got\s+paid|paid\s+me|payment\s+received|received\s+(?:a\s+)?(?:payment|salary|sweldo|paycheck|bonus)|client\s+paid|from\s+(?:client|boss|work|freelance))\b/i;
+const EXPENSE_CONTEXT_RE =
+  /\b(?:spent|bought|grab|taxi|fare|gas|fuel|parking|toll|lunch|dinner|breakfast|coffee|snack|groceries|grocery|load|rent|netflix|subscription|bill|fee|charge|cost|food|meal|tea|matcha)\b/i;
 const BARE_REMEMBER_RE =
   /^\s*(?:remember(?:\s+(?:that|this))?|save(?:\s+(?:this|that))?(?:\s+fact)?)\s*[?.!]*\s*$/i;
 const AMBIGUOUS_FORGET_RE =
@@ -133,6 +137,8 @@ function toolChoice(
 
 function firstStepRequiredTool(profile: ToolProfile, text: string): AgentToolChoice | undefined {
   switch (profile) {
+    case "logWrite":
+      return firstStepLogWriteTool(text);
     case "readSearch":
       return toolChoice("searchHistory");
     case "readPace":
@@ -174,6 +180,13 @@ function firstStepRequiredTool(profile: ToolProfile, text: string): AgentToolCho
     default:
       return undefined;
   }
+}
+
+function firstStepLogWriteTool(text: string): AgentToolChoice | undefined {
+  const hasIncomeCue = CLEAR_INCOME_LOG_RE.test(text);
+  const hasExpenseCue = EXPENSE_CONTEXT_RE.test(text);
+  if (hasIncomeCue && hasExpenseCue) return undefined;
+  return toolChoice(hasIncomeCue ? "logIncome" : "logExpense");
 }
 
 function requiresFirstToolCall(profile: ToolProfile, text: string): boolean {
