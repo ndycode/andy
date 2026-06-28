@@ -12,6 +12,9 @@ export type ToolProfile =
   | "memoryRead"
   | "memory"
   | "goalRead"
+  | "goalCreate"
+  | "goalContribute"
+  | "goalManage"
   | "goal"
   | "budgetRead"
   | "budget"
@@ -68,6 +71,11 @@ export function selectToolProfile(text: string): ToolProfile {
   const hasGoalManagement = /\b(delete|remove|cancel|rename|make|move|change|edit|update)\b/.test(
     t,
   );
+  const hasGoalContribution =
+    hasAmount &&
+    (/\bput\s+.+\b(to|into|towards?)\b/.test(t) ||
+      /\b(contribute|add|deposit|saved)\b.+\b(to|into|towards?|for)\b/.test(t));
+  const hasGoalCreate = hasGoal && hasAmount && !hasGoalContribution && !hasGoalManagement;
   const hasGoalRead =
     hasGoal &&
     !hasAmount &&
@@ -134,7 +142,7 @@ export function selectToolProfile(text: string): ToolProfile {
     hasRecurring,
     hasGoal,
     readNeedsSeparateProfile,
-    hasLogHint || hasCorrection,
+    hasLogHint || (hasCorrection && !hasGoal),
   ].filter(Boolean).length;
 
   // Mixed turns need the whole tool surface, e.g. "grab 180 and how am i doing" or
@@ -144,7 +152,13 @@ export function selectToolProfile(text: string): ToolProfile {
   if (hasMemory) return hasMemoryRead ? "memoryRead" : "memory";
   if (hasBudget) return hasBudgetRead ? "budgetRead" : "budget";
   if (hasRecurring) return "recurring";
-  if (hasGoal) return hasGoalRead ? "goalRead" : "goal";
+  if (hasGoal) {
+    if (hasGoalRead) return "goalRead";
+    if (!hasCorrection && hasGoalManagement) return "goalManage";
+    if (!hasCorrection && hasGoalContribution) return "goalContribute";
+    if (!hasCorrection && hasGoalCreate) return "goalCreate";
+    return "goal";
+  }
   if (hasRead && !hasLogHint) return hasAnalysisRead ? "read" : "readBasic";
   if (hasCorrection && !hasMerchantAmount) return "logEdit";
   if (hasCorrection || (hasAmount && !hasMerchantAmount)) return "log";

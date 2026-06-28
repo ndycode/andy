@@ -35,7 +35,7 @@ const AMOUNT_TOKEN_GLOBAL_RE = /(?:₱|php\s*)?\d[\d,]*(?:\.\d+)?\s*[kKmM]?\b/gi
 const CORRECTION_RE =
   /\b(delete that|scratch that|undo|make that|change it|actually|no,?|no wait)\b/i;
 const FOLLOWUP_CONTEXT_RE =
-  /\b(what about|how about|same|that one|last one|previous|earlier|again|also|too|instead|it|them|those)\b/i;
+  /\b(what about|how about|same|that|that one|last one|previous|earlier|again|also|too|instead|it|them|those)\b/i;
 const MEMORY_REFERENCE_RE = /\b(mentioned|remember|told you|you know|usual)\b/i;
 
 function needsRecentTurns(text: string | undefined): boolean {
@@ -108,6 +108,9 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
         history: needsRecentTurns(text),
         lastTransaction: false,
       };
+    case "goalCreate":
+    case "goalContribute":
+    case "goalManage":
     case "goal":
       return {
         memories: needsGoalPromptMemories(text),

@@ -13,11 +13,15 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("what do you know about me?")).toBe("memoryRead");
     expect(selectToolProfile("show my memories")).toBe("memoryRead");
     expect(selectToolProfile("forget my payday memory")).toBe("memory");
-    expect(selectToolProfile("save 20k for japan by december")).toBe("goal");
+    expect(selectToolProfile("save 20k for japan by december")).toBe("goalCreate");
+    expect(selectToolProfile("put away 50k for emergency")).toBe("goalCreate");
+    expect(selectToolProfile("put 1k to japan")).toBe("goalContribute");
+    expect(selectToolProfile("i saved 1000 for laptop last tuesday")).toBe("goalContribute");
     expect(selectToolProfile("how's my laptop fund?")).toBe("goalRead");
     expect(selectToolProfile("am i on track for japan fund?")).toBe("goalRead");
-    expect(selectToolProfile("delete my laptop goal?")).toBe("goal");
-    expect(selectToolProfile("make laptop goal 30k?")).toBe("goal");
+    expect(selectToolProfile("delete my laptop goal?")).toBe("goalManage");
+    expect(selectToolProfile("make laptop goal 30k?")).toBe("goalManage");
+    expect(selectToolProfile("put 1k to japan, actually 2k")).toBe("goal");
     expect(selectToolProfile("budget 5k for food")).toBe("budget");
     expect(selectToolProfile("how are my budgets?")).toBe("budgetRead");
     expect(selectToolProfile("budget check")).toBe("budgetRead");

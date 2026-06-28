@@ -1,8 +1,10 @@
 import { buildBudgetTools } from "./budget-tools";
 import type { ToolContext } from "./context";
 import { buildEditTools } from "./edit-tools";
+import { buildGoalManagementTools } from "./goal-management-tools";
 import { buildGoalReadTools } from "./goal-read-tools";
 import { buildGoalTools } from "./goal-tools";
+import { buildGoalWriteTools } from "./goal-write-tools";
 import type { LogActionDeps } from "./log-actions";
 import { buildLogTools } from "./log-tools";
 import { buildMemoryTools } from "./memory-tools";
@@ -56,6 +58,12 @@ export function buildTools(
       return narrowTools(buildMemoryTools(ctx));
     case "goalRead":
       return narrowTools(buildGoalReadTools(ctx));
+    case "goalCreate":
+      return narrowTools(buildGoalCreateProfile(ctx));
+    case "goalContribute":
+      return narrowTools(buildGoalContributeProfile(ctx));
+    case "goalManage":
+      return narrowTools(buildGoalManagementTools(ctx));
     case "goal":
       return narrowTools(buildGoalToolProfile(ctx));
     case "budgetRead":
@@ -125,6 +133,14 @@ function buildGoalToolProfile(ctx: ToolContext) {
     editLast: editTools.editLast,
     deleteLast: editTools.deleteLast,
   };
+}
+
+function buildGoalCreateProfile(ctx: ToolContext) {
+  return { createGoal: buildGoalWriteTools(ctx).createGoal };
+}
+
+function buildGoalContributeProfile(ctx: ToolContext) {
+  return { contributeToGoal: buildGoalWriteTools(ctx).contributeToGoal };
 }
 
 function buildBudgetReadProfile(ctx: ToolContext) {
