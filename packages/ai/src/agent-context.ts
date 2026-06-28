@@ -101,6 +101,7 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
         history: needsRecentTurns(text),
         lastTransaction: false,
       };
+    case "recurringRead":
     case "recurring":
       return {
         memories: false,

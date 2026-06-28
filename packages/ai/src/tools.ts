@@ -8,6 +8,7 @@ import { buildLogTools } from "./log-tools";
 import { buildMemoryTools } from "./memory-tools";
 import { buildBasicReadTools } from "./read-basic-tools";
 import { buildReadTools } from "./read-tools";
+import { buildRecurringReadTools } from "./recurring-read-tools";
 import { buildRecurringTools } from "./recurring-tools";
 import type { ToolProfile } from "./tool-profile";
 
@@ -42,6 +43,8 @@ export function buildTools(
       return narrowTools(buildGoalToolProfile(ctx));
     case "budget":
       return narrowTools(buildBudgetTools(ctx));
+    case "recurringRead":
+      return narrowTools(buildRecurringReadTools(ctx));
     case "recurring":
       return narrowTools(buildRecurringTools(ctx));
     case "full":

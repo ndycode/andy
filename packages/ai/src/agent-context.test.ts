@@ -87,6 +87,12 @@ describe("agent context boundary", () => {
       history: true,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("recurringRead")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("full")).toEqual({
       memories: true,
       habits: true,
@@ -171,6 +177,12 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("recurringRead", "what are my recurring bills?")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("goal", "save 20k for japan by december")).toEqual({
       memories: false,
       habits: false,
@@ -189,6 +201,7 @@ describe("agent context boundary", () => {
     expect(contextLoadPolicy("read", "what about food?").history).toBe(true);
     expect(contextLoadPolicy("memory", "forget that one").history).toBe(true);
     expect(contextLoadPolicy("budget", "same for transport").history).toBe(true);
+    expect(contextLoadPolicy("recurringRead", "what about recurring?").history).toBe(true);
     expect(contextLoadPolicy("recurring", "change that one to every 15th").history).toBe(true);
     expect(contextLoadPolicy("goal", "put 1k to it").history).toBe(true);
     expect(contextLoadPolicy("goalRead", "what about japan fund?").history).toBe(true);

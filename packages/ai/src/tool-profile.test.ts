@@ -19,6 +19,10 @@ describe("tool profile selection", () => {
     expect(selectToolProfile("budget check")).toBe("budget");
     expect(selectToolProfile("budget 5k for food and how are my budgets?")).toBe("budget");
     expect(selectToolProfile("rent 8k every 1st")).toBe("recurring");
+    expect(selectToolProfile("what are my recurring bills?")).toBe("recurringRead");
+    expect(selectToolProfile("show my recurring reminders")).toBe("recurringRead");
+    expect(selectToolProfile("cancel rent recurring")).toBe("recurring");
+    expect(selectToolProfile("change rent reminder to 9k")).toBe("recurring");
     expect(selectToolProfile("delete that")).toBe("log");
     expect(selectToolProfile("actually 200")).toBe("log");
   });

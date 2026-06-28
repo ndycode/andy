@@ -7,6 +7,7 @@ export type ToolProfile =
   | "goalRead"
   | "goal"
   | "budget"
+  | "recurringRead"
   | "recurring"
   | "full";
 
@@ -49,6 +50,13 @@ export function selectToolProfile(text: string): ToolProfile {
     /\b(recurring|remind|reminder|every\s+\d+(?:st|nd|rd|th)?|every\s+\w+day|weekly|monthly)\b/.test(
       t,
     );
+  const hasRecurringManagement =
+    /\b(delete|remove|cancel|stop|pause|rename|make|move|change|edit|update)\b/.test(t);
+  const hasRecurringRead =
+    hasRecurring &&
+    !hasAmount &&
+    !hasRecurringManagement &&
+    (hasQuestion || /\b(list|show|view|see|which)\b/.test(t));
   const hasMemory = /\b(remember|forget|what do you know|dont remember|don't remember)\b/.test(t);
   const hasCorrection =
     /\b(delete that|scratch that|undo|make that|change it|actually|no,?|no wait)\b/.test(t);
@@ -59,7 +67,9 @@ export function selectToolProfile(text: string): ToolProfile {
     );
 
   if (hasMemory && !/\b(recurring|remind|reminder)\b/.test(t)) return "memory";
-  if (hasRecurring && !hasMemory && !hasBudget && !hasGoal) return "recurring";
+  if (hasRecurring && !hasMemory && !hasBudget && !hasGoal) {
+    return hasRecurringRead ? "recurringRead" : "recurring";
+  }
   if (hasLogHint && hasRead) return "full";
 
   const readNeedsSeparateProfile =
