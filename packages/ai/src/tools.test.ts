@@ -53,6 +53,13 @@ describe("buildTools profile routing", () => {
       "editLast",
       "deleteLast",
     ]);
+    expect(Object.keys(buildTools(ctx(), {}, "readBasic"))).toEqual([
+      "getSpending",
+      "getPeriodSpending",
+      "getOverview",
+      "getCategoryBreakdown",
+      "getRecent",
+    ]);
     expect(Object.keys(buildTools(ctx(), {}, "read"))).toEqual([
       "getSpending",
       "getPeriodSpending",
@@ -76,6 +83,7 @@ describe("buildTools profile routing", () => {
     expect(source).toContain('case "chat":');
     expect(source).toContain("return narrowTools({});");
     expect(source).toContain("return narrowTools(buildLogToolProfile(ctx, deps));");
+    expect(source).toContain("return narrowTools(buildBasicReadTools(ctx));");
     expect(source).toContain("return narrowTools(buildReadToolProfile(ctx));");
     expect(source).not.toContain("pickProfileTools");
     expect(source).not.toContain("TOOL_PROFILE_KEYS");

@@ -69,6 +69,12 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: true,
     });
+    expect(contextLoadPolicy("readBasic")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("read")).toEqual({
       memories: false,
       habits: false,
@@ -129,6 +135,12 @@ describe("agent context boundary", () => {
   });
 
   test("narrow self-contained turns skip recent conversation history", () => {
+    expect(contextLoadPolicy("readBasic", "how much did i spend this month?")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("read", "how much did i spend this month?")).toEqual({
       memories: false,
       habits: false,

@@ -5,6 +5,7 @@ import { buildGoalTools } from "./goal-tools";
 import type { LogActionDeps } from "./log-actions";
 import { buildLogTools } from "./log-tools";
 import { buildMemoryTools } from "./memory-tools";
+import { buildBasicReadTools } from "./read-basic-tools";
 import { buildReadTools } from "./read-tools";
 import { buildRecurringTools } from "./recurring-tools";
 import type { ToolProfile } from "./tool-profile";
@@ -28,6 +29,8 @@ export function buildTools(
       return narrowTools({});
     case "log":
       return narrowTools(buildLogToolProfile(ctx, deps));
+    case "readBasic":
+      return narrowTools(buildBasicReadTools(ctx));
     case "read":
       return narrowTools(buildReadToolProfile(ctx));
     case "memory":

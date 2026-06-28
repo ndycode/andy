@@ -1,6 +1,7 @@
 export type ToolProfile =
   | "chat"
   | "log"
+  | "readBasic"
   | "read"
   | "memory"
   | "goal"
@@ -16,11 +17,16 @@ export function selectToolProfile(text: string): ToolProfile {
 
   const hasAmount = AMOUNT_RE.test(t);
   const hasQuestion = isQuestionLike(t);
-  const hasRead =
+  const hasAnalysisRead =
+    /\b(insights?|compare|compared|versus|vs|pace|on track|trend|trends|find|search|biggest|largest|over|above|under|below|anything|transactions?|history|leak|weekend|weekday)\b/.test(
+      t,
+    );
+  const hasBasicRead =
     hasQuestion ||
     /\b(recent|breakdown|overview|spent so far|spending|expenses?|net|income|where.*money)\b/.test(
       t,
     );
+  const hasRead = hasBasicRead || hasAnalysisRead;
   const hasGoal =
     /\b(goal|fund|save|saving|saved|contribute|japan|trip|emergency|laptop)\b/.test(t) ||
     /\bput\s+.+\b(to|into|towards?)\b/.test(t);
@@ -59,7 +65,7 @@ export function selectToolProfile(text: string): ToolProfile {
   if (hasBudget) return "budget";
   if (hasRecurring) return "recurring";
   if (hasGoal) return "goal";
-  if (hasRead && !hasAmount) return "read";
+  if (hasRead && !hasLogHint) return hasAnalysisRead ? "read" : "readBasic";
   if (hasLogHint || hasCorrection || hasAmount) return "log";
   return "chat";
 }

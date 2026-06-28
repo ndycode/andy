@@ -65,6 +65,7 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
         lastTransaction: !textKnown || CORRECTION_RE.test(text),
       };
     }
+    case "readBasic":
     case "read":
       return {
         memories: false,
