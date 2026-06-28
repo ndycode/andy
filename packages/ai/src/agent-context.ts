@@ -73,6 +73,7 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
         history: needsRecentTurns(text),
         lastTransaction: false,
       };
+    case "memoryRead":
     case "memory":
       return {
         memories: false,
@@ -94,6 +95,7 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
         history: needsRecentTurns(text),
         lastTransaction: text === undefined || CORRECTION_RE.test(text),
       };
+    case "budgetRead":
     case "budget":
       return {
         memories: false,

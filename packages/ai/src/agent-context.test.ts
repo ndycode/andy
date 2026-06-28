@@ -81,8 +81,20 @@ describe("agent context boundary", () => {
       history: true,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("memoryRead")).toEqual({
+      memories: false,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("goalRead")).toEqual({
       memories: true,
+      habits: false,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("budgetRead")).toEqual({
+      memories: false,
       habits: false,
       history: true,
       lastTransaction: false,
@@ -165,7 +177,19 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: false,
     });
+    expect(contextLoadPolicy("memoryRead", "what do you know about me?")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
     expect(contextLoadPolicy("budget", "budget 5k for food")).toEqual({
+      memories: false,
+      habits: false,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("budgetRead", "how are my budgets?")).toEqual({
       memories: false,
       habits: false,
       history: false,
@@ -199,7 +223,9 @@ describe("agent context boundary", () => {
 
   test("narrow follow-up turns keep recent conversation history", () => {
     expect(contextLoadPolicy("read", "what about food?").history).toBe(true);
+    expect(contextLoadPolicy("memoryRead", "what about memories?").history).toBe(true);
     expect(contextLoadPolicy("memory", "forget that one").history).toBe(true);
+    expect(contextLoadPolicy("budgetRead", "what about budgets?").history).toBe(true);
     expect(contextLoadPolicy("budget", "same for transport").history).toBe(true);
     expect(contextLoadPolicy("recurringRead", "what about recurring?").history).toBe(true);
     expect(contextLoadPolicy("recurring", "change that one to every 15th").history).toBe(true);

@@ -3,9 +3,11 @@ export type ToolProfile =
   | "log"
   | "readBasic"
   | "read"
+  | "memoryRead"
   | "memory"
   | "goalRead"
   | "goal"
+  | "budgetRead"
   | "budget"
   | "recurringRead"
   | "recurring"
@@ -46,6 +48,12 @@ export function selectToolProfile(text: string): ToolProfile {
     !hasGoalManagement &&
     /\b(how'?s|how is|what'?s|status|progress|on track|pace|doing)\b/.test(t);
   const hasBudget = /\b(budget|budgets|cap|limit|within budget|overspend)\b/.test(t);
+  const hasBudgetManagement = /\b(drop|remove|delete|stop|clear|cancel)\b/.test(t);
+  const hasBudgetRead =
+    hasBudget &&
+    !hasAmount &&
+    !hasBudgetManagement &&
+    (hasQuestion || /\b(check|status|within|show|list|view|see)\b/.test(t));
   const hasRecurring =
     /\b(recurring|remind|reminder|every\s+\d+(?:st|nd|rd|th)?|every\s+\w+day|weekly|monthly)\b/.test(
       t,
@@ -57,7 +65,15 @@ export function selectToolProfile(text: string): ToolProfile {
     !hasAmount &&
     !hasRecurringManagement &&
     (hasQuestion || /\b(list|show|view|see|which)\b/.test(t));
-  const hasMemory = /\b(remember|forget|what do you know|dont remember|don't remember)\b/.test(t);
+  const hasMemory =
+    /\b(remember|forget|memory|memories|what do you know|dont remember|don't remember)\b/.test(t);
+  const hasMemoryManagement = /\b(forget|dont remember|don't remember|delete|remove)\b/.test(t);
+  const hasMemoryRead =
+    hasMemory &&
+    !hasMemoryManagement &&
+    /\b(what do you know|what do you remember|what have you remembered|list|show|view|see|memory|memories)\b/.test(
+      t,
+    );
   const hasCorrection =
     /\b(delete that|scratch that|undo|make that|change it|actually|no,?|no wait)\b/.test(t);
   const hasLogHint =
@@ -66,7 +82,9 @@ export function selectToolProfile(text: string): ToolProfile {
       t,
     );
 
-  if (hasMemory && !/\b(recurring|remind|reminder)\b/.test(t)) return "memory";
+  if (hasMemory && !/\b(recurring|remind|reminder)\b/.test(t)) {
+    return hasMemoryRead ? "memoryRead" : "memory";
+  }
   if (hasRecurring && !hasMemory && !hasBudget && !hasGoal) {
     return hasRecurringRead ? "recurringRead" : "recurring";
   }
@@ -89,8 +107,8 @@ export function selectToolProfile(text: string): ToolProfile {
   // "set food budget 5k and how are my budgets".
   if (specificCount > 1) return "full";
 
-  if (hasMemory) return "memory";
-  if (hasBudget) return "budget";
+  if (hasMemory) return hasMemoryRead ? "memoryRead" : "memory";
+  if (hasBudget) return hasBudgetRead ? "budgetRead" : "budget";
   if (hasRecurring) return "recurring";
   if (hasGoal) return hasGoalRead ? "goalRead" : "goal";
   if (hasRead && !hasLogHint) return hasAnalysisRead ? "read" : "readBasic";

@@ -35,12 +35,16 @@ export function buildTools(
       return narrowTools(buildBasicReadTools(ctx));
     case "read":
       return narrowTools(buildReadToolProfile(ctx));
+    case "memoryRead":
+      return narrowTools(buildMemoryReadProfile(ctx));
     case "memory":
       return narrowTools(buildMemoryTools(ctx));
     case "goalRead":
       return narrowTools(buildGoalReadTools(ctx));
     case "goal":
       return narrowTools(buildGoalToolProfile(ctx));
+    case "budgetRead":
+      return narrowTools(buildBudgetReadProfile(ctx));
     case "budget":
       return narrowTools(buildBudgetTools(ctx));
     case "recurringRead":
@@ -80,6 +84,10 @@ function buildReadToolProfile(ctx: ToolContext) {
   };
 }
 
+function buildMemoryReadProfile(ctx: ToolContext) {
+  return { listMemory: buildMemoryTools(ctx).listMemory };
+}
+
 function buildGoalToolProfile(ctx: ToolContext) {
   const editTools = buildEditTools(ctx);
 
@@ -88,6 +96,10 @@ function buildGoalToolProfile(ctx: ToolContext) {
     editLast: editTools.editLast,
     deleteLast: editTools.deleteLast,
   };
+}
+
+function buildBudgetReadProfile(ctx: ToolContext) {
+  return { getBudgets: buildBudgetTools(ctx).getBudgets };
 }
 
 function buildFullTools(ctx: ToolContext, deps: FinanceToolDeps) {
