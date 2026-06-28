@@ -11,12 +11,12 @@
 ## Demo
 
 <p>
-  <a href="https://andy-mu-five.vercel.app/demo/">
+  <a href="https://andy-ndycode.vercel.app/demo/">
     <img src="./public/demo/messages-poster.jpg" alt="Andy iMessage demo" width="320" />
   </a>
 </p>
 
-[Watch the playable demo](https://andy-mu-five.vercel.app/demo/) or open the [MP4 in GitHub](./public/demo/messages.mp4).
+[Watch the playable demo](https://andy-ndycode.vercel.app/demo/) or open the [MP4 in GitHub](./public/demo/messages.mp4).
 
 Andy is a single-user, serverless finance assistant. You talk to it like a friend; it turns natural language into typed financial transactions, persists them with exact integer-centavo money math, and answers questions from real SQL aggregation — never from chat history. It's built for the Philippines (PHP, Asia/Manila, GCash/sweldo idioms).
 
