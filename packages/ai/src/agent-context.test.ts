@@ -276,6 +276,30 @@ describe("agent context boundary", () => {
       history: false,
       lastTransaction: true,
     });
+    expect(contextLoadPolicy("logWrite", "same 120")).toEqual({
+      memories: false,
+      habits: true,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("logWrite", "that 120")).toEqual({
+      memories: false,
+      habits: true,
+      history: true,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("logWrite", "usual 120")).toEqual({
+      memories: true,
+      habits: true,
+      history: false,
+      lastTransaction: false,
+    });
+    expect(contextLoadPolicy("log", "same 120, actually 130")).toEqual({
+      memories: false,
+      habits: true,
+      history: true,
+      lastTransaction: true,
+    });
   });
 
   test("narrow self-contained turns skip recent conversation history", () => {
@@ -408,6 +432,8 @@ describe("agent context boundary", () => {
   });
 
   test("narrow follow-up turns keep recent conversation history", () => {
+    expect(contextLoadPolicy("logWrite", "same 120").history).toBe(true);
+    expect(contextLoadPolicy("log", "same 120, actually 130").history).toBe(true);
     expect(contextLoadPolicy("read", "what about food?").history).toBe(true);
     expect(contextLoadPolicy("readSearch", "what about that grab?").history).toBe(true);
     expect(contextLoadPolicy("readPace", "what about transport pace?").history).toBe(true);
@@ -427,6 +453,16 @@ describe("agent context boundary", () => {
     expect(contextLoadPolicy("goalContribute", "put 1k to it").history).toBe(true);
     expect(contextLoadPolicy("goalManage", "delete that goal").history).toBe(true);
     expect(contextLoadPolicy("goalRead", "what about japan fund?").history).toBe(true);
+  });
+
+  test("referenced log and read turns load prompt memories without widening normal turns", () => {
+    expect(contextLoadPolicy("logWrite", "usual 120").memories).toBe(true);
+    expect(contextLoadPolicy("log", "that thing i mentioned 120").memories).toBe(true);
+    expect(contextLoadPolicy("readBasic", "how much on the place i mentioned?").memories).toBe(
+      true,
+    );
+    expect(contextLoadPolicy("logWrite", "grab 180").memories).toBe(false);
+    expect(contextLoadPolicy("readBasic", "how much did i spend this month?").memories).toBe(false);
   });
 
   test("goal context loads prompt memories only when wording references prior knowledge", () => {

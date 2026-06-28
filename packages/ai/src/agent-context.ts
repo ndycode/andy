@@ -48,8 +48,21 @@ function needsLogHabits(text: string | undefined): boolean {
   return AMOUNT_TOKEN_RE.test(text) && noteText.match(/[a-z]{2,}/i) !== null;
 }
 
+function needsLogHistory(text: string | undefined): boolean {
+  if (text === undefined || !AMOUNT_TOKEN_RE.test(text)) return false;
+  return (
+    /\b(what about|how about|same|that one|last one|previous|earlier|again|also|too|instead)\b/i.test(
+      text,
+    ) || /\bthat\b/i.test(text)
+  );
+}
+
 function needsGoalPromptMemories(text: string | undefined): boolean {
   return text === undefined || FOLLOWUP_CONTEXT_RE.test(text) || MEMORY_REFERENCE_RE.test(text);
+}
+
+function needsReferencedPromptMemories(text: string | undefined): boolean {
+  return text !== undefined && MEMORY_REFERENCE_RE.test(text);
 }
 
 export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextLoadPolicy {
@@ -59,9 +72,9 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
     case "logWrite": {
       const textKnown = text !== undefined;
       return {
-        memories: false,
+        memories: needsReferencedPromptMemories(text),
         habits: !textKnown || needsLogHabits(text),
-        history: false,
+        history: textKnown && needsLogHistory(text),
         lastTransaction: false,
       };
     }
@@ -75,9 +88,9 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
     case "log": {
       const textKnown = text !== undefined;
       return {
-        memories: false,
+        memories: needsReferencedPromptMemories(text),
         habits: !textKnown || needsLogHabits(text),
-        history: false,
+        history: textKnown && needsLogHistory(text),
         lastTransaction: !textKnown || CORRECTION_RE.test(text),
       };
     }
@@ -88,7 +101,7 @@ export function contextLoadPolicy(profile: ToolProfile, text?: string): ContextL
     case "readCompare":
     case "read":
       return {
-        memories: false,
+        memories: needsReferencedPromptMemories(text),
         habits: false,
         history: needsRecentTurns(text),
         lastTransaction: false,
