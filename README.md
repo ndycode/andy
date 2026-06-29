@@ -7,7 +7,7 @@
 
 text what happened with your money. andy keeps it organized, checks your budgets, tracks your goals, reminds you about recurring bills, and answers questions like "how much did i spend on food?"
 
-## demo
+## preview
 
 https://github.com/user-attachments/assets/04814e9b-0d80-44c1-94f9-233e1d803ebd
 
