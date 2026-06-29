@@ -10,7 +10,7 @@
 
 ## demo
 
-https://github.com/user-attachments/assets/fb070153-7045-4679-99d1-c7f2f81a7d5c
+https://github.com/user-attachments/assets/04814e9b-0d80-44c1-94f9-233e1d803ebd
 
 ## what andy does
 
