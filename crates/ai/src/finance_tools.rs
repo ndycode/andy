@@ -578,10 +578,17 @@ fn remember(
     if content.is_empty() {
         return Ok(json!({ "ok": false, "error": "nothing to remember" }));
     }
+    let kind = memory_kind(args.kind.as_deref());
+    if !should_save_memory(content, kind) {
+        return Ok(json!({
+            "ok": false,
+            "error": "memory must be a durable fact or preference, not a one-off message"
+        }));
+    }
     writes.push(WriteIntent::SaveMemory {
         user_id: ctx.user_id,
         content: content.to_string(),
-        kind: memory_kind(args.kind.as_deref()),
+        kind,
     });
     Ok(json!({ "ok": true, "remembered": content }))
 }
@@ -884,6 +891,66 @@ fn memory_kind(raw: Option<&str>) -> MemoryKind {
     }
 }
 
+fn should_save_memory(content: &str, kind: MemoryKind) -> bool {
+    let normalized = content
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.chars().count() < 6 {
+        return false;
+    }
+    if matches!(
+        normalized.as_str(),
+        "ok" | "okay" | "thanks" | "thank you" | "yes" | "no" | "done"
+    ) {
+        return false;
+    }
+
+    let durable_cues = [
+        "payday",
+        "salary",
+        "sweldo",
+        "prefer",
+        "preference",
+        "usually",
+        "usual",
+        "default",
+        "favorite",
+        "favourite",
+        "address",
+        "home",
+        "office",
+        "work",
+        "birthday",
+        "anniversary",
+        "remind me",
+        "remember that",
+        "my name",
+        "i like",
+        "i love",
+        "i hate",
+    ];
+    if durable_cues.iter().any(|cue| normalized.contains(cue)) {
+        return true;
+    }
+
+    let one_off_cues = [
+        "spent", "bought", "paid", "ordered", "logged", "log ", "grab", "taxi", "lunch", "dinner",
+        "coffee",
+    ];
+    if normalized.chars().any(|ch| ch.is_ascii_digit())
+        && one_off_cues.iter().any(|cue| normalized.contains(cue))
+    {
+        return false;
+    }
+
+    matches!(
+        kind,
+        MemoryKind::Payday | MemoryKind::Preference | MemoryKind::Person | MemoryKind::Goal
+    )
+}
+
 fn tx_kind(raw: Option<&str>) -> TxKind {
     match raw
         .unwrap_or("expense")
@@ -1142,5 +1209,45 @@ mod tests {
 
         assert!(prompt.contains("recent_conversation: user: what do you remember?"));
         assert!(prompt.contains("andy: you prefer short answers"));
+    }
+
+    #[test]
+    fn remember_rejects_one_off_transaction_text() {
+        let snapshot = AgentSnapshot::default();
+        let mut writes = Vec::new();
+        let result = execute_finance_tool(
+            &call(
+                "remember",
+                json!({ "fact": "I bought coffee for 180", "kind": "fact" }),
+            ),
+            &ctx(&snapshot),
+            &mut writes,
+        );
+
+        assert!(result.content.contains("\"ok\":false"));
+        assert!(writes.is_empty());
+    }
+
+    #[test]
+    fn remember_accepts_durable_memory_text() {
+        let snapshot = AgentSnapshot::default();
+        let mut writes = Vec::new();
+        let result = execute_finance_tool(
+            &call(
+                "remember",
+                json!({ "fact": "payday is every Friday", "kind": "payday" }),
+            ),
+            &ctx(&snapshot),
+            &mut writes,
+        );
+
+        assert!(result.content.contains("\"ok\":true"));
+        assert!(matches!(
+            writes[0],
+            WriteIntent::SaveMemory {
+                kind: MemoryKind::Payday,
+                ..
+            }
+        ));
     }
 }

@@ -110,6 +110,12 @@ database integration tests need a real Postgres URL:
 TEST_DATABASE_URL=postgres://... cargo test --workspace --features andy_db/db-integration
 ```
 
+live provider smoke checks are opt-in because they send a real iMessage:
+
+```bash
+ANDY_LIVE_SMOKE_SEND=1 cargo xtask smoke-live
+```
+
 ## status
 
 this is a personal app, not a hosted product. running it live needs the owner's Sendblue account, a database, and optional OpenRouter credentials.

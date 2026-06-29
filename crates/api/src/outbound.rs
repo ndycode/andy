@@ -1,7 +1,14 @@
+use andy_db::{
+    OutboundMessageRow, claim_due_outbound_messages, claim_outbound_by_dedup_key,
+    mark_outbound_failed, mark_outbound_sent,
+};
 use andy_shared::env::Env;
+use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde::Serialize;
+use sqlx::PgPool;
 use thiserror::Error;
+use tracing::error;
 
 const SENDBLUE_BASE: &str = "https://api.sendblue.com/api";
 
@@ -95,5 +102,63 @@ impl SendblueClient {
             status,
             body,
         })
+    }
+}
+
+pub async fn deliver_outbound_by_dedup_key(
+    pool: &PgPool,
+    sendblue: &SendblueClient,
+    dedup_key: &str,
+) -> Result<Option<bool>, sqlx::Error> {
+    let Some(message) = claim_outbound_by_dedup_key(pool, dedup_key).await? else {
+        return Ok(None);
+    };
+    deliver_outbound_message(pool, sendblue, message)
+        .await
+        .map(Some)
+}
+
+pub async fn deliver_due_outbound(
+    pool: &PgPool,
+    sendblue: &SendblueClient,
+    now: DateTime<Utc>,
+    limit: i64,
+) -> Result<(i64, i64), sqlx::Error> {
+    let messages = claim_due_outbound_messages(pool, now, limit).await?;
+    let mut sent = 0;
+    let mut failed = 0;
+    for message in messages {
+        if deliver_outbound_message(pool, sendblue, message).await? {
+            sent += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    Ok((sent, failed))
+}
+
+async fn deliver_outbound_message(
+    pool: &PgPool,
+    sendblue: &SendblueClient,
+    message: OutboundMessageRow,
+) -> Result<bool, sqlx::Error> {
+    match sendblue
+        .send_message(&message.phone, &message.content)
+        .await
+    {
+        Ok(()) => {
+            mark_outbound_sent(pool, message.id).await?;
+            Ok(true)
+        }
+        Err(err) => {
+            error!(
+                event = "sendblue.outbound.error",
+                outbound_id = %message.id,
+                attempt = message.attempt_count,
+                error = %err
+            );
+            mark_outbound_failed(pool, message.id, &err.to_string()).await?;
+            Ok(false)
+        }
     }
 }

@@ -8,6 +8,9 @@ const FLUSH_STATEMENT_TIMEOUT_MS: i64 = 30_000;
 pub const NOTE_MAX: usize = 500;
 pub const NAME_MAX: usize = 100;
 pub const LABEL_MAX: usize = 100;
+pub const OUTBOUND_CONTENT_MAX: usize = 4000;
+pub const PHONE_MAX: usize = 80;
+pub const DEDUP_KEY_MAX: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecurringInput {
@@ -133,6 +136,12 @@ pub enum WriteIntent {
         user_id: Uuid,
         role: MessageRole,
         content: String,
+    },
+    OutboundReply {
+        user_id: Uuid,
+        phone: String,
+        content: String,
+        dedup_key: Option<String>,
     },
     AddRecurring {
         user_id: Uuid,
@@ -455,6 +464,14 @@ async fn apply_write_intent(
             .execute(&mut **tx)
             .await?;
         }
+        WriteIntent::OutboundReply {
+            user_id,
+            phone,
+            content,
+            dedup_key,
+        } => {
+            save_outbound_reply_in_tx(tx, *user_id, phone, content, dedup_key.as_deref()).await?;
+        }
         WriteIntent::AddRecurring { user_id, recurring } => {
             sqlx::query(
                 r#"
@@ -774,6 +791,50 @@ async fn forget_memory_in_tx(
             .execute(&mut **tx)
             .await?;
     }
+    Ok(())
+}
+
+async fn save_outbound_reply_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    phone: &str,
+    content: &str,
+    dedup_key: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let content = truncate(content.trim(), OUTBOUND_CONTENT_MAX);
+    let phone = truncate(phone.trim(), PHONE_MAX);
+    let dedup_key = dedup_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| truncate(value, DEDUP_KEY_MAX));
+    if content.is_empty() || phone.is_empty() {
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"
+        insert into outbound_messages (user_id, phone, content, dedup_key)
+        values ($1, $2, $3, $4)
+        on conflict (dedup_key) where dedup_key is not null do update
+          set phone = excluded.phone,
+              content = excluded.content,
+              status = case
+                when outbound_messages.status = 'sent' then outbound_messages.status
+                else 'pending'
+              end,
+              next_attempt_at = case
+                when outbound_messages.status = 'sent' then outbound_messages.next_attempt_at
+                else now()
+              end,
+              updated_at = now()
+        "#,
+    )
+    .bind(user_id)
+    .bind(phone)
+    .bind(content)
+    .bind(dedup_key)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 

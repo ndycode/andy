@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+use andy_ai::{OpenRouterClient, openrouter::ChatMessage, resolve_model_config};
+use andy_api::outbound::SendblueClient;
+use andy_shared::env::Env;
 use anyhow::{Context, bail};
 use std::{env, process::Stdio};
 use tokio::process::Command;
@@ -9,6 +12,7 @@ async fn main() -> anyhow::Result<()> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("ci") | None => ci().await,
+        Some("smoke-live") => smoke_live().await,
         Some(other) => bail!("unknown xtask command: {other}"),
     }
 }
@@ -43,6 +47,46 @@ async fn ci() -> anyhow::Result<()> {
     }
 
     run("cargo", &["build", "-p", "andy_api", "--bin", "andy_api"]).await?;
+    Ok(())
+}
+
+async fn smoke_live() -> anyhow::Result<()> {
+    let env = Env::from_process()?;
+    if std::env::var("ANDY_LIVE_SMOKE_SEND").as_deref() != Ok("1") {
+        bail!(
+            "ANDY_LIVE_SMOKE_SEND=1 is required because smoke-live sends a real Sendblue message to ALLOWED_PHONE"
+        );
+    }
+
+    let pool = andy_db::connect_pool(&env.database_url)
+        .await
+        .context("connect DATABASE_URL")?;
+    andy_db::migrations::run(&pool)
+        .await
+        .context("run database migrations")?;
+
+    let api_key = env
+        .openrouter_api_key
+        .clone()
+        .context("OPENROUTER_API_KEY is required for smoke-live")?;
+    let model_config = resolve_model_config(env.openrouter_model.as_deref(), None)?;
+    let openrouter = OpenRouterClient::new(api_key, model_config);
+    let model_reply = openrouter
+        .chat(&[
+            ChatMessage::text("system", "Reply with exactly: ok"),
+            ChatMessage::text("user", "live smoke check"),
+        ])
+        .await
+        .context("OpenRouter live smoke failed")?;
+    if !model_reply.trim().eq_ignore_ascii_case("ok") {
+        bail!("OpenRouter smoke returned unexpected reply: {model_reply}");
+    }
+
+    SendblueClient::from_env(&env)
+        .send_message(&env.allowed_phone, "andy live smoke ok")
+        .await
+        .context("Sendblue live smoke failed")?;
+    println!("live smoke passed: database migrated, OpenRouter replied ok, Sendblue sent");
     Ok(())
 }
 

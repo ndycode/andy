@@ -91,6 +91,7 @@ fn instructions(input: &RunAgentInput<'_>) -> String {
          Categories: Food, Transport, Bills, Shopping, Health, Entertainment, Savings/Goals, Income, Other.\n\
          Corrections like 'make that 200' should call editLast; undo/delete should call deleteLast.\n\
          Goal contributions use contributeToGoal, not a generic expense. Recurring reminders do not auto-log.\n\
+         Use remember only for durable facts or preferences, never for ordinary transactions or one-off chat.\n\
          Use listMemory before answering what you remember. Never invent memories; use only the server snapshot and tool results.\n\
          Server snapshot:\n{}",
         input.today,

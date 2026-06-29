@@ -32,11 +32,12 @@ use axum::{
 use chrono::{Datelike, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
+use tracing::error;
 
 use crate::{
     cron::{DailyCheckResult, run_daily_checks},
     inbound::parse_inbound,
-    outbound::SendblueClient,
+    outbound::{SendblueClient, deliver_outbound_by_dedup_key},
 };
 
 const MAX_BODY_BYTES: usize = 16_384;
@@ -277,31 +278,42 @@ async fn handle_inbound(
     })
     .await;
 
-    let (reply, writes) = match agent {
+    let (reply, mut writes) = match agent {
         Ok(output) => (output.reply, output.writes),
         Err(err) => {
             let sendblue = state
                 .sendblue
                 .clone()
                 .unwrap_or_else(|| SendblueClient::from_env(env));
-            let _ = sendblue
+            if let Err(send_err) = sendblue
                 .send_message(&phone, failure_reply(&err.to_string()))
-                .await;
+                .await
+            {
+                error!(event = "sendblue.failure_reply.error", error = %send_err);
+            }
             return Ok(());
         }
     };
+
+    let reply = append_budget_reaction(&pool, user_id, &reply, &writes).await?;
+    let outbound_dedup_key = format!("inbound-reply:{dedup_id}");
+    writes.push(WriteIntent::OutboundReply {
+        user_id,
+        phone: phone.clone(),
+        content: reply,
+        dedup_key: Some(outbound_dedup_key.clone()),
+    });
 
     let flushed = flush_writes(&pool, Some(&dedup_id), &writes).await?;
     if flushed == FlushResult::Superseded {
         return Ok(());
     }
 
-    let reply = append_budget_reaction(&pool, user_id, &reply, &writes).await?;
     let sendblue = state
         .sendblue
         .clone()
         .unwrap_or_else(|| SendblueClient::from_env(env));
-    let _ = sendblue.send_message(&phone, &reply).await;
+    deliver_outbound_by_dedup_key(&pool, &sendblue, &outbound_dedup_key).await?;
     Ok(())
 }
 
@@ -311,14 +323,25 @@ async fn append_budget_reaction(
     reply: &str,
     writes: &[WriteIntent],
 ) -> Result<String, sqlx::Error> {
+    let today = local_date(Utc::now(), default_offset_minutes());
+    let start = today.with_day(1).expect("valid month start");
+    let end = if today.month() == 12 {
+        chrono::NaiveDate::from_ymd_opt(today.year() + 1, 1, 1).expect("valid date")
+    } else {
+        chrono::NaiveDate::from_ymd_opt(today.year(), today.month() + 1, 1).expect("valid date")
+    } - chrono::Duration::days(1);
+
     let mut just_logged = HashMap::new();
     for write in writes {
         if let WriteIntent::Transaction {
             kind: andy_db::writes::TxKind::Expense,
             category,
             amount_centavos,
+            local_date,
             ..
         } = write
+            && *local_date >= start
+            && *local_date <= end
         {
             *just_logged.entry(*category).or_insert(0) += *amount_centavos;
         }
@@ -327,13 +350,6 @@ async fn append_budget_reaction(
         return Ok(reply.to_string());
     }
 
-    let today = local_date(Utc::now(), default_offset_minutes());
-    let start = today.with_day(1).expect("valid month start");
-    let end = if today.month() == 12 {
-        chrono::NaiveDate::from_ymd_opt(today.year() + 1, 1, 1).expect("valid date")
-    } else {
-        chrono::NaiveDate::from_ymd_opt(today.year(), today.month() + 1, 1).expect("valid date")
-    } - chrono::Duration::days(1);
     let categories = just_logged.keys().copied().collect::<Vec<_>>();
     let statuses = budget_statuses_for(pool, user_id, &categories, start, end).await?;
     let shared_statuses = statuses
@@ -341,7 +357,11 @@ async fn append_budget_reaction(
         .map(|status| andy_shared::budget::BudgetSnapshot {
             category: status.category,
             limit: status.limit,
-            spent: status.spent,
+            spent: status.spent
+                + just_logged
+                    .get(&status.category)
+                    .copied()
+                    .unwrap_or_default(),
         })
         .collect::<Vec<_>>();
     let lines = budget_reaction_lines(&shared_statuses, &just_logged);

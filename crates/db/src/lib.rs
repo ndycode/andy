@@ -8,11 +8,12 @@ pub mod writes;
 
 pub use client::{connect_pool, is_pooler_url};
 pub use ops::{
-    InsightSummary, MemoryRow, RecurringRow, add_recurring, claim_reminder, due_recurring_today,
+    InsightSummary, MemoryRow, OutboundMessageRow, RecurringRow, add_recurring,
+    claim_due_outbound_messages, claim_outbound_by_dedup_key, claim_reminder, due_recurring_today,
     find_recurring_by_label, find_recurring_matches, forget_memory, get_insights,
-    has_summary_for_week, learn_habit, list_memories, list_recurring, reap_messages, reap_nudges,
-    reap_processed_messages, reap_summary_runs, recall_memories, reconcile_goal_balances,
-    record_nudge, record_summary, save_memory, top_habits,
+    has_summary_for_week, learn_habit, list_memories, list_recurring, mark_outbound_failed,
+    mark_outbound_sent, reap_messages, reap_nudges, reap_processed_messages, reap_summary_runs,
+    reconcile_goal_balances, record_nudge, record_summary, save_memory, top_habits,
 };
 pub use queries::{
     BudgetStatus, ClaimResult, ConversationTurn, GoalRow, MonthOverview, TransactionRow,
@@ -23,3 +24,6 @@ pub use queries::{
     sum_by_category, sum_spend_between,
 };
 pub use writes::{FlushResult, RecurringInput, WriteIntent, flush_writes};
+
+#[cfg(all(test, feature = "db-integration"))]
+mod integration_tests;

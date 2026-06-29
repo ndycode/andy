@@ -22,7 +22,7 @@ use sqlx::PgPool;
 use tracing::{error, warn};
 use uuid::Uuid;
 
-use crate::outbound::SendblueClient;
+use crate::outbound::{SendblueClient, deliver_due_outbound};
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +36,8 @@ pub struct DailyCheckResult {
     pub reaped_nudges: i64,
     pub reaped_summaries: i64,
     pub degraded: bool,
+    pub outbound_sent: i64,
+    pub outbound_failed: i64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -53,6 +55,12 @@ pub async fn run_daily_checks(
     now: DateTime<Utc>,
 ) -> anyhow::Result<DailyCheckResult> {
     let user_id = resolve_user_id(pool, phone).await?;
+    let (outbound_sent, outbound_failed) = run_step(
+        "cron.outbound.error",
+        || async { Ok(deliver_due_outbound(pool, sendblue, now, 10).await?) },
+        (0, 0),
+    )
+    .await;
 
     let hygiene = run_step(
         "cron.hygiene.error",
@@ -100,6 +108,8 @@ pub async fn run_daily_checks(
         reaped_nudges: hygiene.reaped_nudges,
         reaped_summaries: hygiene.reaped_summaries,
         degraded: hygiene.degraded,
+        outbound_sent,
+        outbound_failed,
     })
 }
 
@@ -350,11 +360,15 @@ mod tests {
             reaped_nudges: 6,
             reaped_summaries: 7,
             degraded: false,
+            outbound_sent: 8,
+            outbound_failed: 9,
         })
         .unwrap();
 
         assert_eq!(value["paceWarnings"], 2);
         assert_eq!(value["goalNudges"], 4);
         assert_eq!(value["recapSent"], true);
+        assert_eq!(value["outboundSent"], 8);
+        assert_eq!(value["outboundFailed"], 9);
     }
 }

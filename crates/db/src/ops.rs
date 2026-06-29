@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::writes::RecurringInput;
+use crate::writes::{DEDUP_KEY_MAX, OUTBOUND_CONTENT_MAX, PHONE_MAX, RecurringInput};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryRow {
@@ -27,6 +27,15 @@ pub struct RecurringRow {
     pub day_of_month: Option<i64>,
     pub day_of_week: Option<i64>,
     pub last_reminded_date: Option<NaiveDate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutboundMessageRow {
+    pub id: Uuid,
+    pub phone: String,
+    pub content: String,
+    pub dedup_key: Option<String>,
+    pub attempt_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,44 +109,6 @@ pub async fn save_memory(
     Ok(())
 }
 
-pub async fn recall_memories(
-    pool: &PgPool,
-    user_id: Uuid,
-    limit: i64,
-    query: &str,
-) -> Result<Vec<String>, sqlx::Error> {
-    let fetch_limit = (limit * 8).clamp(60, 200);
-    let rows = sqlx::query(
-        r#"
-        select content, kind::text as kind
-        from memories
-        where user_id = $1
-        order by case kind
-          when 'payday' then 0
-          when 'fact' then 1
-          when 'preference' then 1
-          when 'goal' then 2
-          else 3 end,
-          created_at desc
-        limit $2
-        "#,
-    )
-    .bind(user_id)
-    .bind(fetch_limit)
-    .fetch_all(pool)
-    .await?;
-    let rows = rows
-        .into_iter()
-        .map(|row| {
-            Ok((
-                row.try_get::<String, _>("content")?,
-                row.try_get::<String, _>("kind")?,
-            ))
-        })
-        .collect::<Result<Vec<_>, sqlx::Error>>()?;
-    Ok(select_prompt_memories(&rows, limit as usize, query))
-}
-
 pub async fn list_memories(
     pool: &PgPool,
     user_id: Uuid,
@@ -165,6 +136,103 @@ pub async fn list_memories(
             })
         })
         .collect()
+}
+
+pub async fn claim_outbound_by_dedup_key(
+    pool: &PgPool,
+    dedup_key: &str,
+) -> Result<Option<OutboundMessageRow>, sqlx::Error> {
+    let dedup_key = truncate(dedup_key.trim(), DEDUP_KEY_MAX);
+    if dedup_key.is_empty() {
+        return Ok(None);
+    }
+
+    sqlx::query(
+        r#"
+        update outbound_messages
+        set status = 'sending',
+            attempt_count = attempt_count + 1,
+            updated_at = now()
+        where dedup_key = $1
+          and (
+            (status = 'pending' and next_attempt_at <= now())
+            or (status = 'sending' and updated_at <= now() - interval '15 minutes')
+          )
+        returning id, phone, content, dedup_key, attempt_count
+        "#,
+    )
+    .bind(dedup_key)
+    .fetch_optional(pool)
+    .await?
+    .map(outbound_from_row)
+    .transpose()
+}
+
+pub async fn claim_due_outbound_messages(
+    pool: &PgPool,
+    now: DateTime<Utc>,
+    limit: i64,
+) -> Result<Vec<OutboundMessageRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"
+        with claimed as (
+          select id
+          from outbound_messages
+          where (status = 'pending' and next_attempt_at <= $1)
+             or (status = 'sending' and updated_at <= $1 - interval '15 minutes')
+          order by created_at asc
+          limit $2
+          for update skip locked
+        )
+        update outbound_messages outbound
+        set status = 'sending',
+            attempt_count = outbound.attempt_count + 1,
+            updated_at = now()
+        from claimed
+        where outbound.id = claimed.id
+        returning outbound.id, outbound.phone, outbound.content, outbound.dedup_key, outbound.attempt_count
+        "#,
+    )
+    .bind(now)
+    .bind(limit.clamp(1, 50))
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(outbound_from_row).collect()
+}
+
+pub async fn mark_outbound_sent(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        update outbound_messages
+        set status = 'sent',
+            sent_at = now(),
+            updated_at = now(),
+            last_error = null
+        where id = $1
+        "#,
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn mark_outbound_failed(pool: &PgPool, id: Uuid, error: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        update outbound_messages
+        set status = 'pending',
+            last_error = $2,
+            next_attempt_at = now() + make_interval(secs => least(3600, greatest(30, attempt_count * 30))),
+            updated_at = now()
+        where id = $1 and status = 'sending'
+        "#,
+    )
+    .bind(id)
+    .bind(truncate(error, OUTBOUND_CONTENT_MAX))
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn forget_memory(
@@ -620,6 +688,19 @@ fn recurring_from_row(row: sqlx::postgres::PgRow) -> Result<RecurringRow, sqlx::
     })
 }
 
+fn outbound_from_row(row: sqlx::postgres::PgRow) -> Result<OutboundMessageRow, sqlx::Error> {
+    Ok(OutboundMessageRow {
+        id: row.try_get("id")?,
+        phone: truncate(row.try_get::<String, _>("phone")?.trim(), PHONE_MAX),
+        content: truncate(
+            row.try_get::<String, _>("content")?.trim(),
+            OUTBOUND_CONTENT_MAX,
+        ),
+        dedup_key: row.try_get("dedup_key")?,
+        attempt_count: i64::from(row.try_get::<i32, _>("attempt_count")?),
+    })
+}
+
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
@@ -648,114 +729,6 @@ fn memory_kind_rank(kind: &str) -> i64 {
         "goal" => 2,
         _ => 3,
     }
-}
-
-fn select_prompt_memories(rows: &[(String, String)], limit: usize, query: &str) -> Vec<String> {
-    let query_tokens = keywords(query);
-    let mut seen = std::collections::HashSet::new();
-    let mut ranked = rows
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (content, kind))| {
-            let key = compact_memory_content(content);
-            if !seen.insert(key) {
-                return None;
-            }
-            let relevance = relevance_score(content, &query_tokens);
-            Some((content.clone(), kind.clone(), relevance, index))
-        })
-        .collect::<Vec<_>>();
-    ranked.sort_by_key(|(_, kind, relevance, index)| {
-        (
-            std::cmp::Reverse(*relevance),
-            memory_kind_rank(kind),
-            *index,
-        )
-    });
-    if !query_tokens.is_empty() {
-        let relevant = ranked
-            .iter()
-            .filter(|(_, _, relevance, _)| *relevance > 0)
-            .take(limit)
-            .map(|(content, _, _, _)| content.clone())
-            .collect::<Vec<_>>();
-        if !relevant.is_empty() || is_focused_memory_query(query) {
-            return relevant;
-        }
-    }
-    ranked
-        .into_iter()
-        .take(limit)
-        .map(|(content, _, _, _)| content)
-        .collect()
-}
-
-fn relevance_score(content: &str, query_tokens: &[String]) -> i64 {
-    let content_tokens = keywords(content)
-        .into_iter()
-        .collect::<std::collections::HashSet<_>>();
-    query_tokens
-        .iter()
-        .filter(|token| content_tokens.contains(*token))
-        .count() as i64
-        * 2
-}
-
-fn is_focused_memory_query(query: &str) -> bool {
-    let lower = query.to_ascii_lowercase();
-    [
-        "remember",
-        "told you",
-        "you know",
-        "usual",
-        "default",
-        "favorite",
-        "favourite",
-        "go-to",
-        "prefer",
-        "like",
-        "love",
-        "hate",
-        "payday",
-        "salary",
-        "sweldo",
-        "address",
-        "home",
-        "office",
-        "live",
-        "work",
-        "location",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-}
-
-fn keywords(value: &str) -> Vec<String> {
-    const STOPWORDS: &[&str] = &[
-        "about", "also", "andy", "are", "can", "did", "does", "for", "have", "how", "into", "know",
-        "like", "list", "make", "much", "now", "please", "remember", "show", "tell", "that", "the",
-        "this", "til", "today", "what", "when", "where", "which", "who", "why", "with", "you",
-    ];
-    let mut tokens = value
-        .to_ascii_lowercase()
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|token| token.len() >= 3 && !STOPWORDS.contains(token))
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let base = tokens.clone();
-    for token in base {
-        match token.as_str() {
-            "boba" => tokens.push("milktea".into()),
-            "paid" | "pay" | "paycheck" | "salary" | "sweldo" => {
-                tokens.push("payday".into());
-                tokens.push("salary".into());
-            }
-            _ => {}
-        }
-    }
-    tokens.sort();
-    tokens.dedup();
-    tokens
 }
 
 fn note_keywords(note: &str) -> Vec<String> {
@@ -807,19 +780,6 @@ fn escape_like(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn memory_selection_dedupes_and_filters_relevant_rows() {
-        let rows = vec![
-            ("I like milk tea".to_string(), "preference".to_string()),
-            ("i like milktea".to_string(), "fact".to_string()),
-            ("Payday is Friday".to_string(), "payday".to_string()),
-        ];
-        assert_eq!(
-            select_prompt_memories(&rows, 2, "when is sweldo"),
-            vec!["Payday is Friday".to_string()]
-        );
-    }
 
     #[test]
     fn note_keywords_are_lowercase_deduped() {
