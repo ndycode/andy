@@ -10,7 +10,11 @@
 
 ## demo
 
-<img src="./public/demo/messages-poster.jpg" alt="andy iMessage demo preview" width="360">
+<a href="./public/demo/demo.mp4">
+  <img src="./public/demo/demo-poster.jpg" alt="play andy demo video" width="360">
+</a>
+
+[play demo.mp4](./public/demo/demo.mp4)
 
 ## what andy does
 
