@@ -1,5 +1,5 @@
 use andy_db::{
-    GoalRow, RecurringRow, TransactionRow,
+    ConversationTurn, GoalRow, RecurringRow, TransactionRow,
     writes::{Cadence, MemoryKind, MessageRole, RecurringInput, TxKind, WriteIntent},
 };
 use andy_shared::{
@@ -21,6 +21,7 @@ pub struct AgentSnapshot {
     pub goals: Vec<GoalRow>,
     pub recurring: Vec<RecurringRow>,
     pub memories: Vec<String>,
+    pub recent_turns: Vec<ConversationTurn>,
 }
 
 #[derive(Debug)]
@@ -275,7 +276,36 @@ pub fn snapshot_prompt(snapshot: &AgentSnapshot) -> String {
     } else {
         format!("memories: {}", snapshot.memories.join("; "))
     };
-    [last, goals, recurring, memories].join("\n")
+    let recent = if snapshot.recent_turns.is_empty() {
+        "recent_conversation: none".to_string()
+    } else {
+        format!(
+            "recent_conversation: {}",
+            snapshot
+                .recent_turns
+                .iter()
+                .map(|turn| {
+                    let role = match turn.role.as_str() {
+                        "assistant" => "andy",
+                        "user" => "user",
+                        other => other,
+                    };
+                    format!("{role}: {}", clipped_one_line(&turn.content, 280))
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
+        )
+    };
+    [last, goals, recurring, memories, recent].join("\n")
+}
+
+fn clipped_one_line(value: &str, max_chars: usize) -> String {
+    let one_line = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut clipped = one_line.chars().take(max_chars).collect::<String>();
+    if one_line.chars().count() > max_chars {
+        clipped.push_str("...");
+    }
+    clipped
 }
 
 #[must_use]
@@ -294,63 +324,6 @@ pub fn save_assistant_turn(user_id: Uuid, content: impl Into<String>) -> WriteIn
         role: MessageRole::Assistant,
         content: content.into(),
     }
-}
-
-#[must_use]
-pub fn synthesize_reply(writes: &[WriteIntent]) -> String {
-    for write in writes.iter().rev() {
-        match write {
-            WriteIntent::Transaction {
-                kind: TxKind::Income,
-                amount_centavos,
-                ..
-            } => return format!("logged income {}.", format_php(*amount_centavos)),
-            WriteIntent::Transaction {
-                kind: TxKind::Expense,
-                amount_centavos,
-                category,
-                ..
-            } => return format!("logged {} in {}.", format_php(*amount_centavos), category),
-            WriteIntent::GoalContribution {
-                amount_centavos, ..
-            } => return format!("added {} to the goal.", format_php(*amount_centavos)),
-            WriteIntent::CreateGoal {
-                name,
-                target_centavos,
-                ..
-            } => return format!("created goal {name} for {}.", format_php(*target_centavos)),
-            WriteIntent::SetBudget {
-                category,
-                monthly_limit_centavos,
-                ..
-            } => {
-                return format!(
-                    "set {category} budget to {}.",
-                    format_php(*monthly_limit_centavos)
-                );
-            }
-            WriteIntent::RemoveBudget { category, .. } => {
-                return format!("removed {category} budget.");
-            }
-            WriteIntent::SaveMemory { .. } => return "remembered.".to_string(),
-            WriteIntent::ForgetMemory { .. } => return "forgot it.".to_string(),
-            WriteIntent::AddRecurring { recurring, .. } => {
-                return format!("added recurring reminder {}.", recurring.label);
-            }
-            WriteIntent::RemoveRecurring { .. } => {
-                return "removed that recurring reminder.".to_string();
-            }
-            WriteIntent::EditLast { .. } => return "updated the last transaction.".to_string(),
-            WriteIntent::DeleteLast { .. } => return "deleted the last transaction.".to_string(),
-            WriteIntent::EditGoal { .. } => return "updated that goal.".to_string(),
-            WriteIntent::DeleteGoal { .. } => return "deleted that goal.".to_string(),
-            WriteIntent::EditRecurring { .. } => {
-                return "updated that recurring reminder.".to_string();
-            }
-            WriteIntent::SaveTurn { .. } => {}
-        }
-    }
-    "done.".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1147,5 +1120,27 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn snapshot_prompt_includes_recent_saved_turns() {
+        let snapshot = AgentSnapshot {
+            recent_turns: vec![
+                ConversationTurn {
+                    role: "user".into(),
+                    content: "what do you remember?".into(),
+                },
+                ConversationTurn {
+                    role: "assistant".into(),
+                    content: "you prefer short answers".into(),
+                },
+            ],
+            ..AgentSnapshot::default()
+        };
+
+        let prompt = snapshot_prompt(&snapshot);
+
+        assert!(prompt.contains("recent_conversation: user: what do you remember?"));
+        assert!(prompt.contains("andy: you prefer short answers"));
     }
 }

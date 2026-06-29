@@ -433,29 +433,10 @@ async fn apply_write_intent(
             content,
             kind,
         } => {
-            sqlx::query(
-                r#"
-                insert into memories (user_id, content, kind)
-                values ($1, $2, $3::memory_kind)
-                "#,
-            )
-            .bind(user_id)
-            .bind(truncate(content.trim(), 4000))
-            .bind(kind.as_db())
-            .execute(&mut **tx)
-            .await?;
+            save_memory_in_tx(tx, *user_id, content, *kind).await?;
         }
         WriteIntent::ForgetMemory { user_id, query } => {
-            sqlx::query(
-                r#"
-                delete from memories
-                where user_id = $1 and lower(content) = lower($2)
-                "#,
-            )
-            .bind(user_id)
-            .bind(query.trim())
-            .execute(&mut **tx)
-            .await?;
+            forget_memory_in_tx(tx, *user_id, query).await?;
         }
         WriteIntent::SaveTurn {
             user_id,
@@ -668,6 +649,134 @@ async fn edit_transaction(
     Ok(())
 }
 
+async fn save_memory_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    content: &str,
+    kind: MemoryKind,
+) -> Result<(), sqlx::Error> {
+    let trimmed = truncate(content.trim(), 4000);
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let normalized = normalize_memory_content(&trimmed);
+    let compact = compact_memory_content(&trimmed);
+    if compact.is_empty() {
+        return Ok(());
+    }
+
+    let existing = sqlx::query(
+        r#"
+        select id, kind::text as kind
+        from memories
+        where user_id = $1
+          and (
+            lower(btrim(regexp_replace(content, '[^[:alnum:]]+', ' ', 'g'))) = $2
+            or regexp_replace(lower(btrim(regexp_replace(content, '[^[:alnum:]]+', ' ', 'g'))), '\s+', '', 'g') = $3
+          )
+        order by created_at desc
+        limit 1
+        "#,
+    )
+    .bind(user_id)
+    .bind(&normalized)
+    .bind(&compact)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    if let Some(existing) = existing {
+        let id: Uuid = existing.try_get("id")?;
+        let current_kind: String = existing.try_get("kind")?;
+        if should_promote_memory_kind(&current_kind, kind.as_db()) {
+            sqlx::query(
+                "update memories set kind = $3::memory_kind where id = $1 and user_id = $2",
+            )
+            .bind(id)
+            .bind(user_id)
+            .bind(kind.as_db())
+            .execute(&mut **tx)
+            .await?;
+        }
+        return Ok(());
+    }
+
+    sqlx::query("insert into memories (user_id, content, kind) values ($1, $2, $3::memory_kind)")
+        .bind(user_id)
+        .bind(trimmed)
+        .bind(kind.as_db())
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+async fn forget_memory_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    query: &str,
+) -> Result<(), sqlx::Error> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(());
+    }
+    let normalized = normalize_memory_content(query);
+    let compact = compact_memory_content(query);
+    if compact.is_empty() {
+        return Ok(());
+    }
+
+    let exact = sqlx::query(
+        r#"
+        select id
+        from memories
+        where user_id = $1
+          and (
+            lower(btrim(regexp_replace(content, '[^[:alnum:]]+', ' ', 'g'))) = $2
+            or regexp_replace(lower(btrim(regexp_replace(content, '[^[:alnum:]]+', ' ', 'g'))), '\s+', '', 'g') = $3
+          )
+        order by created_at desc
+        limit 1
+        "#,
+    )
+    .bind(user_id)
+    .bind(&normalized)
+    .bind(&compact)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    let hit = if exact.is_some() {
+        exact
+    } else {
+        sqlx::query(
+            r#"
+            select id
+            from memories
+            where user_id = $1
+              and (
+                lower(btrim(regexp_replace(content, '[^[:alnum:]]+', ' ', 'g'))) like $2 escape '\'
+                or regexp_replace(lower(btrim(regexp_replace(content, '[^[:alnum:]]+', ' ', 'g'))), '\s+', '', 'g') like $3 escape '\'
+              )
+            order by created_at desc
+            limit 1
+            "#,
+        )
+        .bind(user_id)
+        .bind(format!("%{}%", escape_like(&normalized)))
+        .bind(format!("%{}%", escape_like(&compact)))
+        .fetch_optional(&mut **tx)
+        .await?
+    };
+
+    if let Some(hit) = hit {
+        let id: Uuid = hit.try_get("id")?;
+        sqlx::query("delete from memories where id = $1 and user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
+}
+
 async fn recurring_target_id(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
@@ -722,9 +831,55 @@ fn truncate_note(value: &str) -> String {
     truncate(value, NOTE_MAX)
 }
 
+fn normalize_memory_content(content: &str) -> String {
+    content
+        .to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn compact_memory_content(content: &str) -> String {
+    normalize_memory_content(content).replace(' ', "")
+}
+
+fn should_promote_memory_kind(current: &str, next: &str) -> bool {
+    memory_kind_rank(next) < memory_kind_rank(current)
+}
+
+fn memory_kind_rank(kind: &str) -> i64 {
+    match kind {
+        "payday" => 0,
+        "fact" | "preference" => 1,
+        "goal" => 2,
+        _ => 3,
+    }
+}
+
 fn escape_like(value: &str) -> String {
     value
         .replace('\\', r"\\")
         .replace('%', r"\%")
         .replace('_', r"\_")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_normalization_matches_punctuated_duplicates() {
+        assert_eq!(
+            normalize_memory_content("  Payday: every Friday! "),
+            "payday every friday"
+        );
+        assert_eq!(compact_memory_content("Pay day"), "payday");
+    }
+
+    #[test]
+    fn memory_kind_promotion_keeps_stronger_kind() {
+        assert!(should_promote_memory_kind("other", "payday"));
+        assert!(!should_promote_memory_kind("payday", "fact"));
+    }
 }

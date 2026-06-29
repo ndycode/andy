@@ -9,7 +9,8 @@ use andy_ai::{
 };
 use andy_db::{
     ClaimResult, FlushResult, WriteIntent, budget_statuses_for, claim_slot, connect_pool,
-    flush_writes, last_transaction, list_goals, list_recurring, recall_memories, resolve_user_id,
+    flush_writes, last_transaction, list_goals, list_memories, list_recurring, recent_turns,
+    resolve_user_id,
 };
 use andy_shared::{
     allowlist::is_allowed,
@@ -248,12 +249,17 @@ async fn handle_inbound(
     }
 
     let user_id = resolve_user_id(&pool, &phone).await?;
-    let (last_transaction, goals, recurring, memories) = tokio::try_join!(
+    let (last_transaction, goals, recurring, memory_rows, recent_turns) = tokio::try_join!(
         last_transaction(&pool, user_id),
         list_goals(&pool, user_id),
         list_recurring(&pool, user_id),
-        recall_memories(&pool, user_id, 8, &text),
+        list_memories(&pool, user_id, 50),
+        recent_turns(&pool, user_id, 12),
     )?;
+    let memories = memory_rows
+        .into_iter()
+        .map(|row| row.content)
+        .collect::<Vec<_>>();
     let today = local_date(Utc::now(), default_offset_minutes());
     let agent = run_agent(RunAgentInput {
         text: &text,
@@ -266,6 +272,7 @@ async fn handle_inbound(
             goals,
             recurring,
             memories,
+            recent_turns,
         },
     })
     .await;

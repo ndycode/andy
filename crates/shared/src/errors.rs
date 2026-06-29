@@ -1,6 +1,9 @@
 #[must_use]
 pub fn failure_reply(message: &str) -> &'static str {
     let msg = message.to_ascii_lowercase();
+    if msg.contains("not configured") || msg.contains("scripted backup") {
+        return "i can't answer from memory yet because the model is not configured.";
+    }
     if msg.contains("402")
         || msg.contains("payment required")
         || msg.contains("insufficient")
@@ -29,6 +32,7 @@ mod tests {
     fn maps_failures_to_user_copy() {
         assert!(failure_reply("402 payment required").contains("out of credits"));
         assert!(failure_reply("429 rate limit").contains("too many"));
+        assert!(failure_reply("model not configured").contains("not configured"));
         assert!(failure_reply("boom").contains("something went wrong"));
     }
 }
