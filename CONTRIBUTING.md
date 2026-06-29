@@ -1,40 +1,38 @@
 # contributing
 
-thanks for the interest. andy is a personal, single-user showcase, so the scope is narrow. bug reports, questions, and small PRs are welcome. hosted-product and multi-tenant changes are out of scope.
+andy is a personal, single-user showcase, so the scope is narrow. bug reports, questions, and small PRs are welcome. hosted-product and multi-tenant changes are out of scope.
 
 if the change is large, open an issue first so the scope is clear.
 
 ## what you need
 
-- [Bun](https://bun.sh) `1.3.14`, pinned in `package.json`
-- [Docker](https://www.docker.com/), only for `bun run ci:local` and real Postgres integration tests
+- Rust stable, pinned by `rust-toolchain.toml`
+- Postgres only for DB integration tests
 
-you do not need Sendblue, OpenRouter, or a live database for typecheck, lint, build, or the unit suite.
+you do not need Sendblue, OpenRouter, or a live database for format, clippy, build, or the unit suite.
 
 ## dev loop
 
 ```bash
-bun install
-
-bun run typecheck      # tsc --noEmit across every package, api, and scripts
-bun run lint           # Biome
-bun run lint:fix       # safe lint and format fixes
-bun run lint:no-excuse # custom repo safety lint
-bun test               # 600+ tests, DB integration gated by TEST_DATABASE_URL
-bun run build          # production Vercel Build Output API bundle
-
-bun run ci:local       # full gate with ephemeral Postgres, needs Docker
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo xtask ci
 ```
 
-`bun run ci:local` mirrors `.github/workflows/ci.yml`. run it before a PR when Docker is available.
+DB integration tests are gated by `TEST_DATABASE_URL`:
+
+```bash
+TEST_DATABASE_URL=postgres://... cargo test --workspace --features andy_db/db-integration
+```
 
 ## code style
 
-- **formatting:** Biome owns it. double quotes, semicolons, 2-space indent, 100-column width. run `bun run lint:fix`.
-- **TypeScript:** strict mode, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`. no `any`, no casual non-null assertions, no unsafe casts at trust boundaries.
-- **no-excuse lint:** empty catches, swallowed errors, unexplained magic literals, and stray non-null assertions get blocked. if a bypass is truly needed, use `// no-excuse-ok: <rule>` with the reason.
-- **tests:** behavior first. new behavior gets a test. bug fixes get a regression test. DB integration lives in `*.integration.test.ts` and runs only with `TEST_DATABASE_URL`.
-- **package graph:** keep it layered. `@repo/shared` has no internal deps. `@repo/db` can use shared. `@repo/ai` can use db and shared. `apps/api` sits at the edge.
+- **formatting:** rustfmt owns it. run `cargo fmt --all`.
+- **linting:** clippy runs with `-D warnings`.
+- **unsafe:** runtime crates deny unsafe code.
+- **tests:** behavior first. new behavior gets a test. bug fixes get a regression test. DB integration tests require `TEST_DATABASE_URL`.
+- **crate graph:** keep it layered. `andy_shared` has no internal deps. `andy_db` can use shared. `andy_ai` can use db and shared. `andy_api` sits at the edge.
 
 ## invariants
 
@@ -44,17 +42,11 @@ these correctness rules matter most.
 - **one message logs once.** the claim/flush marker is the source of truth for redelivery. true duplicate, skip. stale crash marker, retry safely.
 - **no DB connection across the model call.** claim, release, run model, flush. do not pin a backend while waiting on OpenRouter.
 - **corrections target the just-logged row.** "make that 200" must not edit some old transaction by accident.
-- **answers come from tools.** money questions use SQL-backed reads. no chat-history guessing.
+- **answers come from tools or SQL.** no chat-history guessing for money facts.
 
 ## migrations
 
-schema changes use Drizzle.
-
-```bash
-bun run --filter @repo/db db:generate
-```
-
-review the SQL before committing it. Postgres enum changes are a footgun: adding a label and using it in the same migration file can fail because the migrator wraps the file in one transaction. add the enum value in one migration, reference it in a later one.
+schema history remains in `packages/db/migrations`. review SQL before committing it. Postgres enum changes are a footgun: adding a label and using it in the same migration file can fail because the migrator wraps the file in one transaction. add the enum value in one migration, reference it in a later one.
 
 ## commits and PRs
 

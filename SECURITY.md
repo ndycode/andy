@@ -21,7 +21,7 @@ include what happened, affected paths, reproduction steps or proof of concept, a
 
 never paste real secrets into issues, PRs, screenshots, or reports. `.env`, `.env.local`, and `.env.*` stay ignored. only `.env.example` belongs in git.
 
-secret handling lives in `packages/shared/src/env.ts`. inbound Sendblue webhooks use a self-minted URL token with constant-time compare. cron uses `CRON_SECRET` as a bearer token.
+secret handling lives in `crates/shared/src/env.rs`. inbound Sendblue webhooks use a self-minted URL token with constant-time compare. cron uses `CRON_SECRET` as a bearer token.
 
 ## in scope
 

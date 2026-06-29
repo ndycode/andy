@@ -1,0 +1,470 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+use andy_ai::{
+    AgentSnapshot, OpenRouterClient, RunAgentInput, model::resolve_model_config, run_agent,
+};
+use andy_db::{
+    ClaimResult, FlushResult, WriteIntent, budget_statuses_for, claim_slot, connect_pool,
+    flush_writes, last_transaction, list_goals, list_recurring, recall_memories, resolve_user_id,
+};
+use andy_shared::{
+    allowlist::is_allowed,
+    budget::budget_reaction_lines,
+    dedup::content_dedup_key,
+    env::Env,
+    errors::failure_reply,
+    security::constant_time_equal,
+    time::{app_timezone, default_offset_minutes, local_date},
+};
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    extract::State,
+    http::{HeaderMap, Request, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use chrono::{Datelike, Utc};
+use serde::Serialize;
+use sqlx::PgPool;
+
+use crate::{
+    cron::{DailyCheckResult, run_daily_checks},
+    inbound::parse_inbound,
+    outbound::SendblueClient,
+};
+
+const MAX_BODY_BYTES: usize = 16_384;
+const INBOUND_BURST_MAX: usize = 60;
+const INBOUND_BURST_WINDOW: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+pub struct AppState {
+    pub env: Option<Env>,
+    pub pool: Option<PgPool>,
+    pub sendblue: Option<SendblueClient>,
+    pub openrouter: Option<OpenRouterClient>,
+    burst: Arc<Mutex<VecDeque<Instant>>>,
+}
+
+impl AppState {
+    #[must_use]
+    pub fn test() -> Self {
+        Self {
+            env: None,
+            pool: None,
+            sendblue: None,
+            openrouter: None,
+            burst: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    pub async fn from_env() -> Result<Self, anyhow::Error> {
+        let env = Env::from_process()?;
+        let pool = connect_pool(&env.database_url).await?;
+        let model_config = resolve_model_config(env.openrouter_model.as_deref(), None)?;
+        let openrouter = env
+            .openrouter_api_key
+            .clone()
+            .map(|api_key| OpenRouterClient::new(api_key, model_config));
+        let sendblue = SendblueClient::from_env(&env);
+        Ok(Self {
+            env: Some(env),
+            pool: Some(pool),
+            sendblue: Some(sendblue),
+            openrouter,
+            burst: Arc::new(Mutex::new(VecDeque::new())),
+        })
+    }
+
+    #[must_use]
+    pub fn production_lazy() -> Self {
+        Self::test()
+    }
+}
+
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/webhooks/sendblue", post(sendblue_webhook))
+        .route("/api/cron/daily", get(daily_cron))
+        .with_state(state)
+}
+
+#[derive(Debug, Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    service: &'static str,
+}
+
+async fn health() -> impl IntoResponse {
+    axum::Json(HealthResponse {
+        status: "ok",
+        service: "andy",
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct OkResponse {
+    ok: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct CronOkResponse {
+    ok: bool,
+    #[serde(flatten)]
+    result: DailyCheckResult,
+}
+
+async fn sendblue_webhook(
+    State(state): State<AppState>,
+    request: Request<Body>,
+) -> Result<Response, StatusCode> {
+    let (parts, body) = request.into_parts();
+    if declared_content_length_too_large(&parts.headers) {
+        return Ok(json_status(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            OkResponse { ok: false },
+        ));
+    }
+
+    let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
+        Ok(env) => env,
+        Err(_) => {
+            return Ok(json_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                OkResponse { ok: false },
+            ));
+        }
+    };
+
+    let token = query_param(parts.uri.query(), "t");
+    if !valid_secret(token.as_deref(), &env.webhook_url_token) {
+        return Ok(json_status(
+            StatusCode::UNAUTHORIZED,
+            OkResponse { ok: false },
+        ));
+    }
+
+    let raw = to_bytes(body, MAX_BODY_BYTES + 1)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    if raw.len() > MAX_BODY_BYTES {
+        return Ok(json_status(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            OkResponse { ok: false },
+        ));
+    }
+
+    let Some(msg) = parse_inbound(&raw) else {
+        return Ok(json_status(
+            StatusCode::UNAUTHORIZED,
+            OkResponse { ok: false },
+        ));
+    };
+
+    if !allow_burst(&state) {
+        return Ok(json_status(
+            StatusCode::TOO_MANY_REQUESTS,
+            OkResponse { ok: false },
+        ));
+    }
+
+    handle_inbound(&state, &env, msg.phone, msg.text, msg.message_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(json_status(StatusCode::OK, OkResponse { ok: true }))
+}
+
+async fn daily_cron(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
+        Ok(env) => env,
+        Err(_) => {
+            return Ok(json_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                OkResponse { ok: false },
+            ));
+        }
+    };
+    let auth = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok());
+    if !constant_time_equal(
+        auth.unwrap_or_default(),
+        &format!("Bearer {}", env.cron_secret),
+    ) {
+        return Ok(json_status(
+            StatusCode::UNAUTHORIZED,
+            OkResponse { ok: false },
+        ));
+    }
+    let pool = if let Some(pool) = state.pool.clone() {
+        pool
+    } else {
+        connect_pool(&env.database_url)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    };
+    let sendblue = state
+        .sendblue
+        .clone()
+        .unwrap_or_else(|| SendblueClient::from_env(&env));
+    let result = run_daily_checks(&pool, &sendblue, &env.allowed_phone, Utc::now())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(json_status(
+        StatusCode::OK,
+        CronOkResponse { ok: true, result },
+    ))
+}
+
+async fn handle_inbound(
+    state: &AppState,
+    env: &Env,
+    phone: String,
+    text: String,
+    message_id: Option<String>,
+) -> Result<(), anyhow::Error> {
+    if !is_allowed(&phone, &env.allowed_phone) {
+        return Ok(());
+    }
+    let pool = if let Some(pool) = state.pool.clone() {
+        pool
+    } else {
+        connect_pool(&env.database_url).await?
+    };
+    let dedup_id = message_id
+        .clone()
+        .unwrap_or_else(|| content_dedup_key(&phone, &text, Utc::now()));
+    if claim_slot(&pool, &dedup_id, Utc::now()).await? == ClaimResult::Skip {
+        return Ok(());
+    }
+
+    let user_id = resolve_user_id(&pool, &phone).await?;
+    let (last_transaction, goals, recurring, memories) = tokio::try_join!(
+        last_transaction(&pool, user_id),
+        list_goals(&pool, user_id),
+        list_recurring(&pool, user_id),
+        recall_memories(&pool, user_id, 8, &text),
+    )?;
+    let today = local_date(Utc::now(), default_offset_minutes());
+    let agent = run_agent(RunAgentInput {
+        text: &text,
+        user_id,
+        timezone: &app_timezone(),
+        today,
+        model: state.openrouter.as_ref(),
+        snapshot: AgentSnapshot {
+            last_transaction,
+            goals,
+            recurring,
+            memories,
+        },
+    })
+    .await;
+
+    let (reply, writes) = match agent {
+        Ok(output) => (output.reply, output.writes),
+        Err(err) => {
+            let sendblue = state
+                .sendblue
+                .clone()
+                .unwrap_or_else(|| SendblueClient::from_env(env));
+            let _ = sendblue
+                .send_message(&phone, failure_reply(&err.to_string()))
+                .await;
+            return Ok(());
+        }
+    };
+
+    let flushed = flush_writes(&pool, Some(&dedup_id), &writes).await?;
+    if flushed == FlushResult::Superseded {
+        return Ok(());
+    }
+
+    let reply = append_budget_reaction(&pool, user_id, &reply, &writes).await?;
+    let sendblue = state
+        .sendblue
+        .clone()
+        .unwrap_or_else(|| SendblueClient::from_env(env));
+    let _ = sendblue.send_message(&phone, &reply).await;
+    Ok(())
+}
+
+async fn append_budget_reaction(
+    pool: &PgPool,
+    user_id: uuid::Uuid,
+    reply: &str,
+    writes: &[WriteIntent],
+) -> Result<String, sqlx::Error> {
+    let mut just_logged = HashMap::new();
+    for write in writes {
+        if let WriteIntent::Transaction {
+            kind: andy_db::writes::TxKind::Expense,
+            category,
+            amount_centavos,
+            ..
+        } = write
+        {
+            *just_logged.entry(*category).or_insert(0) += *amount_centavos;
+        }
+    }
+    if just_logged.is_empty() {
+        return Ok(reply.to_string());
+    }
+
+    let today = local_date(Utc::now(), default_offset_minutes());
+    let start = today.with_day(1).expect("valid month start");
+    let end = if today.month() == 12 {
+        chrono::NaiveDate::from_ymd_opt(today.year() + 1, 1, 1).expect("valid date")
+    } else {
+        chrono::NaiveDate::from_ymd_opt(today.year(), today.month() + 1, 1).expect("valid date")
+    } - chrono::Duration::days(1);
+    let categories = just_logged.keys().copied().collect::<Vec<_>>();
+    let statuses = budget_statuses_for(pool, user_id, &categories, start, end).await?;
+    let shared_statuses = statuses
+        .into_iter()
+        .map(|status| andy_shared::budget::BudgetSnapshot {
+            category: status.category,
+            limit: status.limit,
+            spent: status.spent,
+        })
+        .collect::<Vec<_>>();
+    let lines = budget_reaction_lines(&shared_statuses, &just_logged);
+    if lines.is_empty() {
+        Ok(reply.to_string())
+    } else {
+        Ok(format!("{reply}\n\n{}", lines.join("\n")))
+    }
+}
+
+fn declared_content_length_too_large(headers: &HeaderMap) -> bool {
+    headers
+        .get("content-length")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|len| len > MAX_BODY_BYTES)
+}
+
+fn valid_secret(actual: Option<&str>, expected: &str) -> bool {
+    actual.is_some_and(|actual| !expected.is_empty() && constant_time_equal(actual, expected))
+}
+
+fn query_param(query: Option<&str>, key: &str) -> Option<String> {
+    query?.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+fn allow_burst(state: &AppState) -> bool {
+    let now = Instant::now();
+    let mut hits = state.burst.lock().expect("burst mutex poisoned");
+    while hits
+        .front()
+        .is_some_and(|hit| now.duration_since(*hit) >= INBOUND_BURST_WINDOW)
+    {
+        hits.pop_front();
+    }
+    if hits.len() >= INBOUND_BURST_MAX {
+        return false;
+    }
+    hits.push_back(now);
+    true
+}
+
+fn json_status<T: Serialize>(status: StatusCode, value: T) -> Response {
+    (status, axum::Json(value)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use http::Request;
+    use tower::ServiceExt;
+
+    fn env() -> Env {
+        Env {
+            database_url: "postgres://postgres:postgres@localhost/andy".into(),
+            sendblue_api_key: "k".into(),
+            sendblue_api_secret: "s".into(),
+            sendblue_from_number: "+1".into(),
+            webhook_url_token: "token".into(),
+            cron_secret: "cron".into(),
+            allowed_phone: "+639171234567".into(),
+            openrouter_api_key: None,
+            openrouter_model: None,
+            app_timezone: "Asia/Manila".into(),
+            app_timezone_offset_minutes: 480,
+        }
+    }
+
+    #[tokio::test]
+    async fn health_is_env_free() {
+        let response = router(AppState::test())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn webhook_rejects_missing_or_wrong_token() {
+        let mut state = AppState::test();
+        state.env = Some(env());
+        let app = router(state);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/webhooks/sendblue?t=wrong")
+            .body(Body::from("{}"))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn webhook_rejects_declared_oversized_body_before_auth() {
+        let response = router(AppState::test())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/sendblue?t=token")
+                    .header("content-length", "999999")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn cron_requires_bearer_secret() {
+        let mut state = AppState::test();
+        state.env = Some(env());
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cron/daily")
+                    .header("authorization", "Bearer nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+}

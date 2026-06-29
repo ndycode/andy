@@ -1,0 +1,615 @@
+use andy_shared::{
+    allowlist::normalize_phone,
+    categories::{Category, coerce_category},
+    time::{MANILA_OFFSET_MINUTES, month_range},
+};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::{PgPool, Row};
+use uuid::Uuid;
+
+pub const CLAIM_TTL_MS: i64 = 2 * 60 * 1000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimResult {
+    Process,
+    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationTurn {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionRow {
+    pub id: Uuid,
+    pub kind: String,
+    pub amount_centavos: i64,
+    pub category: Category,
+    pub note: Option<String>,
+    pub goal_id: Option<Uuid>,
+    pub local_date: NaiveDate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionSummaryRow {
+    pub kind: String,
+    pub amount_centavos: i64,
+    pub category: Category,
+    pub note: Option<String>,
+    pub local_date: NaiveDate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BudgetStatus {
+    pub category: Category,
+    pub limit: i64,
+    pub spent: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonthOverview {
+    pub income: i64,
+    pub expense: i64,
+    pub net: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GoalRow {
+    pub id: Uuid,
+    pub name: String,
+    pub target_centavos: i64,
+    pub saved_centavos: i64,
+    pub created_at: DateTime<Utc>,
+    pub target_date: Option<NaiveDate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TransactionSearch {
+    pub text: Option<String>,
+    pub category: Option<Category>,
+    pub start_date: Option<NaiveDate>,
+    pub end_date: Option<NaiveDate>,
+    pub min_centavos: Option<i64>,
+    pub max_centavos: Option<i64>,
+    pub kind: Option<String>,
+    pub by_amount: bool,
+    pub limit: i64,
+}
+
+pub async fn claim_slot(
+    pool: &PgPool,
+    message_id: &str,
+    now: DateTime<Utc>,
+) -> Result<ClaimResult, sqlx::Error> {
+    let stale_before = now - Duration::milliseconds(CLAIM_TTL_MS);
+    let row = sqlx::query(
+        r#"
+        insert into processed_messages (message_id, status, claimed_at, completed_at)
+        values ($1, 'claimed', $2, null)
+        on conflict (message_id) do update
+          set status = 'claimed', claimed_at = $2, completed_at = null
+          where processed_messages.status = 'claimed'
+            and processed_messages.claimed_at <= $3
+        returning message_id
+        "#,
+    )
+    .bind(message_id)
+    .bind(now)
+    .bind(stale_before)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(if row.is_some() {
+        ClaimResult::Process
+    } else {
+        ClaimResult::Skip
+    })
+}
+
+pub async fn resolve_user_id(pool: &PgPool, phone: &str) -> Result<Uuid, sqlx::Error> {
+    let normalized = normalize_phone(phone);
+    let row = sqlx::query(
+        r#"
+        insert into users (phone)
+        values ($1)
+        on conflict (phone) do update set phone = excluded.phone
+        returning id
+        "#,
+    )
+    .bind(normalized)
+    .fetch_one(pool)
+    .await?;
+    row.try_get("id")
+}
+
+pub async fn recent_turns(
+    pool: &PgPool,
+    user_id: Uuid,
+    limit: i64,
+) -> Result<Vec<ConversationTurn>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"
+        select role::text as role, content
+        from messages
+        where user_id = $1
+        order by seq desc
+        limit $2
+        "#,
+    )
+    .bind(user_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let mut turns = rows
+        .into_iter()
+        .map(|row| {
+            Ok(ConversationTurn {
+                role: row.try_get("role")?,
+                content: row.try_get("content")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    turns.reverse();
+    Ok(turns)
+}
+
+pub async fn last_transaction(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<Option<TransactionRow>, sqlx::Error> {
+    let row = sqlx::query(
+        r#"
+        select id, kind::text as kind, amount_centavos, category::text as category,
+               note, goal_id, local_date
+        from transactions
+        where user_id = $1
+        order by seq desc
+        limit 1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(transaction_from_row).transpose()
+}
+
+pub async fn budget_statuses(
+    pool: &PgPool,
+    user_id: Uuid,
+    at: DateTime<Utc>,
+) -> Result<Vec<BudgetStatus>, sqlx::Error> {
+    let (month_start, month_end) = month_range(at, MANILA_OFFSET_MINUTES);
+    budget_status_rows(pool, user_id, None, month_start, month_end).await
+}
+
+pub async fn budget_statuses_for(
+    pool: &PgPool,
+    user_id: Uuid,
+    categories: &[Category],
+    month_start: NaiveDate,
+    month_end: NaiveDate,
+) -> Result<Vec<BudgetStatus>, sqlx::Error> {
+    if categories.is_empty() {
+        return Ok(Vec::new());
+    }
+    let category_strings = categories
+        .iter()
+        .map(|category| category.as_str().to_string())
+        .collect::<Vec<_>>();
+    budget_status_rows(
+        pool,
+        user_id,
+        Some(&category_strings),
+        month_start,
+        month_end,
+    )
+    .await
+}
+
+async fn budget_status_rows(
+    pool: &PgPool,
+    user_id: Uuid,
+    categories: Option<&[String]>,
+    month_start: NaiveDate,
+    month_end: NaiveDate,
+) -> Result<Vec<BudgetStatus>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"
+        select b.category::text as category,
+               b.monthly_limit_centavos as limit,
+               coalesce(sum(t.amount_centavos), 0)::bigint as spent
+        from budgets b
+        left join transactions t
+          on t.user_id = b.user_id
+         and t.category = b.category
+         and t.kind = 'expense'
+         and t.local_date between $3 and $4
+        where b.user_id = $1
+          and ($2::text[] is null or b.category::text = any($2))
+        group by b.category, b.monthly_limit_centavos
+        order by b.category
+        "#,
+    )
+    .bind(user_id)
+    .bind(categories)
+    .bind(month_start)
+    .bind(month_end)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let category: String = row.try_get("category")?;
+            Ok(BudgetStatus {
+                category: coerce_category(category),
+                limit: row.try_get("limit")?,
+                spent: row.try_get("spent")?,
+            })
+        })
+        .collect()
+}
+
+pub async fn sum_by_category(
+    pool: &PgPool,
+    user_id: Uuid,
+    category: Category,
+    at: DateTime<Utc>,
+) -> Result<i64, sqlx::Error> {
+    let (start, end) = month_range(at, MANILA_OFFSET_MINUTES);
+    let row = sqlx::query(
+        r#"
+        select coalesce(sum(amount_centavos), 0)::bigint as total
+        from transactions
+        where user_id = $1 and category = $2::category and kind = 'expense'
+          and local_date between $3 and $4
+        "#,
+    )
+    .bind(user_id)
+    .bind(category.as_str())
+    .bind(start)
+    .bind(end)
+    .fetch_one(pool)
+    .await?;
+    row.try_get("total")
+}
+
+pub async fn sum_spend_between(
+    pool: &PgPool,
+    user_id: Uuid,
+    start: NaiveDate,
+    end: NaiveDate,
+    category: Option<Category>,
+) -> Result<i64, sqlx::Error> {
+    let category = category.map(|category| category.as_str().to_string());
+    let row = sqlx::query(
+        r#"
+        select coalesce(sum(amount_centavos), 0)::bigint as total
+        from transactions
+        where user_id = $1 and kind = 'expense' and local_date between $2 and $3
+          and ($4::text is null or category = $4::category)
+        "#,
+    )
+    .bind(user_id)
+    .bind(start)
+    .bind(end)
+    .bind(category)
+    .fetch_one(pool)
+    .await?;
+    row.try_get("total")
+}
+
+pub async fn category_amounts_this_month(
+    pool: &PgPool,
+    user_id: Uuid,
+    category: Category,
+    at: DateTime<Utc>,
+) -> Result<Vec<i64>, sqlx::Error> {
+    let (start, end) = month_range(at, MANILA_OFFSET_MINUTES);
+    let rows = sqlx::query(
+        r#"
+        select amount_centavos
+        from transactions
+        where user_id = $1 and category = $2::category and kind = 'expense'
+          and local_date between $3 and $4
+        order by seq asc
+        "#,
+    )
+    .bind(user_id)
+    .bind(category.as_str())
+    .bind(start)
+    .bind(end)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| row.try_get("amount_centavos"))
+        .collect()
+}
+
+pub async fn get_month_overview(
+    pool: &PgPool,
+    user_id: Uuid,
+    at: DateTime<Utc>,
+) -> Result<MonthOverview, sqlx::Error> {
+    let (start, end) = month_range(at, MANILA_OFFSET_MINUTES);
+    let row = sqlx::query(
+        r#"
+        select
+          coalesce(sum(case when kind = 'income' then amount_centavos else 0 end), 0)::bigint as income,
+          coalesce(sum(case when kind = 'expense' then amount_centavos else 0 end), 0)::bigint as expense
+        from transactions
+        where user_id = $1 and local_date between $2 and $3
+        "#,
+    )
+    .bind(user_id)
+    .bind(start)
+    .bind(end)
+    .fetch_one(pool)
+    .await?;
+    let income = row.try_get("income")?;
+    let expense = row.try_get("expense")?;
+    Ok(MonthOverview {
+        income,
+        expense,
+        net: income - expense,
+    })
+}
+
+pub async fn get_spending_by_category(
+    pool: &PgPool,
+    user_id: Uuid,
+    at: DateTime<Utc>,
+) -> Result<Vec<(Category, i64)>, sqlx::Error> {
+    let (start, end) = month_range(at, MANILA_OFFSET_MINUTES);
+    let rows = sqlx::query(
+        r#"
+        select category::text as category, sum(amount_centavos)::bigint as total
+        from transactions
+        where user_id = $1 and kind = 'expense' and local_date between $2 and $3
+        group by category
+        order by sum(amount_centavos) desc, category asc
+        "#,
+    )
+    .bind(user_id)
+    .bind(start)
+    .bind(end)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            let category: String = row.try_get("category")?;
+            Ok((coerce_category(category), row.try_get("total")?))
+        })
+        .collect()
+}
+
+pub async fn find_recent_duplicate(
+    pool: &PgPool,
+    user_id: Uuid,
+    kind: &str,
+    amount_centavos: i64,
+    note: Option<&str>,
+    local_date: NaiveDate,
+) -> Result<Option<Option<String>>, sqlx::Error> {
+    let note_key = note.unwrap_or_default().trim().to_ascii_lowercase();
+    let row = sqlx::query(
+        r#"
+        select note
+        from transactions
+        where user_id = $1 and kind = $2::tx_kind and amount_centavos = $3
+          and local_date = $4
+          and lower(coalesce(trim(note), '')) = $5
+        order by seq desc
+        limit 1
+        "#,
+    )
+    .bind(user_id)
+    .bind(kind)
+    .bind(amount_centavos)
+    .bind(local_date)
+    .bind(note_key)
+    .fetch_optional(pool)
+    .await?;
+    row.map(|row| row.try_get("note")).transpose()
+}
+
+pub async fn get_recent_transactions(
+    pool: &PgPool,
+    user_id: Uuid,
+    limit: i64,
+) -> Result<Vec<TransactionSummaryRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"
+        select kind::text as kind, amount_centavos, category::text as category, note, local_date
+        from transactions
+        where user_id = $1
+        order by seq desc
+        limit $2
+        "#,
+    )
+    .bind(user_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(transaction_summary_from_row).collect()
+}
+
+pub async fn search_transactions(
+    pool: &PgPool,
+    user_id: Uuid,
+    opts: &TransactionSearch,
+) -> Result<Vec<TransactionSummaryRow>, sqlx::Error> {
+    let limit = opts.limit.clamp(1, 50);
+    let text = opts
+        .text
+        .as_deref()
+        .map(|value| format!("%{}%", escape_like(value.trim())));
+    let category = opts.category.map(|category| category.as_str().to_string());
+    let order_by = if opts.by_amount {
+        "amount_centavos desc"
+    } else {
+        "seq desc"
+    };
+    let sql = format!(
+        r#"
+        select kind::text as kind, amount_centavos, category::text as category, note, local_date
+        from transactions
+        where user_id = $1
+          and ($2::text is null or note ilike $2 escape '\')
+          and ($3::text is null or category = $3::category)
+          and ($4::date is null or local_date >= $4)
+          and ($5::date is null or local_date <= $5)
+          and ($6::bigint is null or amount_centavos >= $6)
+          and ($7::bigint is null or amount_centavos <= $7)
+          and ($8::text is null or kind = $8::tx_kind)
+        order by {order_by}
+        limit $9
+        "#
+    );
+    let rows = sqlx::query(&sql)
+        .bind(user_id)
+        .bind(text)
+        .bind(category)
+        .bind(opts.start_date)
+        .bind(opts.end_date)
+        .bind(opts.min_centavos)
+        .bind(opts.max_centavos)
+        .bind(opts.kind.as_deref())
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    rows.into_iter().map(transaction_summary_from_row).collect()
+}
+
+pub async fn list_goals(pool: &PgPool, user_id: Uuid) -> Result<Vec<GoalRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"
+        select id, name, target_centavos, saved_centavos, created_at, target_date
+        from savings_goals
+        where user_id = $1
+        order by created_at asc, id asc
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(GoalRow {
+                id: row.try_get("id")?,
+                name: row.try_get("name")?,
+                target_centavos: row.try_get("target_centavos")?,
+                saved_centavos: row.try_get("saved_centavos")?,
+                created_at: row.try_get("created_at")?,
+                target_date: row.try_get("target_date")?,
+            })
+        })
+        .collect()
+}
+
+pub async fn find_goals_by_name(
+    pool: &PgPool,
+    user_id: Uuid,
+    name: &str,
+) -> Result<Vec<GoalRow>, sqlx::Error> {
+    Ok(match_goals(list_goals(pool, user_id).await?, name))
+}
+
+pub async fn find_goal_by_name(
+    pool: &PgPool,
+    user_id: Uuid,
+    name: &str,
+) -> Result<Option<GoalRow>, sqlx::Error> {
+    let matches = find_goals_by_name(pool, user_id, name).await?;
+    Ok((matches.len() == 1).then(|| matches[0].clone()))
+}
+
+fn transaction_from_row(row: sqlx::postgres::PgRow) -> Result<TransactionRow, sqlx::Error> {
+    let category: String = row.try_get("category")?;
+    Ok(TransactionRow {
+        id: row.try_get("id")?,
+        kind: row.try_get("kind")?,
+        amount_centavos: row.try_get("amount_centavos")?,
+        category: coerce_category(category),
+        note: row.try_get("note")?,
+        goal_id: row.try_get("goal_id")?,
+        local_date: row.try_get("local_date")?,
+    })
+}
+
+fn transaction_summary_from_row(
+    row: sqlx::postgres::PgRow,
+) -> Result<TransactionSummaryRow, sqlx::Error> {
+    let category: String = row.try_get("category")?;
+    Ok(TransactionSummaryRow {
+        kind: row.try_get("kind")?,
+        amount_centavos: row.try_get("amount_centavos")?,
+        category: coerce_category(category),
+        note: row.try_get("note")?,
+        local_date: row.try_get("local_date")?,
+    })
+}
+
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', r"\\")
+        .replace('%', r"\%")
+        .replace('_', r"\_")
+}
+
+fn match_goals(goals: Vec<GoalRow>, query: &str) -> Vec<GoalRow> {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let exact = goals
+        .iter()
+        .filter(|goal| goal.name.eq_ignore_ascii_case(&q))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !exact.is_empty() {
+        return exact;
+    }
+    goals
+        .into_iter()
+        .filter(|goal| goal.name.to_ascii_lowercase().contains(&q))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn goal_matching_is_exact_first_then_contains() {
+        let goals = vec![
+            GoalRow {
+                id: Uuid::new_v4(),
+                name: "Japan Trip".into(),
+                target_centavos: 1,
+                saved_centavos: 0,
+                created_at: Utc::now(),
+                target_date: None,
+            },
+            GoalRow {
+                id: Uuid::new_v4(),
+                name: "Trip".into(),
+                target_centavos: 1,
+                saved_centavos: 0,
+                created_at: Utc::now(),
+                target_date: None,
+            },
+        ];
+        assert_eq!(match_goals(goals.clone(), "Trip").len(), 1);
+        assert_eq!(match_goals(goals, "japan").len(), 1);
+    }
+
+    #[test]
+    fn escapes_like_metacharacters() {
+        assert_eq!(escape_like(r"50%_off\deal"), r"50\%\_off\\deal");
+    }
+}

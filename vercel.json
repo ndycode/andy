@@ -1,6 +1,17 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "buildCommand": "bash build-vercel.sh",
-  "outputDirectory": ".vercel/output"
+  "functions": {
+    "api/index.rs": {
+      "runtime": "rust",
+      "maxDuration": 300,
+      "regions": ["sin1"]
+    }
+  },
+  "routes": [
+    { "src": "/(.*)", "dest": "/api/index.rs" }
+  ],
+  "crons": [
+    { "path": "/api/cron/daily", "schedule": "7 0 * * *" }
+  ]
 }

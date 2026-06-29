@@ -1,17 +1,13 @@
 # dependabot: https://docs.github.com/code-security/dependabot
-# weekly grouped bumps. let CI check typecheck, lint, tests, build, and DB integration before merge.
 version: 2
 updates:
-  # JS dependencies across Bun workspaces. the bun ecosystem updates bun.lock too.
-  # if Dependabot's bun support ever breaks, switch to npm and refresh bun.lock manually.
-  - package-ecosystem: "bun"
+  - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
     groups:
-      # one PR for routine non-breaking bumps. majors get their own PR.
       minor-and-patch:
         update-types:
           - "minor"
@@ -19,7 +15,6 @@ updates:
     labels:
       - "dependencies"
 
-  # GitHub Actions used by CI.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

@@ -30,10 +30,10 @@ body:
     attributes:
       label: area
       options:
-        - "packages/shared (money/time/budget/etc.)"
-        - "packages/db (schema/queries/dedup)"
-        - "packages/ai (agent/tools/model)"
-        - "apps/api (handler/cron/sendblue)"
+        - "crates/shared (money/time/budget/etc.)"
+        - "crates/db (schema/queries/dedup)"
+        - "crates/ai (agent/tools/model)"
+        - "crates/api (handler/cron/sendblue)"
         - "tooling/CI/build"
         - "docs"
         - "not sure"
@@ -43,6 +43,6 @@ body:
     id: env
     attributes:
       label: environment
-      description: output of `bun --version` and your OS, if relevant.
+      description: output of `rustc --version` and your OS, if relevant.
     validations:
       required: false

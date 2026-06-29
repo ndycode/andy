@@ -8,18 +8,17 @@
 
 <!-- paste the commands you ran. -->
 
-- [ ] `bun run typecheck`
-- [ ] `bun run lint`
-- [ ] `bun run lint:no-excuse`
-- [ ] `bun test`
-- [ ] `bun run build`
-- [ ] `bun run ci:local`, or explain why Docker/DB integration was not available
+- [ ] `cargo fmt --check`
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] `cargo test --workspace`
+- [ ] `cargo xtask ci`
+- [ ] DB integration with `TEST_DATABASE_URL`, or explain why Postgres was not available
 
 ## correctness checks
 
 - [ ] no floats in the money path, amounts stay integer centavos
 - [ ] dedup and the three-phase handler still hold
 - [ ] no DB connection is held across the model call
-- [ ] `@repo/shared` stays free of `@repo/db` and `@repo/ai`
+- [ ] `andy_shared` stays free of `andy_db` and `andy_ai`
 - [ ] tests cover the behavior or regression
 - [ ] not applicable

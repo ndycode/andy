@@ -6,6 +6,7 @@ dist/
 .output/
 .turbo/
 .vercel/
+target/
 
 # logs
 *.log
@@ -17,6 +18,7 @@ dist/
 
 # local agent/session state (not part of the project)
 .omc/
+**/.omc/
 
 # OS / editor cruft
 .DS_Store
