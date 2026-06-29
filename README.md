@@ -3,79 +3,78 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/runtime-Rust-b7410e)](https://www.rust-lang.org/)
 
-**an iMessage finance assistant that turns messy everyday texts into a real Postgres ledger.**
+**a private finance assistant that lives in iMessage.**
 
-text it like a person. andy logs the transaction, keeps exact centavo math, tracks budgets and goals, remembers durable preferences, and answers money questions from SQL instead of guessing from chat history.
+text what happened with your money. andy keeps it organized, checks your budgets, tracks your goals, reminds you about recurring bills, and answers questions like "how much did i spend on food?"
 
 ## demo
 
 https://github.com/user-attachments/assets/04814e9b-0d80-44c1-94f9-233e1d803ebd
 
-## how it feels
+## the idea
 
-| you text | andy does |
+most money apps make you open the app, pick a category, type an amount, and clean it up later.
+
+andy is for the thing you already do: send a quick message.
+
+| text andy | what happens |
 | --- | --- |
-| `grab 180` | logs a Transport expense |
-| `make that 200` | edits the transaction from this same turn |
-| `food budget 8k` | sets a monthly Food budget |
-| `save 30k for japan by december` | creates a goal with a deadline |
-| `rent 18k every 1st` | adds a recurring reminder |
-| `how much on food this month?` | answers from transaction aggregates |
+| `grab 180` | logs transport |
+| `make that 200` | fixes the last entry |
+| `food budget 8k` | sets a food budget |
+| `save 30k for japan by december` | starts a savings goal |
+| `rent 18k every 1st` | adds a rent reminder |
+| `how much on food this month?` | gives the real total |
 
-andy is tuned for a single owner in the Philippines: PHP, Asia/Manila, sweldo, Grab, GCash-style spending, and direct questions like "am i still within budget?"
+it is tuned for one person in the Philippines: PHP, Asia/Manila, sweldo, Grab, GCash-style spending, and blunt check-ins like "am i still okay this month?"
 
-## what it handles
+## what andy handles
 
-- iMessage expense and income logging through Sendblue
-- budgets, threshold nudges, and spending pace warnings
-- savings goals, contributions, deadline pace, and progress checks
-- recurring reminders for bills and planned payments
-- stable memory for preferences, payday facts, people, and habits
-- SQL-backed reads for summaries, category breakdowns, history, and insights
-- exact integer-centavo money math end to end
-- crash-safe webhook dedup and transactional write flushes
+- logs expenses and income from normal iMessage texts
+- keeps categories, notes, dates, and corrections straight
+- warns when a budget is getting tight
+- tracks savings goals and whether they are on pace
+- remembers useful facts like payday, usual merchants, and preferences
+- reminds you about recurring bills before they slip
+- answers from what you actually logged
+- avoids double-logging when a message gets delivered twice
 
-## why it is built this way
+## why it matters
 
-**money stays exact.** amounts are stored as integer centavos. no float math in the ledger path.
+**quick entries stay quick.** `coffee 160` is enough.
 
-**one message logs once.** each inbound webhook claims a marker before work and completes it inside the final write transaction. redelivery can retry safely without double-counting.
+**corrections are natural.** `no make that 200` edits the thing you just logged.
 
-**the model never owns identity.** user id, phone allowlist, and write targets are server-side. model tool calls only provide intent arguments.
+**the math stays exact.** pesos and centavos are stored as whole centavos, so totals do not drift.
 
-**OpenRouter does not hold the DB hostage.** the handler snapshots short context, releases the DB, runs the model/tool loop, then flushes buffered writes in one short transaction.
+**private means private.** this is built for a single allowed phone number, not public signup.
 
-**answers come from data.** spending questions use Postgres queries. if the data is not there, andy says so.
+**answers have receipts.** when andy says what you spent, it is looking at saved records.
 
-## repo shape
+## what is in this repo
 
-```text
-iMessage
-  -> Sendblue webhook
-    -> Rust API on Vercel (sin1)
-      -> OpenRouter tool-call loop
-      -> Postgres ledger
-```
+andy is now a Rust workspace. the old TypeScript/Bun app code was removed; SQL migrations stayed so the existing database history remains intact.
 
-| path | owns |
+| path | what it is for |
 | --- | --- |
-| `crates/shared` | money parsing/formatting, categories, time, budgets, goals, env, allowlist, security |
-| `crates/db` | sqlx Postgres reads/writes, migrations, claim/flush dedup, reminders, maintenance |
-| `crates/ai` | OpenRouter client, model config, finance tool schemas, tool execution, reply synthesis |
-| `crates/api` | Axum routes, Sendblue inbound/outbound, webhook guardrails, cron, budget reactions |
-| `xtask` | local and CI verification command |
+| `crates/shared` | money, time, categories, budgets, goals, env, allowlist, safety helpers |
+| `crates/db` | database reads/writes, message dedup, reminders, maintenance |
+| `crates/ai` | OpenRouter client and the finance tools Andy can call |
+| `crates/api` | Sendblue webhook, replies, cron jobs, route guards |
+| `xtask` | one command for local and CI checks |
+| `packages/db/migrations` | preserved database migrations |
 
-SQL migration history stays in `packages/db/migrations` so production databases keep the same schema lineage.
+## routes
 
-## public contract
-
-| route | behavior |
+| route | purpose |
 | --- | --- |
-| `GET /health` | returns `{ "status": "ok", "service": "andy" }` |
-| `POST /webhooks/sendblue?t=<WEBHOOK_URL_TOKEN>` | handles inbound Sendblue messages |
-| `GET /api/cron/daily` | runs daily checks with `Authorization: Bearer <CRON_SECRET>` |
+| `GET /health` | health check |
+| `POST /webhooks/sendblue?t=<WEBHOOK_URL_TOKEN>` | inbound Sendblue messages |
+| `GET /api/cron/daily` | daily reminders, budget checks, cleanup |
 
-required env:
+## env
+
+required:
 
 ```text
 DATABASE_URL
@@ -87,7 +86,7 @@ CRON_SECRET
 ALLOWED_PHONE
 ```
 
-optional env:
+optional:
 
 ```text
 OPENROUTER_API_KEY
@@ -105,7 +104,7 @@ cargo test --workspace
 cargo xtask ci
 ```
 
-DB integration runs only when Postgres is available:
+database integration tests need a real Postgres URL:
 
 ```bash
 TEST_DATABASE_URL=postgres://... cargo test --workspace --features andy_db/db-integration
@@ -113,7 +112,7 @@ TEST_DATABASE_URL=postgres://... cargo test --workspace --features andy_db/db-in
 
 ## status
 
-this is a personal, single-user app. it is not a multi-tenant finance product or a plug-and-play hosted service. running it live needs the owner's Sendblue account, a Postgres database, and optional OpenRouter credentials.
+this is a personal app, not a hosted product. running it live needs the owner's Sendblue account, a database, and optional OpenRouter credentials.
 
 ## security
 
