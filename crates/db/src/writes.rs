@@ -206,8 +206,12 @@ pub async fn flush_writes(
         .execute(&mut *tx)
         .await?;
     sqlx::query(&format!(
-        "set local statement_timeout = {FLUSH_STATEMENT_TIMEOUT_MS};
-         set local idle_in_transaction_session_timeout = {FLUSH_STATEMENT_TIMEOUT_MS};"
+        "set local statement_timeout = {FLUSH_STATEMENT_TIMEOUT_MS}"
+    ))
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(&format!(
+        "set local idle_in_transaction_session_timeout = {FLUSH_STATEMENT_TIMEOUT_MS}"
     ))
     .execute(&mut *tx)
     .await?;
