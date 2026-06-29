@@ -1,4 +1,4 @@
-# andy: money over imessage
+# andy: iMessage AI finance assistant
 
 [![CI](https://github.com/ndycode/andy/actions/workflows/ci.yml/badge.svg)](https://github.com/ndycode/andy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
@@ -6,13 +6,11 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6)](https://www.typescriptlang.org/)
 [![Biome](https://img.shields.io/badge/lint%20%2F%20format-Biome-60a5fa)](https://biomejs.dev/)
 
-> text a transaction in iMessage. andy logs it, answers from the ledger, and sends budget nudges when they matter.
+> iMessage personal finance assistant for expense tracking, budgets, savings goals, recurring reminders, and SQL-backed spending answers.
 
 ## demo
 
-<a href="https://cdn.jsdelivr.net/gh/ndycode/andy@main/public/demo/messages.mp4">
-  <img src="./public/demo/messages-poster.jpg" alt="andy iMessage demo preview" width="360">
-</a>
+<img src="./public/demo/messages-poster.jpg" alt="andy iMessage demo preview" width="360">
 
 ## what andy does
 
@@ -21,6 +19,18 @@ andy is a single-user, serverless finance assistant for iMessage. it parses ever
 built for the Philippines by default: PHP, Asia/Manila, GCash, sweldo, Grab, and direct questions like "how much did i spend?"
 
 **600+ tests. TypeScript strict. Biome plus custom no-excuse lint. unit, integration, and build gates in CI.**
+
+## features
+
+- natural-language transaction logging over iMessage
+- expense tracking with categories, notes, merchants, and timestamps
+- budget tracking with proactive nudges
+- savings goals and goal-pace checks
+- recurring reminders for bills and planned payments
+- memory tools for stable user preferences
+- SQL-backed spending summaries instead of chat-history guesses
+- exact PHP centavo math with no floating point in the money path
+- crash-safe Sendblue webhook dedup and transactional flush
 
 ## shape
 
