@@ -10,11 +10,7 @@
 
 ## demo
 
-<a href="./public/demo/demo.mp4">
-  <img src="./public/demo/demo-poster.jpg" alt="play andy demo video" width="360">
-</a>
-
-[play demo.mp4](./public/demo/demo.mp4)
+https://github.com/user-attachments/assets/fb070153-7045-4679-99d1-c7f2f81a7d5c
 
 ## what andy does
 
