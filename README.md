@@ -1,10 +1,13 @@
 # andy: iMessage AI finance assistant
 
-[![CI](https://github.com/ndycode/andy/actions/workflows/ci.yml/badge.svg)](https://github.com/ndycode/andy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Rust](https://img.shields.io/badge/runtime-Rust-b7410e)](https://www.rust-lang.org/)
 
 > iMessage personal finance assistant for expense tracking, budgets, savings goals, recurring reminders, and SQL-backed spending answers.
+
+## demo
+
+https://github.com/user-attachments/assets/04814e9b-0d80-44c1-94f9-233e1d803ebd
 
 ## what andy does
 

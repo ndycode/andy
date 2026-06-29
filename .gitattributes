@@ -1,0 +1,4 @@
+# GitHub Linguist should reflect runtime/test/tooling source, not docs, config,
+# lockfiles, static media, or preserved SQL migration history.
+* linguist-vendored
+*.rs linguist-vendored=false
