@@ -25,14 +25,89 @@ pub struct SendblueClient {
 pub enum SendblueError {
     #[error("Sendblue {path} timed out after 10s")]
     Timeout { path: String },
-    #[error("Sendblue {path} {status}: {body}")]
+    #[error("Sendblue {path} {status}: {class}")]
     Http {
         path: String,
         status: StatusCode,
-        body: String,
+        /// Safe classification only. The raw provider body is never stored
+        /// here so it cannot leak into logs or the DB.
+        class: ErrorClass,
     },
     #[error(transparent)]
     Request(#[from] reqwest::Error),
+}
+
+/// Coarse, secret-free classification of a provider failure. Used in logs,
+/// `outbound_messages.last_error`, and retry decisions — never the raw body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorClass {
+    Timeout,
+    Auth,
+    RateLimited,
+    ServerError,
+    ClientError,
+    Unknown,
+}
+
+impl ErrorClass {
+    #[must_use]
+    pub fn from_status(status: StatusCode) -> Self {
+        match status.as_u16() {
+            401 | 403 => Self::Auth,
+            429 => Self::RateLimited,
+            500..=599 => Self::ServerError,
+            400..=499 => Self::ClientError,
+            _ => Self::Unknown,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::Auth => "auth",
+            Self::RateLimited => "rate_limited",
+            Self::ServerError => "server_error",
+            Self::ClientError => "client_error",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Whether a failure of this class is worth retrying. Auth and other 4xx
+    /// client errors are terminal; timeouts, 429, and 5xx are transient.
+    #[must_use]
+    pub const fn is_retryable(self) -> bool {
+        matches!(self, Self::Timeout | Self::RateLimited | Self::ServerError)
+    }
+}
+
+impl std::fmt::Display for ErrorClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl SendblueError {
+    /// Safe, secret-free one-line summary for storage/logging.
+    #[must_use]
+    pub fn safe_summary(&self) -> String {
+        match self {
+            Self::Timeout { .. } => "timeout".to_string(),
+            Self::Http { status, class, .. } => format!("{class}:{}", status.as_u16()),
+            Self::Request(_) => "request_error".to_string(),
+        }
+    }
+
+    /// Classify for retry decisions without exposing any body.
+    #[must_use]
+    pub fn class(&self) -> ErrorClass {
+        match self {
+            Self::Timeout { .. } => ErrorClass::Timeout,
+            Self::Http { class, .. } => *class,
+            Self::Request(err) if err.is_timeout() => ErrorClass::Timeout,
+            Self::Request(_) => ErrorClass::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -96,11 +171,13 @@ impl SendblueClient {
             return Ok(());
         }
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        // Drain and discard the body. We deliberately do not read or store it:
+        // provider error bodies can echo request content or secrets.
+        let _ = response.bytes().await;
         Err(SendblueError::Http {
             path: path.into(),
             status,
-            body,
+            class: ErrorClass::from_status(status),
         })
     }
 }
@@ -155,10 +232,106 @@ async fn deliver_outbound_message(
                 event = "sendblue.outbound.error",
                 outbound_id = %message.id,
                 attempt = message.attempt_count,
-                error = %err
+                class = %err.class(),
+                summary = %err.safe_summary()
             );
-            mark_outbound_failed(pool, message.id, &err.to_string()).await?;
+            mark_outbound_failed(
+                pool,
+                message.id,
+                &err.safe_summary(),
+                err.class().is_retryable(),
+            )
+            .await?;
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    fn client(base_url: &str) -> SendblueClient {
+        let env = Env {
+            database_url: "postgres://x".into(),
+            sendblue_api_key: "k".into(),
+            sendblue_api_secret: "s".into(),
+            sendblue_from_number: "+1".into(),
+            webhook_url_token: "t".into(),
+            webhook_url_token_sha256: None,
+            cron_secret: "c".into(),
+            allowed_phone: "+1".into(),
+            openrouter_api_key: None,
+            openrouter_model: None,
+            openrouter_base_url: None,
+            app_timezone: "Asia/Manila".into(),
+            app_timezone_offset_minutes: 480,
+            confirm_amount_threshold_centavos: None,
+            inbound_rate_limit: None,
+            inbound_rate_window_seconds: None,
+        };
+        SendblueClient::with_base_url(&env, base_url)
+    }
+
+    async fn mock_status(status: u16) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/send-message"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_body_json(serde_json::json!({ "error": "boom sk-LEAKED0123456789abcd" })),
+            )
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn sendblue_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/send-message"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "ok": true })),
+            )
+            .mount(&server)
+            .await;
+        assert!(client(&server.uri()).send_message("+1", "hi").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn sendblue_classifies_and_redacts_errors() {
+        for (status, class) in [
+            (401, ErrorClass::Auth),
+            (403, ErrorClass::Auth),
+            (429, ErrorClass::RateLimited),
+            (500, ErrorClass::ServerError),
+            (418, ErrorClass::ClientError),
+        ] {
+            let server = mock_status(status).await;
+            let err = client(&server.uri())
+                .send_message("+1", "hi")
+                .await
+                .unwrap_err();
+            assert_eq!(err.class(), class, "status {status}");
+            let summary = err.safe_summary();
+            // Safe summary carries only class:status — never the raw body.
+            assert!(!summary.contains("sk-LEAKED"), "leaked in {summary}");
+            assert!(!summary.contains("boom"), "raw body in {summary}");
+            assert!(summary.contains(class.as_str()));
+        }
+    }
+
+    #[test]
+    fn retryability_matches_class() {
+        assert!(ErrorClass::Timeout.is_retryable());
+        assert!(ErrorClass::RateLimited.is_retryable());
+        assert!(ErrorClass::ServerError.is_retryable());
+        assert!(!ErrorClass::Auth.is_retryable());
+        assert!(!ErrorClass::ClientError.is_retryable());
     }
 }

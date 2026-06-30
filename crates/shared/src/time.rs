@@ -3,6 +3,63 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 pub const MANILA_OFFSET_MINUTES: i32 = 8 * 60;
 pub const APP_TIMEZONE_DEFAULT: &str = "Asia/Manila";
 
+/// Single source of truth for app date math.
+///
+/// Andy is a single-user, Asia/Manila product, so the timezone is a fixed
+/// product invariant rather than per-request state. This struct makes that
+/// invariant explicit and injectable: business logic that needs the offset
+/// should take an `AppTimeConfig` instead of reaching for `MANILA_OFFSET_MINUTES`
+/// or reading env deep in a helper. [`AppTimeConfig::from_env`] honors the
+/// `APP_TIMEZONE` / `APP_TIMEZONE_OFFSET_MINUTES` overrides for tests and
+/// relocation, defaulting to Manila.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppTimeConfig {
+    pub label: String,
+    pub offset_minutes: i32,
+}
+
+impl Default for AppTimeConfig {
+    fn default() -> Self {
+        Self {
+            label: APP_TIMEZONE_DEFAULT.to_string(),
+            offset_minutes: MANILA_OFFSET_MINUTES,
+        }
+    }
+}
+
+impl AppTimeConfig {
+    /// Build from explicit values (clamped offset is the caller's job; see
+    /// [`crate::env::Env`]).
+    #[must_use]
+    pub fn new(label: impl Into<String>, offset_minutes: i32) -> Self {
+        Self {
+            label: label.into(),
+            offset_minutes,
+        }
+    }
+
+    /// Read from process env, falling back to the Manila invariant.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            label: app_timezone(),
+            offset_minutes: default_offset_minutes(),
+        }
+    }
+
+    /// Local calendar date for an instant under this config.
+    #[must_use]
+    pub fn local_date(&self, at: DateTime<Utc>) -> NaiveDate {
+        local_date(at, self.offset_minutes)
+    }
+
+    /// Inclusive month bounds for the month containing `at`.
+    #[must_use]
+    pub fn month_range(&self, at: DateTime<Utc>) -> (NaiveDate, NaiveDate) {
+        month_range(at, self.offset_minutes)
+    }
+}
+
 #[must_use]
 pub fn app_timezone() -> String {
     std::env::var("APP_TIMEZONE")
@@ -32,14 +89,35 @@ pub fn local_date_string(at: DateTime<Utc>, offset_minutes: i32) -> String {
 
 #[must_use]
 pub fn month_range(at: DateTime<Utc>, offset_minutes: i32) -> (NaiveDate, NaiveDate) {
-    let d = local_date(at, offset_minutes);
-    let first = NaiveDate::from_ymd_opt(d.year(), d.month(), 1).expect("valid month first");
-    let next_month = if d.month() == 12 {
-        NaiveDate::from_ymd_opt(d.year() + 1, 1, 1).expect("valid next year")
+    month_bounds(local_date(at, offset_minutes))
+}
+
+/// Inclusive first/last day of the month containing `date`. Pure date math, so
+/// it is deterministic in tests and reusable wherever a `NaiveDate` is already
+/// in hand (read tools, budget reactions) without re-deriving from a clock.
+#[must_use]
+pub fn month_bounds(date: NaiveDate) -> (NaiveDate, NaiveDate) {
+    let first = NaiveDate::from_ymd_opt(date.year(), date.month(), 1).expect("valid month first");
+    let next_month = if date.month() == 12 {
+        NaiveDate::from_ymd_opt(date.year() + 1, 1, 1).expect("valid next year")
     } else {
-        NaiveDate::from_ymd_opt(d.year(), d.month() + 1, 1).expect("valid next month")
+        NaiveDate::from_ymd_opt(date.year(), date.month() + 1, 1).expect("valid next month")
     };
     (first, next_month - Duration::days(1))
+}
+
+/// Parse a `YYYY-MM` month string into its inclusive first/last day bounds.
+/// Returns `None` for malformed input or out-of-range year/month.
+#[must_use]
+pub fn month_bounds_from_str(yyyymm: &str) -> Option<(NaiveDate, NaiveDate)> {
+    let (year, month) = yyyymm.trim().split_once('-')?;
+    let year = year.parse::<i32>().ok()?;
+    let month = month.parse::<u32>().ok()?;
+    if !(2000..=2100).contains(&year) || !(1..=12).contains(&month) {
+        return None;
+    }
+    let first = NaiveDate::from_ymd_opt(year, month, 1)?;
+    Some(month_bounds(first))
 }
 
 #[must_use]
@@ -120,10 +198,38 @@ mod tests {
     }
 
     #[test]
+    fn app_time_config_default_is_manila() {
+        let cfg = AppTimeConfig::default();
+        assert_eq!(cfg.label, "Asia/Manila");
+        assert_eq!(cfg.offset_minutes, MANILA_OFFSET_MINUTES);
+        assert_eq!(
+            cfg.local_date(dt("2026-06-14T16:01:00Z")).to_string(),
+            "2026-06-15"
+        );
+        let custom = AppTimeConfig::new("UTC", 0);
+        assert_eq!(
+            custom.local_date(dt("2026-06-14T16:01:00Z")).to_string(),
+            "2026-06-14"
+        );
+    }
+
+    #[test]
     fn week_start_is_monday() {
         assert_eq!(
             current_week_start(dt("2026-06-18T00:00:00Z"), MANILA_OFFSET_MINUTES).to_string(),
             "2026-06-15"
         );
+    }
+
+    #[test]
+    fn month_bounds_from_date_and_string_agree() {
+        let date = "2026-02-15".parse::<NaiveDate>().unwrap();
+        assert_eq!(
+            month_bounds(date),
+            ("2026-02-01".parse().unwrap(), "2026-02-28".parse().unwrap())
+        );
+        assert_eq!(month_bounds_from_str("2026-02"), Some(month_bounds(date)));
+        assert_eq!(month_bounds_from_str("2026-13"), None);
+        assert_eq!(month_bounds_from_str("nope"), None);
     }
 }

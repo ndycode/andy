@@ -57,6 +57,34 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0013_outbound_messages",
         include_str!("../../../packages/db/migrations/0013_outbound_messages.sql"),
     ),
+    (
+        "0014_pending_confirmations",
+        include_str!("../../../packages/db/migrations/0014_pending_confirmations.sql"),
+    ),
+    (
+        "0015_ledger_events",
+        include_str!("../../../packages/db/migrations/0015_ledger_events.sql"),
+    ),
+    (
+        "0016_outbound_dead_letter",
+        include_str!("../../../packages/db/migrations/0016_outbound_dead_letter.sql"),
+    ),
+    (
+        "0017_accounts_transfers",
+        include_str!("../../../packages/db/migrations/0017_accounts_transfers.sql"),
+    ),
+    (
+        "0018_length_constraints",
+        include_str!("../../../packages/db/migrations/0018_length_constraints.sql"),
+    ),
+    (
+        "0019_inbound_rate_limits",
+        include_str!("../../../packages/db/migrations/0019_inbound_rate_limits.sql"),
+    ),
+    (
+        "0020_pending_confirmation_unique_source",
+        include_str!("../../../packages/db/migrations/0020_pending_confirmation_unique_source.sql"),
+    ),
 ];
 
 pub async fn run(pool: &PgPool) -> Result<(), sqlx::Error> {
@@ -78,6 +106,34 @@ pub async fn run(pool: &PgPool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Total number of migrations bundled into the binary. Pair with
+/// [`applied_versions`] to report readiness without running anything.
+#[must_use]
+pub const fn bundled_count() -> usize {
+    MIGRATIONS.len()
+}
+
+/// Readiness probe: confirm the DB is reachable and report how many of the
+/// bundled migrations have been recorded as applied. Returns `Ok(None)` when
+/// the tracking table does not exist yet (migrations never run), and the
+/// applied count otherwise. Performs no writes and no locking, so it is cheap
+/// enough for a `/ready` handler.
+pub async fn applied_count_if_tracked(pool: &PgPool) -> Result<Option<i64>, sqlx::Error> {
+    let tracked =
+        sqlx::query("select to_regclass('public._andy_migrations') is not null as exists")
+            .fetch_one(pool)
+            .await?
+            .try_get::<bool, _>("exists")?;
+    if !tracked {
+        return Ok(None);
+    }
+    let count = sqlx::query("select count(*)::bigint as count from _andy_migrations")
+        .fetch_one(pool)
+        .await?
+        .try_get::<i64, _>("count")?;
+    Ok(Some(count))
+}
+
 async fn ensure_tracking_table(tx: &mut Transaction<'_, Postgres>) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
@@ -92,18 +148,42 @@ async fn ensure_tracking_table(tx: &mut Transaction<'_, Postgres>) -> Result<(),
     Ok(())
 }
 
+/// Migrations that predate the in-binary migration runner. On a legacy
+/// production DB these objects already exist (created by the old Drizzle
+/// tooling), so they must be marked applied rather than re-run. Anything after
+/// this list is a new migration and must actually execute, even on a DB that
+/// was baselined. Keep this list frozen — never append new migrations here.
+const LEGACY_BASELINE: &[&str] = &[
+    "0000_tiresome_paibok",
+    "0001_workable_golden_guardian",
+    "0002_deep_firebird",
+    "0003_complex_wolverine",
+    "0004_premium_scream",
+    "0005_correctness_seq_budgets_memory",
+    "0006_correctness_nudges_pk_goal_check",
+    "0007_schema_hardening_checks",
+    "0008_messages_seq_ordering",
+    "0009_schema_audit_0009",
+    "0010_audit_remediation_0010",
+    "0011_damp_luckman",
+    "0012_cool_gauntlet",
+    "0013_outbound_messages",
+];
+
 async fn baseline_existing_schema(tx: &mut Transaction<'_, Postgres>) -> Result<(), sqlx::Error> {
     if applied_count(tx).await? > 0 || !table_exists(tx, "users").await? {
         return Ok(());
     }
 
+    // Legacy DB with no migration tracking: mark the pre-runner migrations
+    // applied so they are not re-executed, then let any newer migration run
+    // normally. `outbound_messages` (0013) may or may not exist on the oldest
+    // databases, so gate that final legacy entry on its table.
     let outbound_exists = table_exists(tx, "outbound_messages").await?;
-    let baseline_through = if outbound_exists {
-        MIGRATIONS.len()
-    } else {
-        MIGRATIONS.len() - 1
-    };
-    for (version, _) in &MIGRATIONS[..baseline_through] {
+    for version in LEGACY_BASELINE {
+        if *version == "0013_outbound_messages" && !outbound_exists {
+            continue;
+        }
         mark_applied(tx, version).await?;
     }
     Ok(())

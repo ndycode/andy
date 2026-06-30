@@ -87,8 +87,10 @@ version = "0.1.0"
 dependencies = [
  "andy_shared",
  "anyhow",
+ "async-trait",
  "chrono",
  "serde",
+ "serde_json",
  "sqlx",
  "thiserror",
  "tokio",

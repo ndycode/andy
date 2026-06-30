@@ -1,4 +1,4 @@
-use andy_db::writes::WriteIntent;
+use andy_db::{FinanceRead, writes::WriteIntent};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -12,13 +12,15 @@ use crate::{
     openrouter::{ChatMessage, OpenRouterClient, OpenRouterError},
 };
 
-#[derive(Debug, Clone)]
 pub struct RunAgentInput<'a> {
     pub text: &'a str,
     pub user_id: Uuid,
     pub timezone: &'a str,
     pub today: NaiveDate,
     pub model: Option<&'a OpenRouterClient>,
+    /// Read-only DB access for analytics tools. `None` disables read tools
+    /// (they report unavailability rather than guessing).
+    pub reader: Option<&'a dyn FinanceRead>,
     pub snapshot: AgentSnapshot,
 }
 
@@ -60,6 +62,7 @@ async fn run_tool_loop(
         user_id: input.user_id,
         today: input.today,
         snapshot: &input.snapshot,
+        reader: input.reader,
     };
 
     for _ in 0..4 {
@@ -71,7 +74,7 @@ async fn run_tool_loop(
 
         messages.push(ChatMessage::assistant_tool_calls(turn.tool_calls.clone()));
         for call in &turn.tool_calls {
-            let execution = execute_finance_tool(call, &tool_ctx, &mut writes);
+            let execution = execute_finance_tool(call, &tool_ctx, &mut writes).await;
             messages.push(ChatMessage::tool_result(&call.id, execution.content));
         }
     }
@@ -91,8 +94,18 @@ fn instructions(input: &RunAgentInput<'_>) -> String {
          Categories: Food, Transport, Bills, Shopping, Health, Entertainment, Savings/Goals, Income, Other.\n\
          Corrections like 'make that 200' should call editLast; undo/delete should call deleteLast.\n\
          Goal contributions use contributeToGoal, not a generic expense. Recurring reminders do not auto-log.\n\
+         Money moved between the user's own accounts — \"cash in\", \"move to savings\", \"gcash to bank\",\n\
+         \"transfer\", \"paid credit card from BPI\" — is a logTransfer, not income or expense. If it's ambiguous\n\
+         whether something is a transfer or a real expense/income, ask before logging. Transfers are excluded\n\
+         from spending and income totals. logExpense/logIncome accept an optional account.\n\
          Use remember only for durable facts or preferences, never for ordinary transactions or one-off chat.\n\
          Use listMemory before answering what you remember. Never invent memories; use only the server snapshot and tool results.\n\
+         For questions about money — 'how much did I spend on food this month?', 'what was my biggest expense?',\n\
+         'what are my budgets?', 'show recent grab expenses', 'am I okay this month?' — call a read tool\n\
+         (getMonthOverview, getCategorySpend, searchTransactions, listBudgets, listGoals, listRecurring) and answer\n\
+         from its result. Never guess numbers. When you give an analytics answer, state the period and total, the\n\
+         count when the tool returns one, and the largest relevant item when available\n\
+         (e.g. \"You spent ₱4,820.00 on Food this month across 12 entries. Biggest was lunch ₱780.00 on Jun 12.\").\n\
          Server snapshot:\n{}",
         input.today,
         input.timezone,
@@ -123,6 +136,7 @@ mod tests {
             timezone: "Asia/Manila",
             today: "2026-06-15".parse().unwrap(),
             model: None,
+            reader: None,
             snapshot: AgentSnapshot::default(),
         })
         .await

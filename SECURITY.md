@@ -23,6 +23,18 @@ never paste real secrets into issues, PRs, screenshots, or reports. `.env`, `.en
 
 secret handling lives in `crates/shared/src/env.rs`. inbound Sendblue webhooks use a self-minted URL token with constant-time compare. cron uses `CRON_SECRET` as a bearer token.
 
+## webhook token hashing
+
+the webhook token may be stored as a SHA-256 hash via `WEBHOOK_URL_TOKEN_SHA256` instead of the plaintext `WEBHOOK_URL_TOKEN`. when the hash is set, the webhook compares `sha256(?t=...)` against it with a constant-time compare, so the raw token never needs to live in env. a malformed hash is rejected at startup rather than silently disabling auth. query parsing percent-decodes the value and rejects repeated `t=` parameters.
+
+## provider error redaction
+
+provider error bodies are never persisted or sent to the user. Sendblue failures are reduced to a coarse class (`timeout`, `auth`, `rate_limited`, `server_error`, `client_error`, `unknown`) plus status code; only that summary is logged and stored in `outbound_messages.last_error`. OpenRouter error bodies are reduced to a short, secret-stripped excerpt, and user-facing failure copy is canned (it never includes the raw body). outbound sends have a finite retry budget and dead-letter to `failed` rather than retrying forever.
+
+## prompt-injection mitigation
+
+the model is not the final authority on dangerous ledger actions. a deterministic policy (`crates/ai/src/policy.rs`) runs between model output and the database flush: destructive writes, high-value amounts, oversized turns, and mixed destructive+constructive turns require explicit user confirmation, and a one-off transaction smuggled into durable memory is rejected outright. read-only tools cannot emit write intents. every committed transaction records the source message id for audit.
+
 ## in scope
 
 - auth or allowlist bypass

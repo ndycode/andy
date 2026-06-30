@@ -12,9 +12,26 @@ async fn main() -> anyhow::Result<()> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("ci") | None => ci().await,
+        Some("migrate") => migrate().await,
         Some("smoke-live") => smoke_live().await,
         Some(other) => bail!("unknown xtask command: {other}"),
     }
+}
+
+/// Run database migrations once, for deploy/release. Connects with the process
+/// `DATABASE_URL`, applies `andy_db::migrations::run`, and exits nonzero on
+/// failure so a deploy pipeline can gate on it. Safe to run repeatedly:
+/// migrations are forward-only and idempotently tracked.
+async fn migrate() -> anyhow::Result<()> {
+    let env = Env::from_process().context("load environment")?;
+    let pool = andy_db::connect_pool(&env.database_url)
+        .await
+        .context("connect DATABASE_URL")?;
+    andy_db::migrations::run(&pool)
+        .await
+        .context("run database migrations")?;
+    println!("migrations applied");
+    Ok(())
 }
 
 async fn ci() -> anyhow::Result<()> {

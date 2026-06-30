@@ -12,7 +12,9 @@ pub mod errors;
 pub mod expense_category;
 pub mod goals;
 pub mod log;
+pub mod memory;
 pub mod money;
+pub mod percent;
 pub mod security;
 pub mod time;
 

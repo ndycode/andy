@@ -1,5 +1,6 @@
 use andy_shared::{
     categories::{Category, coerce_category},
+    memory::{compact_memory_content, normalize_memory_content, should_promote_memory_kind},
     time::{MANILA_OFFSET_MINUTES, current_week_start, days_in_local_month, local_date},
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
@@ -7,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::writes::{DEDUP_KEY_MAX, OUTBOUND_CONTENT_MAX, PHONE_MAX, RecurringInput};
+use crate::writes::{
+    Cadence, DEDUP_KEY_MAX, OUTBOUND_CONTENT_MAX, PHONE_MAX, RecurringInput, TxKind,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryRow {
@@ -20,10 +23,10 @@ pub struct MemoryRow {
 pub struct RecurringRow {
     pub id: Uuid,
     pub label: String,
-    pub kind: String,
+    pub kind: TxKind,
     pub amount_centavos: i64,
     pub category: Category,
-    pub cadence: String,
+    pub cadence: Cadence,
     pub day_of_month: Option<i64>,
     pub day_of_week: Option<i64>,
     pub last_reminded_date: Option<NaiveDate>,
@@ -217,19 +220,41 @@ pub async fn mark_outbound_sent(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Err
     Ok(())
 }
 
-pub async fn mark_outbound_failed(pool: &PgPool, id: Uuid, error: &str) -> Result<(), sqlx::Error> {
+/// Record an outbound send failure. When the error is retryable and the
+/// message still has attempts left, it goes back to `pending` with backoff.
+/// When attempts are exhausted or the error is non-retryable (e.g. auth), it is
+/// dead-lettered (`status = 'failed'`, `dead_lettered_at` set) so it can never
+/// retry forever. Only acts on rows still in `sending` (the claimed state).
+pub async fn mark_outbound_failed(
+    pool: &PgPool,
+    id: Uuid,
+    error: &str,
+    retryable: bool,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
         update outbound_messages
-        set status = 'pending',
+        set status = case
+              when $3 and attempt_count < max_attempts then 'pending'
+              else 'failed'
+            end,
+            dead_lettered_at = case
+              when $3 and attempt_count < max_attempts then dead_lettered_at
+              else now()
+            end,
             last_error = $2,
-            next_attempt_at = now() + make_interval(secs => least(3600, greatest(30, attempt_count * 30))),
+            next_attempt_at = case
+              when $3 and attempt_count < max_attempts
+                then now() + make_interval(secs => least(3600, greatest(30, attempt_count * 30)))
+              else next_attempt_at
+            end,
             updated_at = now()
         where id = $1 and status = 'sending'
         "#,
     )
     .bind(id)
     .bind(truncate(error, OUTBOUND_CONTENT_MAX))
+    .bind(retryable)
     .execute(pool)
     .await?;
     Ok(())
@@ -516,7 +541,7 @@ pub async fn due_recurring_today(
             if item.last_reminded_date == Some(today) {
                 return false;
             }
-            let due = if item.cadence == "monthly" {
+            let due = if item.cadence == Cadence::Monthly {
                 let Some(day) = item.day_of_month else {
                     return false;
                 };
@@ -675,13 +700,15 @@ pub async fn get_insights(
 
 fn recurring_from_row(row: sqlx::postgres::PgRow) -> Result<RecurringRow, sqlx::Error> {
     let category: String = row.try_get("category")?;
+    let kind: String = row.try_get("kind")?;
+    let cadence: String = row.try_get("cadence")?;
     Ok(RecurringRow {
         id: row.try_get("id")?,
         label: row.try_get("label")?,
-        kind: row.try_get("kind")?,
+        kind: TxKind::from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
-        cadence: row.try_get("cadence")?,
+        cadence: Cadence::from_db(&cadence)?,
         day_of_month: row.try_get("day_of_month")?,
         day_of_week: row.try_get("day_of_week")?,
         last_reminded_date: row.try_get("last_reminded_date")?,
@@ -703,32 +730,6 @@ fn outbound_from_row(row: sqlx::postgres::PgRow) -> Result<OutboundMessageRow, s
 
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
-}
-
-fn normalize_memory_content(content: &str) -> String {
-    content
-        .to_ascii_lowercase()
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn compact_memory_content(content: &str) -> String {
-    normalize_memory_content(content).replace(' ', "")
-}
-
-fn should_promote_memory_kind(current: &str, next: &str) -> bool {
-    memory_kind_rank(next) < memory_kind_rank(current)
-}
-
-fn memory_kind_rank(kind: &str) -> i64 {
-    match kind {
-        "payday" => 0,
-        "fact" | "preference" => 1,
-        "goal" => 2,
-        _ => 3,
-    }
 }
 
 fn note_keywords(note: &str) -> Vec<String> {

@@ -1,4 +1,4 @@
-use crate::{categories::Category, money::format_php};
+use crate::{categories::Category, money::format_php, percent::percent_rounded};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,6 +11,8 @@ pub struct BudgetSnapshot {
 }
 
 pub const BUDGET_NEAR_RATIO: f64 = 0.8;
+/// Integer counterpart of [`BUDGET_NEAR_RATIO`] for exact percent comparisons.
+pub const BUDGET_NEAR_PERCENT: i64 = 80;
 
 #[must_use]
 pub fn counts_toward_budget_reaction(local_date: NaiveDate, month: (NaiveDate, NaiveDate)) -> bool {
@@ -23,8 +25,8 @@ pub fn budget_reaction_line(current: BudgetSnapshot, prior_spent: i64) -> Option
         return None;
     }
 
-    let ratio_now = current.spent as f64 / current.limit as f64;
-    let ratio_before = prior_spent as f64 / current.limit as f64;
+    let crossed_now = current.spent * 100 >= BUDGET_NEAR_PERCENT * current.limit;
+    let crossed_before = prior_spent * 100 >= BUDGET_NEAR_PERCENT * current.limit;
 
     if current.spent > current.limit && prior_spent <= current.limit {
         let over = current.spent - current.limit;
@@ -35,8 +37,8 @@ pub fn budget_reaction_line(current: BudgetSnapshot, prior_spent: i64) -> Option
         ));
     }
 
-    if ratio_now >= BUDGET_NEAR_RATIO && ratio_before < BUDGET_NEAR_RATIO {
-        let pct = (ratio_now * 100.0).round() as i64;
+    if crossed_now && !crossed_before {
+        let pct = percent_rounded(current.spent, current.limit).unwrap_or(0);
         let left = (current.limit - current.spent).max(0);
         return Some(format!(
             "that's {pct}% of your {} budget, {} left for the month 👀",

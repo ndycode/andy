@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::writes::{MessageRole, TxKind};
+
 pub const CLAIM_TTL_MS: i64 = 2 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,14 +20,14 @@ pub enum ClaimResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationTurn {
-    pub role: String,
+    pub role: MessageRole,
     pub content: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionRow {
     pub id: Uuid,
-    pub kind: String,
+    pub kind: TxKind,
     pub amount_centavos: i64,
     pub category: Category,
     pub note: Option<String>,
@@ -35,7 +37,7 @@ pub struct TransactionRow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionSummaryRow {
-    pub kind: String,
+    pub kind: TxKind,
     pub amount_centavos: i64,
     pub category: Category,
     pub note: Option<String>,
@@ -77,6 +79,57 @@ pub struct TransactionSearch {
     pub kind: Option<String>,
     pub by_amount: bool,
     pub limit: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferRow {
+    pub amount_centavos: i64,
+    pub from_account: Option<String>,
+    pub to_account: Option<String>,
+    pub note: Option<String>,
+    pub local_date: NaiveDate,
+}
+
+/// Recent transfers (account-to-account movements), newest first. Optional
+/// `account` filters to transfers touching that account on either side.
+pub async fn search_transfers(
+    pool: &PgPool,
+    user_id: Uuid,
+    account: Option<&str>,
+    limit: i64,
+) -> Result<Vec<TransferRow>, sqlx::Error> {
+    let limit = limit.clamp(1, 50);
+    let account = account
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty());
+    let rows = sqlx::query(
+        r#"
+        select amount_centavos, from_account, to_account, note, local_date
+        from transfers
+        where user_id = $1
+          and ($2::text is null
+               or lower(coalesce(from_account, '')) = lower($2)
+               or lower(coalesce(to_account, '')) = lower($2))
+        order by local_date desc, created_at desc
+        limit $3
+        "#,
+    )
+    .bind(user_id)
+    .bind(account)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(TransferRow {
+                amount_centavos: row.try_get("amount_centavos")?,
+                from_account: row.try_get("from_account")?,
+                to_account: row.try_get("to_account")?,
+                note: row.try_get("note")?,
+                local_date: row.try_get("local_date")?,
+            })
+        })
+        .collect()
 }
 
 pub async fn claim_slot(
@@ -147,8 +200,9 @@ pub async fn recent_turns(
     let mut turns = rows
         .into_iter()
         .map(|row| {
+            let role: String = row.try_get("role")?;
             Ok(ConversationTurn {
-                role: row.try_get("role")?,
+                role: MessageRole::from_db(&role)?,
                 content: row.try_get("content")?,
             })
         })
@@ -303,6 +357,35 @@ pub async fn sum_spend_between(
     row.try_get("total")
 }
 
+/// Total expense and entry count for an optional category over `[start, end]`.
+/// Uses an aggregate `count(*)`, so the count is exact regardless of how many
+/// rows match (unlike counting a capped `search_transactions` result).
+pub async fn sum_and_count_spend_between(
+    pool: &PgPool,
+    user_id: Uuid,
+    start: NaiveDate,
+    end: NaiveDate,
+    category: Option<Category>,
+) -> Result<(i64, i64), sqlx::Error> {
+    let category = category.map(|category| category.as_str().to_string());
+    let row = sqlx::query(
+        r#"
+        select coalesce(sum(amount_centavos), 0)::bigint as total,
+               count(*)::bigint as entries
+        from transactions
+        where user_id = $1 and kind = 'expense' and local_date between $2 and $3
+          and ($4::text is null or category = $4::category)
+        "#,
+    )
+    .bind(user_id)
+    .bind(start)
+    .bind(end)
+    .bind(category)
+    .fetch_one(pool)
+    .await?;
+    Ok((row.try_get("total")?, row.try_get("entries")?))
+}
+
 pub async fn category_amounts_this_month(
     pool: &PgPool,
     user_id: Uuid,
@@ -336,6 +419,18 @@ pub async fn get_month_overview(
     at: DateTime<Utc>,
 ) -> Result<MonthOverview, sqlx::Error> {
     let (start, end) = month_range(at, MANILA_OFFSET_MINUTES);
+    get_month_overview_between(pool, user_id, start, end).await
+}
+
+/// Income/expense/net for an explicit inclusive `[start, end]` window. The
+/// clock-based [`get_month_overview`] delegates here; read tools call this
+/// directly with caller-supplied bounds so the timezone stays explicit.
+pub async fn get_month_overview_between(
+    pool: &PgPool,
+    user_id: Uuid,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<MonthOverview, sqlx::Error> {
     let row = sqlx::query(
         r#"
         select
@@ -365,6 +460,17 @@ pub async fn get_spending_by_category(
     at: DateTime<Utc>,
 ) -> Result<Vec<(Category, i64)>, sqlx::Error> {
     let (start, end) = month_range(at, MANILA_OFFSET_MINUTES);
+    get_spending_by_category_between(pool, user_id, start, end).await
+}
+
+/// Expense totals grouped by category over an explicit inclusive window,
+/// largest first. Backs both the clock-based wrapper and the read tools.
+pub async fn get_spending_by_category_between(
+    pool: &PgPool,
+    user_id: Uuid,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<Vec<(Category, i64)>, sqlx::Error> {
     let rows = sqlx::query(
         r#"
         select category::text as category, sum(amount_centavos)::bigint as total
@@ -530,9 +636,10 @@ pub async fn find_goal_by_name(
 
 fn transaction_from_row(row: sqlx::postgres::PgRow) -> Result<TransactionRow, sqlx::Error> {
     let category: String = row.try_get("category")?;
+    let kind: String = row.try_get("kind")?;
     Ok(TransactionRow {
         id: row.try_get("id")?,
-        kind: row.try_get("kind")?,
+        kind: TxKind::from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
         note: row.try_get("note")?,
@@ -545,8 +652,9 @@ fn transaction_summary_from_row(
     row: sqlx::postgres::PgRow,
 ) -> Result<TransactionSummaryRow, sqlx::Error> {
     let category: String = row.try_get("category")?;
+    let kind: String = row.try_get("kind")?;
     Ok(TransactionSummaryRow {
-        kind: row.try_get("kind")?,
+        kind: TxKind::from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
         note: row.try_get("note")?,
