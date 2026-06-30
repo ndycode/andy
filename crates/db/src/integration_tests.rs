@@ -396,3 +396,150 @@ async fn pending_confirmation_cancel_and_expiry() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn ledger_events_trace_create_edit_delete() -> anyhow::Result<()> {
+    let pool = test_pool().await;
+    let phone = unique_phone();
+    let user_id = resolve_user_id(&pool, &phone).await?;
+    let message_id = format!("msg-{}", Uuid::new_v4());
+
+    // Create carries source_message_id and writes a tx_create event.
+    flush_writes(
+        &pool,
+        Some(&message_id),
+        &[WriteIntent::Transaction {
+            kind: TxKind::Expense,
+            user_id,
+            amount_centavos: 18_000,
+            category: Category::Food,
+            note: Some("lunch".into()),
+            local_date: "2026-06-15".parse()?,
+        }],
+    )
+    .await?;
+
+    let tx_row = sqlx::query(
+        "select id, source_message_id from transactions where user_id = $1 order by seq desc limit 1",
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await?;
+    let tx_id: Uuid = tx_row.try_get("id")?;
+    let source: Option<String> = tx_row.try_get("source_message_id")?;
+    assert_eq!(source.as_deref(), Some(message_id.as_str()));
+
+    let event_count = |event_type: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "select count(*)::bigint as c from ledger_events where transaction_id = $1 and event_type = $2",
+            )
+            .bind(tx_id)
+            .bind(event_type)
+            .fetch_one(&pool)
+            .await
+            .and_then(|r| r.try_get::<i64, _>("c"))
+        }
+    };
+    assert_eq!(event_count("tx_create").await?, 1);
+
+    // Edit writes a tx_edit event with before/after amounts.
+    flush_writes(
+        &pool,
+        None,
+        &[WriteIntent::EditLast {
+            user_id,
+            target_id: Some(tx_id),
+            target_same_turn: false,
+            amount_centavos: Some(25_000),
+            category: None,
+            note: None,
+        }],
+    )
+    .await?;
+    let edit = sqlx::query(
+        "select before, after from ledger_events where transaction_id = $1 and event_type = 'tx_edit' limit 1",
+    )
+    .bind(tx_id)
+    .fetch_one(&pool)
+    .await?;
+    let before: serde_json::Value = edit.try_get("before")?;
+    let after: serde_json::Value = edit.try_get("after")?;
+    assert_eq!(before["amount_centavos"], 18_000);
+    assert_eq!(after["amount_centavos"], 25_000);
+
+    // Delete writes a tx_delete event capturing the before-state.
+    flush_writes(
+        &pool,
+        None,
+        &[WriteIntent::DeleteLast {
+            user_id,
+            target_id: Some(tx_id),
+            target_same_turn: false,
+        }],
+    )
+    .await?;
+    assert_eq!(event_count("tx_delete").await?, 1);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn superseded_flush_writes_no_ledger_events() -> anyhow::Result<()> {
+    let pool = test_pool().await;
+    let phone = unique_phone();
+    let user_id = resolve_user_id(&pool, &phone).await?;
+    let message_id = format!("msg-{}", Uuid::new_v4());
+
+    // Claim + complete the message id once.
+    assert_eq!(
+        claim_slot(&pool, &message_id, Utc::now()).await?,
+        ClaimResult::Process
+    );
+    flush_writes(
+        &pool,
+        Some(&message_id),
+        &[WriteIntent::Transaction {
+            kind: TxKind::Expense,
+            user_id,
+            amount_centavos: 10_000,
+            category: Category::Food,
+            note: None,
+            local_date: "2026-06-15".parse()?,
+        }],
+    )
+    .await?;
+
+    let count_events = || {
+        let pool = pool.clone();
+        async move {
+            sqlx::query("select count(*)::bigint as c from ledger_events where user_id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .and_then(|r| r.try_get::<i64, _>("c"))
+        }
+    };
+    assert_eq!(count_events().await?, 1);
+
+    // A second flush under the same (already-completed) message id is
+    // superseded and rolled back — it must not create extra events.
+    let result = flush_writes(
+        &pool,
+        Some(&message_id),
+        &[WriteIntent::Transaction {
+            kind: TxKind::Expense,
+            user_id,
+            amount_centavos: 99_000,
+            category: Category::Food,
+            note: None,
+            local_date: "2026-06-15".parse()?,
+        }],
+    )
+    .await?;
+    assert_eq!(result, FlushResult::Superseded);
+    assert_eq!(count_events().await?, 1);
+
+    Ok(())
+}

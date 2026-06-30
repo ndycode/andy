@@ -1,6 +1,7 @@
 use andy_shared::categories::Category;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
@@ -194,6 +195,10 @@ pub enum FlushResult {
 #[derive(Default)]
 struct FlushState {
     last_inserted_tx_id: Option<Uuid>,
+    /// Inbound message id carried into transaction inserts (source_message_id)
+    /// and ledger_events, so every committed transaction traces back to its
+    /// source. `None` for system-initiated flushes (e.g. cron).
+    source_message_id: Option<String>,
 }
 
 pub async fn flush_writes(
@@ -216,7 +221,10 @@ pub async fn flush_writes(
     .execute(&mut *tx)
     .await?;
 
-    let mut state = FlushState::default();
+    let mut state = FlushState {
+        source_message_id: message_id.map(ToString::to_string),
+        ..FlushState::default()
+    };
     for intent in intents {
         apply_write_intent(&mut tx, intent, &mut state).await?;
     }
@@ -262,8 +270,8 @@ async fn apply_write_intent(
             let row = sqlx::query(
                 r#"
                 insert into transactions
-                  (user_id, kind, amount_centavos, category, note, local_date)
-                values ($1, $2::tx_kind, $3, $4::category, $5, $6)
+                  (user_id, kind, amount_centavos, category, note, local_date, source_message_id)
+                values ($1, $2::tx_kind, $3, $4::category, $5, $6, $7)
                 returning id
                 "#,
             )
@@ -273,9 +281,27 @@ async fn apply_write_intent(
             .bind(category.as_str())
             .bind(note.as_deref().map(truncate_note))
             .bind(local_date)
+            .bind(state.source_message_id.as_deref())
             .fetch_one(&mut **tx)
             .await?;
-            state.last_inserted_tx_id = Some(row.try_get("id")?);
+            let tx_id: Uuid = row.try_get("id")?;
+            state.last_inserted_tx_id = Some(tx_id);
+            let after = json!({
+                "kind": kind.as_db(),
+                "amount_centavos": amount_centavos,
+                "category": category.as_str(),
+                "local_date": local_date.to_string(),
+            });
+            record_ledger_event(
+                tx,
+                *user_id,
+                Some(tx_id),
+                "tx_create",
+                None,
+                Some(after),
+                state.source_message_id.as_deref(),
+            )
+            .await?;
         }
         WriteIntent::GoalContribution {
             user_id,
@@ -286,8 +312,8 @@ async fn apply_write_intent(
             let row = sqlx::query(
                 r#"
                 insert into transactions
-                  (user_id, kind, amount_centavos, category, goal_id, local_date)
-                values ($1, 'expense', $2, 'Savings/Goals', $3, $4)
+                  (user_id, kind, amount_centavos, category, goal_id, local_date, source_message_id)
+                values ($1, 'expense', $2, 'Savings/Goals', $3, $4, $5)
                 returning id
                 "#,
             )
@@ -295,20 +321,43 @@ async fn apply_write_intent(
             .bind(amount_centavos)
             .bind(goal_id)
             .bind(local_date)
+            .bind(state.source_message_id.as_deref())
             .fetch_one(&mut **tx)
             .await?;
-            state.last_inserted_tx_id = Some(row.try_get("id")?);
-            sqlx::query(
+            let tx_id: Uuid = row.try_get("id")?;
+            state.last_inserted_tx_id = Some(tx_id);
+            let new_balance = sqlx::query(
                 r#"
                 update savings_goals
                 set saved_centavos = saved_centavos + $3, updated_at = now()
                 where id = $1 and user_id = $2
+                returning saved_centavos
                 "#,
             )
             .bind(goal_id)
             .bind(user_id)
             .bind(amount_centavos)
-            .execute(&mut **tx)
+            .fetch_optional(&mut **tx)
+            .await?
+            .map(|r| r.try_get::<i64, _>("saved_centavos"))
+            .transpose()?;
+            let after = json!({
+                "kind": "expense",
+                "amount_centavos": amount_centavos,
+                "category": "Savings/Goals",
+                "goal_id": goal_id,
+                "goal_saved_centavos": new_balance,
+                "local_date": local_date.to_string(),
+            });
+            record_ledger_event(
+                tx,
+                *user_id,
+                Some(tx_id),
+                "tx_create",
+                None,
+                Some(after),
+                state.source_message_id.as_deref(),
+            )
             .await?;
         }
         WriteIntent::DeleteLast {
@@ -322,7 +371,8 @@ async fn apply_write_intent(
                 *target_id
             };
             if let Some(target_id) = target_id {
-                delete_transaction(tx, *user_id, target_id).await?;
+                delete_transaction(tx, *user_id, target_id, state.source_message_id.as_deref())
+                    .await?;
                 if *target_same_turn {
                     state.last_inserted_tx_id = None;
                 }
@@ -342,8 +392,16 @@ async fn apply_write_intent(
                 *target_id
             };
             if let Some(target_id) = target_id {
-                edit_transaction(tx, *user_id, target_id, *amount_centavos, *category, note)
-                    .await?;
+                edit_transaction(
+                    tx,
+                    *user_id,
+                    target_id,
+                    *amount_centavos,
+                    *category,
+                    note,
+                    state.source_message_id.as_deref(),
+                )
+                .await?;
             }
         }
         WriteIntent::CreateGoal {
@@ -563,10 +621,12 @@ async fn delete_transaction(
     tx: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     target_id: Uuid,
+    source_message_id: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let row = sqlx::query(
         r#"
-        select amount_centavos, goal_id
+        select amount_centavos, category::text as category, kind::text as kind,
+               goal_id, local_date
         from transactions
         where id = $1 and user_id = $2
         "#,
@@ -580,25 +640,50 @@ async fn delete_transaction(
     };
     let amount_centavos: i64 = row.try_get("amount_centavos")?;
     let goal_id: Option<Uuid> = row.try_get("goal_id")?;
+    let category: String = row.try_get("category")?;
+    let kind: String = row.try_get("kind")?;
+    let local_date: chrono::NaiveDate = row.try_get("local_date")?;
+    let mut goal_balance: Option<i64> = None;
     if let Some(goal_id) = goal_id {
-        sqlx::query(
+        goal_balance = sqlx::query(
             r#"
             update savings_goals
             set saved_centavos = saved_centavos - $3, updated_at = now()
             where id = $1 and user_id = $2
+            returning saved_centavos
             "#,
         )
         .bind(goal_id)
         .bind(user_id)
         .bind(amount_centavos)
-        .execute(&mut **tx)
-        .await?;
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|r| r.try_get::<i64, _>("saved_centavos"))
+        .transpose()?;
     }
     sqlx::query("delete from transactions where id = $1 and user_id = $2")
         .bind(target_id)
         .bind(user_id)
         .execute(&mut **tx)
         .await?;
+    let before = json!({
+        "kind": kind,
+        "amount_centavos": amount_centavos,
+        "category": category,
+        "goal_id": goal_id,
+        "goal_saved_centavos": goal_balance,
+        "local_date": local_date.to_string(),
+    });
+    record_ledger_event(
+        tx,
+        user_id,
+        Some(target_id),
+        "tx_delete",
+        Some(before),
+        None,
+        source_message_id,
+    )
+    .await?;
     Ok(())
 }
 
@@ -609,10 +694,11 @@ async fn edit_transaction(
     amount_centavos: Option<i64>,
     category: Option<Category>,
     note: &Option<String>,
+    source_message_id: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let row = sqlx::query(
         r#"
-        select amount_centavos, goal_id
+        select amount_centavos, category::text as category, goal_id
         from transactions
         where id = $1 and user_id = $2
         "#,
@@ -625,23 +711,28 @@ async fn edit_transaction(
         return Ok(());
     };
     let old_amount: i64 = row.try_get("amount_centavos")?;
+    let old_category: String = row.try_get("category")?;
     let goal_id: Option<Uuid> = row.try_get("goal_id")?;
+    let mut goal_balance: Option<i64> = None;
     if let Some(goal_id) = goal_id
         && let Some(new_amount) = amount_centavos
         && new_amount != old_amount
     {
-        sqlx::query(
+        goal_balance = sqlx::query(
             r#"
             update savings_goals
             set saved_centavos = saved_centavos + $3, updated_at = now()
             where id = $1 and user_id = $2
+            returning saved_centavos
             "#,
         )
         .bind(goal_id)
         .bind(user_id)
         .bind(new_amount - old_amount)
-        .execute(&mut **tx)
-        .await?;
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|r| r.try_get::<i64, _>("saved_centavos"))
+        .transpose()?;
     }
 
     let effective_category = category.filter(|_| goal_id.is_none());
@@ -665,6 +756,60 @@ async fn edit_transaction(
     .bind(effective_category.map(|value| value.as_str()))
     .bind(note.is_some())
     .bind(note_value)
+    .execute(&mut **tx)
+    .await?;
+
+    let after_category = effective_category
+        .map(|c| c.as_str().to_string())
+        .unwrap_or_else(|| old_category.clone());
+    let before = json!({
+        "amount_centavos": old_amount,
+        "category": old_category,
+        "goal_id": goal_id,
+    });
+    let after = json!({
+        "amount_centavos": amount_centavos.unwrap_or(old_amount),
+        "category": after_category,
+        "goal_id": goal_id,
+        "goal_saved_centavos": goal_balance,
+    });
+    record_ledger_event(
+        tx,
+        user_id,
+        Some(target_id),
+        "tx_edit",
+        Some(before),
+        Some(after),
+        source_message_id,
+    )
+    .await?;
+    Ok(())
+}
+
+/// Append one row to the ledger audit trail. before/after are compact,
+/// sanitized JSON snapshots — never raw notes or provider data.
+async fn record_ledger_event(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+    transaction_id: Option<Uuid>,
+    event_type: &str,
+    before: Option<serde_json::Value>,
+    after: Option<serde_json::Value>,
+    source_message_id: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        insert into ledger_events
+          (user_id, transaction_id, event_type, before, after, source_message_id)
+        values ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(user_id)
+    .bind(transaction_id)
+    .bind(event_type)
+    .bind(before)
+    .bind(after)
+    .bind(source_message_id)
     .execute(&mut **tx)
     .await?;
     Ok(())

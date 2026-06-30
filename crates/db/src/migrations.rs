@@ -61,6 +61,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0014_pending_confirmations",
         include_str!("../../../packages/db/migrations/0014_pending_confirmations.sql"),
     ),
+    (
+        "0015_ledger_events",
+        include_str!("../../../packages/db/migrations/0015_ledger_events.sql"),
+    ),
 ];
 
 pub async fn run(pool: &PgPool) -> Result<(), sqlx::Error> {
