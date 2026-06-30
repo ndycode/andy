@@ -73,6 +73,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0017_accounts_transfers",
         include_str!("../../../packages/db/migrations/0017_accounts_transfers.sql"),
     ),
+    (
+        "0018_length_constraints",
+        include_str!("../../../packages/db/migrations/0018_length_constraints.sql"),
+    ),
 ];
 
 pub async fn run(pool: &PgPool) -> Result<(), sqlx::Error> {

@@ -675,3 +675,41 @@ async fn transfers_do_not_affect_income_or_expense_totals() -> anyhow::Result<()
 
     Ok(())
 }
+
+#[tokio::test]
+async fn length_constraints_accept_app_truncated_writes() -> anyhow::Result<()> {
+    // The app truncates a note to 500 chars before insert; the 0018 CHECK
+    // constraint uses the same limit, so a flush of an over-length note must
+    // succeed (truncated) rather than violate the constraint.
+    let pool = test_pool().await;
+    let user_id = resolve_user_id(&pool, &unique_phone()).await?;
+
+    let long_note = "x".repeat(900);
+    flush_writes(
+        &pool,
+        None,
+        &[WriteIntent::Transaction {
+            kind: TxKind::Expense,
+            user_id,
+            amount_centavos: 18_000,
+            category: Category::Food,
+            note: Some(long_note),
+            local_date: "2026-06-15".parse()?,
+            account: None,
+        }],
+    )
+    .await?;
+
+    let stored: String =
+        sqlx::query("select note from transactions where user_id = $1 order by seq desc limit 1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await?
+            .try_get("note")?;
+    assert_eq!(
+        stored.chars().count(),
+        500,
+        "note should be truncated to the CHECK limit"
+    );
+    Ok(())
+}
