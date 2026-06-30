@@ -78,6 +78,33 @@ pub async fn run(pool: &PgPool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Total number of migrations bundled into the binary. Pair with
+/// [`applied_versions`] to report readiness without running anything.
+#[must_use]
+pub const fn bundled_count() -> usize {
+    MIGRATIONS.len()
+}
+
+/// Readiness probe: confirm the DB is reachable and report how many of the
+/// bundled migrations have been recorded as applied. Returns `Ok(None)` when
+/// the tracking table does not exist yet (migrations never run), and the
+/// applied count otherwise. Performs no writes and no locking, so it is cheap
+/// enough for a `/ready` handler.
+pub async fn applied_count_if_tracked(pool: &PgPool) -> Result<Option<i64>, sqlx::Error> {
+    let tracked = sqlx::query("select to_regclass('public._andy_migrations') is not null as exists")
+        .fetch_one(pool)
+        .await?
+        .try_get::<bool, _>("exists")?;
+    if !tracked {
+        return Ok(None);
+    }
+    let count = sqlx::query("select count(*)::bigint as count from _andy_migrations")
+        .fetch_one(pool)
+        .await?
+        .try_get::<i64, _>("count")?;
+    Ok(Some(count))
+}
+
 async fn ensure_tracking_table(tx: &mut Transaction<'_, Postgres>) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"

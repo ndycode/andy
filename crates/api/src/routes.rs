@@ -86,6 +86,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/webhooks/sendblue", post(sendblue_webhook))
         .route("/api/cron/daily", get(daily_cron))
         .with_state(state)
@@ -102,6 +103,81 @@ async fn health() -> impl IntoResponse {
         status: "ok",
         service: "andy",
     })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadyResponse {
+    ok: bool,
+    service: &'static str,
+    /// "ok", "error", or "unconfigured" — never a connection string or error body.
+    db: &'static str,
+    openrouter_configured: bool,
+    sendblue_configured: bool,
+    /// "ok" (all bundled migrations applied), "pending" (some/none applied),
+    /// "unknown" (DB unreachable). Never leaks schema details.
+    migrations: &'static str,
+}
+
+/// Readiness probe for deploy gating. Unlike `/health` (static liveness), this
+/// validates required env, pings the DB, and reports whether OpenRouter and
+/// Sendblue are configured — all without exposing any secret value. Returns
+/// 200 when ready and 503 otherwise so a load balancer can act on it.
+async fn ready(State(state): State<AppState>) -> Response {
+    let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
+        Ok(env) => env,
+        Err(_) => {
+            return json_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ReadyResponse {
+                    ok: false,
+                    service: "andy",
+                    db: "unconfigured",
+                    openrouter_configured: false,
+                    sendblue_configured: false,
+                    migrations: "unknown",
+                },
+            );
+        }
+    };
+
+    let openrouter_configured = env.openrouter_api_key.is_some();
+    let sendblue_configured = !env.sendblue_api_key.is_empty()
+        && !env.sendblue_api_secret.is_empty()
+        && !env.sendblue_from_number.is_empty();
+
+    let pool = match state.pool.clone() {
+        Some(pool) => Some(pool),
+        None => connect_pool(&env.database_url).await.ok(),
+    };
+    let (db, migrations) = match pool {
+        Some(pool) => match andy_db::migrations::applied_count_if_tracked(&pool).await {
+            Ok(Some(applied)) if applied as usize >= andy_db::migrations::bundled_count() => {
+                ("ok", "ok")
+            }
+            Ok(_) => ("ok", "pending"),
+            Err(_) => ("error", "unknown"),
+        },
+        None => ("error", "unknown"),
+    };
+
+    let ok = db == "ok" && migrations == "ok";
+    let status = if ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    json_status(
+        status,
+        ReadyResponse {
+            ok,
+            service: "andy",
+            db,
+            openrouter_configured,
+            sendblue_configured,
+            migrations,
+        },
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -452,6 +528,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn ready_reports_unavailable_without_env_or_db() {
+        // No env in state; Env::from_process in this test env is missing the
+        // required secrets, so /ready must report not-ready, not crash.
+        let response = router(AppState::test())
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn ready_never_leaks_secrets() {
+        // State has env (with secrets) but an unreachable DB. The body must
+        // carry only booleans/status words, never any secret value.
+        let mut state = AppState::test();
+        let mut env = env();
+        env.openrouter_api_key = Some("sk-super-secret".into());
+        state.env = Some(env);
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("\"openrouterConfigured\":true"));
+        assert!(!text.contains("sk-super-secret"));
+        assert!(!text.contains("postgres://"));
+        assert!(!text.contains("cron"), "cron secret must not leak");
     }
 
     #[tokio::test]
