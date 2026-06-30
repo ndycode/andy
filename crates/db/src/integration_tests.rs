@@ -305,6 +305,9 @@ async fn pending_confirmation_confirm_applies_writes_once() -> anyhow::Result<()
     let phone = unique_phone();
     let user_id = resolve_user_id(&pool, &phone).await?;
     let now = Utc::now();
+    // Unique per run: the partial unique index on source_message_id persists
+    // across test runs against a reused database.
+    let msg = format!("m-{}", Uuid::new_v4());
 
     let parked = vec![WriteIntent::Transaction {
         kind: TxKind::Expense,
@@ -321,7 +324,7 @@ async fn pending_confirmation_confirm_applies_writes_once() -> anyhow::Result<()
         &pool,
         user_id,
         &phone,
-        Some("m1"),
+        Some(&msg),
         "log expense",
         &parked,
         now + Duration::minutes(60),
@@ -331,15 +334,16 @@ async fn pending_confirmation_confirm_applies_writes_once() -> anyhow::Result<()
         &pool,
         user_id,
         &phone,
-        Some("m1"),
+        Some(&msg),
         "log expense",
         &parked,
         now + Duration::minutes(60),
     )
     .await?;
     let dupes: i64 = sqlx::query(
-        "select count(*)::bigint as c from pending_confirmations where source_message_id = 'm1'",
+        "select count(*)::bigint as c from pending_confirmations where source_message_id = $1",
     )
+    .bind(&msg)
     .fetch_one(&pool)
     .await?
     .try_get("c")?;
