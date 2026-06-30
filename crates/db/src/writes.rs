@@ -40,6 +40,17 @@ impl TxKind {
             Self::Expense => "expense",
         }
     }
+
+    /// Parse a `tx_kind` value read from the database. Returns a decode error
+    /// for any value the enum does not recognize, so a bad DB value surfaces
+    /// explicitly instead of being silently coerced.
+    pub(crate) fn from_db(value: &str) -> Result<Self, sqlx::Error> {
+        match value {
+            "income" => Ok(Self::Income),
+            "expense" => Ok(Self::Expense),
+            other => Err(decode_error("tx_kind", other)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +64,15 @@ impl Cadence {
         match self {
             Self::Weekly => "weekly",
             Self::Monthly => "monthly",
+        }
+    }
+
+    /// Parse a `cadence` value read from the database.
+    pub(crate) fn from_db(value: &str) -> Result<Self, sqlx::Error> {
+        match value {
+            "weekly" => Ok(Self::Weekly),
+            "monthly" => Ok(Self::Monthly),
+            other => Err(decode_error("cadence", other)),
         }
     }
 }
@@ -69,6 +89,40 @@ impl MessageRole {
             Self::User => "user",
             Self::Assistant => "assistant",
         }
+    }
+
+    /// Parse a `message_role` value read from the database.
+    pub(crate) fn from_db(value: &str) -> Result<Self, sqlx::Error> {
+        match value {
+            "user" => Ok(Self::User),
+            "assistant" => Ok(Self::Assistant),
+            other => Err(decode_error("message_role", other)),
+        }
+    }
+}
+
+/// Build an sqlx decode error for an unrecognized enum value read from the DB.
+fn decode_error(kind: &str, value: &str) -> sqlx::Error {
+    sqlx::Error::Decode(format!("invalid {kind} value in database: {value:?}").into())
+}
+
+impl std::fmt::Display for TxKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_db())
+    }
+}
+
+impl std::fmt::Display for Cadence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_db())
+    }
+}
+
+impl MessageRole {
+    /// Stable lowercase label (`user`/`assistant`) for prompts and display.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        self.as_db()
     }
 }
 
@@ -1053,9 +1107,31 @@ fn escape_like(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn truncate_clips_to_char_boundary() {
         assert_eq!(super::truncate("hello", 3), "hel");
         assert_eq!(super::truncate("hi", 5), "hi");
+    }
+
+    #[test]
+    fn enum_from_db_parses_known_and_rejects_unknown() {
+        assert_eq!(TxKind::from_db("income").unwrap(), TxKind::Income);
+        assert_eq!(Cadence::from_db("weekly").unwrap(), Cadence::Weekly);
+        assert_eq!(
+            MessageRole::from_db("assistant").unwrap(),
+            MessageRole::Assistant
+        );
+        assert!(TxKind::from_db("bogus").is_err());
+        assert!(Cadence::from_db("daily").is_err());
+        assert!(MessageRole::from_db("system").is_err());
+    }
+
+    #[test]
+    fn enum_display_round_trips_db_form() {
+        assert_eq!(TxKind::Expense.to_string(), "expense");
+        assert_eq!(Cadence::Monthly.to_string(), "monthly");
+        assert_eq!(MessageRole::User.label(), "user");
     }
 }

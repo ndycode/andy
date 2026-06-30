@@ -393,10 +393,9 @@ pub fn snapshot_prompt(snapshot: &AgentSnapshot) -> String {
                 .recent_turns
                 .iter()
                 .map(|turn| {
-                    let role = match turn.role.as_str() {
-                        "assistant" => "andy",
-                        "user" => "user",
-                        other => other,
+                    let role = match turn.role {
+                        MessageRole::Assistant => "andy",
+                        MessageRole::User => "user",
                     };
                     format!("{role}: {}", clipped_one_line(&turn.content, 280))
                 })
@@ -650,7 +649,7 @@ async fn search_transactions_tool(
         .iter()
         .map(|row| {
             json!({
-                "kind": row.kind,
+                "kind": row.kind.to_string(),
                 "amount": format_php(row.amount_centavos),
                 "category": row.category,
                 "note": sanitize_note(row.note.as_deref()),
@@ -706,10 +705,10 @@ fn list_recurring_tool(ctx: &FinanceToolContext<'_>) -> Value {
         .map(|item| {
             json!({
                 "label": item.label,
-                "kind": item.kind,
+                "kind": item.kind.to_string(),
                 "amount": format_php(item.amount_centavos),
                 "category": item.category,
-                "cadence": item.cadence,
+                "cadence": item.cadence.to_string(),
                 "dayOfMonth": item.day_of_month,
                 "dayOfWeek": item.day_of_week,
             })
@@ -1514,11 +1513,11 @@ mod tests {
         let snapshot = AgentSnapshot {
             recent_turns: vec![
                 ConversationTurn {
-                    role: "user".into(),
+                    role: MessageRole::User,
                     content: "what do you remember?".into(),
                 },
                 ConversationTurn {
-                    role: "assistant".into(),
+                    role: MessageRole::Assistant,
                     content: "you prefer short answers".into(),
                 },
             ],

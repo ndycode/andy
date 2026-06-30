@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::writes::{MessageRole, TxKind};
+
 pub const CLAIM_TTL_MS: i64 = 2 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,14 +20,14 @@ pub enum ClaimResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationTurn {
-    pub role: String,
+    pub role: MessageRole,
     pub content: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionRow {
     pub id: Uuid,
-    pub kind: String,
+    pub kind: TxKind,
     pub amount_centavos: i64,
     pub category: Category,
     pub note: Option<String>,
@@ -35,7 +37,7 @@ pub struct TransactionRow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionSummaryRow {
-    pub kind: String,
+    pub kind: TxKind,
     pub amount_centavos: i64,
     pub category: Category,
     pub note: Option<String>,
@@ -147,8 +149,9 @@ pub async fn recent_turns(
     let mut turns = rows
         .into_iter()
         .map(|row| {
+            let role: String = row.try_get("role")?;
             Ok(ConversationTurn {
-                role: row.try_get("role")?,
+                role: MessageRole::from_db(&role)?,
                 content: row.try_get("content")?,
             })
         })
@@ -553,9 +556,10 @@ pub async fn find_goal_by_name(
 
 fn transaction_from_row(row: sqlx::postgres::PgRow) -> Result<TransactionRow, sqlx::Error> {
     let category: String = row.try_get("category")?;
+    let kind: String = row.try_get("kind")?;
     Ok(TransactionRow {
         id: row.try_get("id")?,
-        kind: row.try_get("kind")?,
+        kind: TxKind::from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
         note: row.try_get("note")?,
@@ -568,8 +572,9 @@ fn transaction_summary_from_row(
     row: sqlx::postgres::PgRow,
 ) -> Result<TransactionSummaryRow, sqlx::Error> {
     let category: String = row.try_get("category")?;
+    let kind: String = row.try_get("kind")?;
     Ok(TransactionSummaryRow {
-        kind: row.try_get("kind")?,
+        kind: TxKind::from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
         note: row.try_get("note")?,

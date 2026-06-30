@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::writes::{DEDUP_KEY_MAX, OUTBOUND_CONTENT_MAX, PHONE_MAX, RecurringInput};
+use crate::writes::{
+    Cadence, DEDUP_KEY_MAX, OUTBOUND_CONTENT_MAX, PHONE_MAX, RecurringInput, TxKind,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryRow {
@@ -21,10 +23,10 @@ pub struct MemoryRow {
 pub struct RecurringRow {
     pub id: Uuid,
     pub label: String,
-    pub kind: String,
+    pub kind: TxKind,
     pub amount_centavos: i64,
     pub category: Category,
-    pub cadence: String,
+    pub cadence: Cadence,
     pub day_of_month: Option<i64>,
     pub day_of_week: Option<i64>,
     pub last_reminded_date: Option<NaiveDate>,
@@ -539,7 +541,7 @@ pub async fn due_recurring_today(
             if item.last_reminded_date == Some(today) {
                 return false;
             }
-            let due = if item.cadence == "monthly" {
+            let due = if item.cadence == Cadence::Monthly {
                 let Some(day) = item.day_of_month else {
                     return false;
                 };
@@ -698,13 +700,15 @@ pub async fn get_insights(
 
 fn recurring_from_row(row: sqlx::postgres::PgRow) -> Result<RecurringRow, sqlx::Error> {
     let category: String = row.try_get("category")?;
+    let kind: String = row.try_get("kind")?;
+    let cadence: String = row.try_get("cadence")?;
     Ok(RecurringRow {
         id: row.try_get("id")?,
         label: row.try_get("label")?,
-        kind: row.try_get("kind")?,
+        kind: TxKind::from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
-        cadence: row.try_get("cadence")?,
+        cadence: Cadence::from_db(&cadence)?,
         day_of_month: row.try_get("day_of_month")?,
         day_of_week: row.try_get("day_of_week")?,
         last_reminded_date: row.try_get("last_reminded_date")?,
