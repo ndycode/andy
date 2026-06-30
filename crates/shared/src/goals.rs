@@ -1,7 +1,7 @@
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{money::format_php, time::local_date};
+use crate::{money::format_php, percent::percent_rounded, time::local_date};
 
 const DAY_SECONDS: i64 = 24 * 60 * 60;
 
@@ -25,7 +25,7 @@ pub struct GoalPaceVerdict {
 
 #[must_use]
 pub fn goal_pace(goal: &GoalProgressInput) -> GoalPaceVerdict {
-    let pct = ((goal.saved_centavos as f64 / goal.target_centavos as f64) * 100.0).round() as i64;
+    let pct = percent_rounded(goal.saved_centavos, goal.target_centavos).unwrap_or(0);
     let Some(target_date) = goal.target_date else {
         return GoalPaceVerdict {
             pct,

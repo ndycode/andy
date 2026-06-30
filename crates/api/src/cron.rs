@@ -205,7 +205,8 @@ async fn run_budget_checks(
             let kind = format!("budget:{}", budget.category);
             if record_nudge(pool, user_id, &kind, now).await? {
                 let left = (budget.limit - budget.spent).max(0);
-                let pct = (ratio * 100.0).round() as i64;
+                let pct =
+                    andy_shared::percent::percent_rounded(budget.spent, budget.limit).unwrap_or(0);
                 let msg = format!(
                     "Budget heads-up: {} is at {} / {} ({}%). {} left this month.",
                     budget.category,

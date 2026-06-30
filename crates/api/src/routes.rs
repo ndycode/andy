@@ -20,8 +20,8 @@ use andy_shared::{
     dedup::content_dedup_key,
     env::Env,
     errors::failure_reply,
-    security::constant_time_equal,
-    time::{app_timezone, default_offset_minutes, local_date},
+    security::{constant_time_equal, token_matches_hash},
+    time::AppTimeConfig,
 };
 use axum::{
     Router,
@@ -31,7 +31,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use chrono::{Datelike, Utc};
+use chrono::Utc;
 use serde::Serialize;
 use sqlx::PgPool;
 use tracing::error;
@@ -219,7 +219,7 @@ async fn sendblue_webhook(
     };
 
     let token = query_param(parts.uri.query(), "t");
-    if !valid_secret(token.as_deref(), &env.webhook_url_token) {
+    if !webhook_token_valid(token.as_deref(), &env) {
         return Ok(json_status(
             StatusCode::UNAUTHORIZED,
             OkResponse { ok: false },
@@ -311,6 +311,7 @@ async fn handle_inbound(
     if !is_allowed(&phone, &env.allowed_phone) {
         return Ok(());
     }
+    let clock = AppTimeConfig::from_env();
     let pool = if let Some(pool) = state.pool.clone() {
         pool
     } else {
@@ -352,7 +353,7 @@ async fn handle_inbound(
         .into_iter()
         .map(|row| row.content)
         .collect::<Vec<_>>();
-    let today = local_date(Utc::now(), default_offset_minutes());
+    let today = clock.local_date(Utc::now());
     // In serverless lazy mode `state.openrouter` is None even when the key is
     // configured, so fall back to building a client from env. Without this the
     // agent always returns ModelUnavailable in production.
@@ -364,7 +365,7 @@ async fn handle_inbound(
     let agent = run_agent(RunAgentInput {
         text: &text,
         user_id,
-        timezone: &app_timezone(),
+        timezone: &clock.label,
         today,
         model: local_openrouter.as_ref(),
         reader: Some(&reader),
@@ -395,7 +396,7 @@ async fn handle_inbound(
         }
     };
 
-    let reply = append_budget_reaction(&pool, user_id, &reply, &writes).await?;
+    let reply = append_budget_reaction(&pool, &clock, user_id, &reply, &writes).await?;
     let outbound_dedup_key = format!("inbound-reply:{dedup_id}");
 
     // Deterministic safety gate between model output and the ledger. The model
@@ -570,17 +571,12 @@ async fn resolve_pending_confirmation(
 
 async fn append_budget_reaction(
     pool: &PgPool,
+    clock: &AppTimeConfig,
     user_id: uuid::Uuid,
     reply: &str,
     writes: &[WriteIntent],
 ) -> Result<String, sqlx::Error> {
-    let today = local_date(Utc::now(), default_offset_minutes());
-    let start = today.with_day(1).expect("valid month start");
-    let end = if today.month() == 12 {
-        chrono::NaiveDate::from_ymd_opt(today.year() + 1, 1, 1).expect("valid date")
-    } else {
-        chrono::NaiveDate::from_ymd_opt(today.year(), today.month() + 1, 1).expect("valid date")
-    } - chrono::Duration::days(1);
+    let (start, end) = clock.month_range(Utc::now());
 
     let mut just_logged = HashMap::new();
     for write in writes {
@@ -631,15 +627,68 @@ fn declared_content_length_too_large(headers: &HeaderMap) -> bool {
         .is_some_and(|len| len > MAX_BODY_BYTES)
 }
 
-fn valid_secret(actual: Option<&str>, expected: &str) -> bool {
-    actual.is_some_and(|actual| !expected.is_empty() && constant_time_equal(actual, expected))
+/// Verify the inbound webhook token. Prefers the hashed form
+/// (`WEBHOOK_URL_TOKEN_SHA256`): when set, `sha256(token)` is compared in
+/// constant time against the stored digest. Otherwise falls back to the raw
+/// `WEBHOOK_URL_TOKEN`. A missing token or empty expected value never passes.
+fn webhook_token_valid(actual: Option<&str>, env: &Env) -> bool {
+    let Some(actual) = actual else {
+        return false;
+    };
+    if let Some(expected_hash) = env.webhook_url_token_sha256.as_deref() {
+        return token_matches_hash(actual, expected_hash);
+    }
+    !env.webhook_url_token.is_empty() && constant_time_equal(actual, &env.webhook_url_token)
 }
 
+/// Extract a single query parameter value (percent-decoded). Returns `None`
+/// when the key is absent or appears more than once, so an attacker cannot
+/// smuggle a second `t=` past the check.
 fn query_param(query: Option<&str>, key: &str) -> Option<String> {
-    query?.split('&').find_map(|pair| {
+    let query = query?;
+    let mut found: Option<String> = None;
+    for pair in query.split('&') {
         let (k, v) = pair.split_once('=')?;
-        (k == key).then(|| v.to_string())
-    })
+        if k == key {
+            if found.is_some() {
+                return None; // ambiguous repeated parameter
+            }
+            found = Some(percent_decode(v));
+        }
+    }
+    found
+}
+
+/// Minimal application/x-www-form-urlencoded value decoder: `+` to space and
+/// `%XX` hex escapes. Invalid escapes are passed through unchanged.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    out.push((hi * 16 + lo) as u8);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn allow_burst(state: &AppState) -> bool {
@@ -758,6 +807,53 @@ mod tests {
             .body(Body::from("{}"))
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn query_param_decodes_and_rejects_repeated_keys() {
+        assert_eq!(
+            query_param(Some("t=ab%20cd"), "t").as_deref(),
+            Some("ab cd")
+        );
+        assert_eq!(query_param(Some("t=a&t=b"), "t"), None);
+        assert_eq!(query_param(Some("x=1"), "t"), None);
+    }
+
+    #[test]
+    fn webhook_token_valid_prefers_hash_over_raw() {
+        let mut e = env();
+        // Legacy raw mode.
+        assert!(webhook_token_valid(Some("token"), &e));
+        // Hash mode: only the value that hashes to the digest passes.
+        e.webhook_url_token = String::new();
+        e.webhook_url_token_sha256 = Some(andy_shared::security::sha256_hex("token"));
+        assert!(webhook_token_valid(Some("token"), &e));
+        assert!(!webhook_token_valid(Some("wrong"), &e));
+        assert!(!webhook_token_valid(None, &e));
+    }
+
+    #[tokio::test]
+    async fn webhook_hashed_token_passes_auth_gate() {
+        // A correct hashed token must not be rejected at the token gate. With a
+        // non-RECEIVED body it still 401s at parse, so compare against a wrong
+        // token: both reach the same handler path only if auth passed.
+        let mut state = AppState::test();
+        let mut e = env();
+        e.webhook_url_token = String::new();
+        e.webhook_url_token_sha256 = Some(andy_shared::security::sha256_hex("token"));
+        state.env = Some(e);
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/sendblue?t=wrong-token")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Wrong token is rejected at the gate.
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 

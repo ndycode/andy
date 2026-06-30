@@ -1,5 +1,6 @@
 use andy_shared::{
     categories::{Category, coerce_category},
+    memory::{compact_memory_content, normalize_memory_content, should_promote_memory_kind},
     time::{MANILA_OFFSET_MINUTES, current_week_start, days_in_local_month, local_date},
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
@@ -217,19 +218,41 @@ pub async fn mark_outbound_sent(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Err
     Ok(())
 }
 
-pub async fn mark_outbound_failed(pool: &PgPool, id: Uuid, error: &str) -> Result<(), sqlx::Error> {
+/// Record an outbound send failure. When the error is retryable and the
+/// message still has attempts left, it goes back to `pending` with backoff.
+/// When attempts are exhausted or the error is non-retryable (e.g. auth), it is
+/// dead-lettered (`status = 'failed'`, `dead_lettered_at` set) so it can never
+/// retry forever. Only acts on rows still in `sending` (the claimed state).
+pub async fn mark_outbound_failed(
+    pool: &PgPool,
+    id: Uuid,
+    error: &str,
+    retryable: bool,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
         update outbound_messages
-        set status = 'pending',
+        set status = case
+              when $3 and attempt_count < max_attempts then 'pending'
+              else 'failed'
+            end,
+            dead_lettered_at = case
+              when $3 and attempt_count < max_attempts then dead_lettered_at
+              else now()
+            end,
             last_error = $2,
-            next_attempt_at = now() + make_interval(secs => least(3600, greatest(30, attempt_count * 30))),
+            next_attempt_at = case
+              when $3 and attempt_count < max_attempts
+                then now() + make_interval(secs => least(3600, greatest(30, attempt_count * 30)))
+              else next_attempt_at
+            end,
             updated_at = now()
         where id = $1 and status = 'sending'
         "#,
     )
     .bind(id)
     .bind(truncate(error, OUTBOUND_CONTENT_MAX))
+    .bind(retryable)
     .execute(pool)
     .await?;
     Ok(())
@@ -703,32 +726,6 @@ fn outbound_from_row(row: sqlx::postgres::PgRow) -> Result<OutboundMessageRow, s
 
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
-}
-
-fn normalize_memory_content(content: &str) -> String {
-    content
-        .to_ascii_lowercase()
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn compact_memory_content(content: &str) -> String {
-    normalize_memory_content(content).replace(' ', "")
-}
-
-fn should_promote_memory_kind(current: &str, next: &str) -> bool {
-    memory_kind_rank(next) < memory_kind_rank(current)
-}
-
-fn memory_kind_rank(kind: &str) -> i64 {
-    match kind {
-        "payday" => 0,
-        "fact" | "preference" => 1,
-        "goal" => 2,
-        _ => 3,
-    }
 }
 
 fn note_keywords(note: &str) -> Vec<String> {

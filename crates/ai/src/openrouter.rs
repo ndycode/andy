@@ -212,7 +212,11 @@ impl OpenRouterClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            // Keep only a short, redacted excerpt of the provider body. The
+            // full body can echo request content; failure handling keys off the
+            // status code, not the body, and user replies never include it.
+            let raw = response.text().await.unwrap_or_default();
+            let body = redact_excerpt(&raw);
             return Err(OpenRouterError::Http { status, body });
         }
 
@@ -231,6 +235,31 @@ impl OpenRouterClient {
             tool_calls: message.tool_calls,
         })
     }
+}
+
+/// Reduce a provider error body to a short, redacted excerpt safe to store and
+/// log: collapse whitespace, drop anything that looks like a key/token, and
+/// clip to a small length.
+fn redact_excerpt(body: &str) -> String {
+    const MAX: usize = 120;
+    let collapsed = body
+        .split_whitespace()
+        .filter(|tok| !looks_secret(tok))
+        .collect::<Vec<_>>()
+        .join(" ");
+    collapsed.chars().take(MAX).collect()
+}
+
+fn looks_secret(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    lower.starts_with("sk-")
+        || lower.starts_with("sk_")
+        || lower.starts_with("bearer")
+        || lower.contains("key")
+        || lower.contains("token")
+        || lower.contains("secret")
+        // long unbroken alphanumeric runs are likely credentials
+        || (token.len() >= 32 && token.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
 #[cfg(test)]
@@ -283,6 +312,44 @@ mod tests {
         let env = env_with(Some("sk-test"), Some("openai/gpt-4o"));
         let result = openrouter_from_env(&env);
         assert!(matches!(result, Err(ModelConfigError::NonFreeModel(_))));
+    }
+
+    #[test]
+    fn redact_excerpt_drops_secret_looking_tokens() {
+        let body = "error: invalid api key sk-abcdef0123456789 token=supersecret please retry";
+        let excerpt = redact_excerpt(body);
+        assert!(!excerpt.contains("sk-abcdef"));
+        assert!(!excerpt.contains("supersecret"));
+        assert!(excerpt.contains("error"));
+        assert!(excerpt.chars().count() <= 120);
+    }
+
+    #[tokio::test]
+    async fn http_error_body_is_sanitized() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": "bad key sk-LEAKEDKEY0123456789abcdef",
+            })))
+            .mount(&server)
+            .await;
+        let client = OpenRouterClient::with_base_url(
+            "sk-test".into(),
+            ModelConfig {
+                model_id: "openai/gpt-oss-120b:free".into(),
+            },
+            server.uri(),
+        );
+        let err = client
+            .chat(&[ChatMessage::text("user", "hi")])
+            .await
+            .unwrap_err();
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains("sk-LEAKEDKEY"),
+            "raw key leaked: {rendered}"
+        );
     }
 
     #[tokio::test]

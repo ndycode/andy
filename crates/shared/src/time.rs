@@ -3,6 +3,63 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 pub const MANILA_OFFSET_MINUTES: i32 = 8 * 60;
 pub const APP_TIMEZONE_DEFAULT: &str = "Asia/Manila";
 
+/// Single source of truth for app date math.
+///
+/// Andy is a single-user, Asia/Manila product, so the timezone is a fixed
+/// product invariant rather than per-request state. This struct makes that
+/// invariant explicit and injectable: business logic that needs the offset
+/// should take an `AppTimeConfig` instead of reaching for `MANILA_OFFSET_MINUTES`
+/// or reading env deep in a helper. [`AppTimeConfig::from_env`] honors the
+/// `APP_TIMEZONE` / `APP_TIMEZONE_OFFSET_MINUTES` overrides for tests and
+/// relocation, defaulting to Manila.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppTimeConfig {
+    pub label: String,
+    pub offset_minutes: i32,
+}
+
+impl Default for AppTimeConfig {
+    fn default() -> Self {
+        Self {
+            label: APP_TIMEZONE_DEFAULT.to_string(),
+            offset_minutes: MANILA_OFFSET_MINUTES,
+        }
+    }
+}
+
+impl AppTimeConfig {
+    /// Build from explicit values (clamped offset is the caller's job; see
+    /// [`crate::env::Env`]).
+    #[must_use]
+    pub fn new(label: impl Into<String>, offset_minutes: i32) -> Self {
+        Self {
+            label: label.into(),
+            offset_minutes,
+        }
+    }
+
+    /// Read from process env, falling back to the Manila invariant.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            label: app_timezone(),
+            offset_minutes: default_offset_minutes(),
+        }
+    }
+
+    /// Local calendar date for an instant under this config.
+    #[must_use]
+    pub fn local_date(&self, at: DateTime<Utc>) -> NaiveDate {
+        local_date(at, self.offset_minutes)
+    }
+
+    /// Inclusive month bounds for the month containing `at`.
+    #[must_use]
+    pub fn month_range(&self, at: DateTime<Utc>) -> (NaiveDate, NaiveDate) {
+        month_range(at, self.offset_minutes)
+    }
+}
+
 #[must_use]
 pub fn app_timezone() -> String {
     std::env::var("APP_TIMEZONE")
@@ -138,6 +195,22 @@ mod tests {
         let (start, end) = month_range(dt("2026-02-20T00:00:00Z"), MANILA_OFFSET_MINUTES);
         assert_eq!(start.to_string(), "2026-02-01");
         assert_eq!(end.to_string(), "2026-02-28");
+    }
+
+    #[test]
+    fn app_time_config_default_is_manila() {
+        let cfg = AppTimeConfig::default();
+        assert_eq!(cfg.label, "Asia/Manila");
+        assert_eq!(cfg.offset_minutes, MANILA_OFFSET_MINUTES);
+        assert_eq!(
+            cfg.local_date(dt("2026-06-14T16:01:00Z")).to_string(),
+            "2026-06-15"
+        );
+        let custom = AppTimeConfig::new("UTC", 0);
+        assert_eq!(
+            custom.local_date(dt("2026-06-14T16:01:00Z")).to_string(),
+            "2026-06-14"
+        );
     }
 
     #[test]

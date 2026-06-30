@@ -543,3 +543,78 @@ async fn superseded_flush_writes_no_ledger_events() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn outbound_dead_letters_after_max_or_on_non_retryable() -> anyhow::Result<()> {
+    use crate::{claim_due_outbound_messages, mark_outbound_failed};
+
+    let pool = test_pool().await;
+    let phone = unique_phone();
+    let user_id = resolve_user_id(&pool, &phone).await?;
+
+    // Helper: insert one outbound row with a chosen attempt_count/max_attempts
+    // and return its id, then claim it (-> 'sending') so mark_outbound_failed
+    // applies.
+    async fn seed(
+        pool: &PgPool,
+        user_id: Uuid,
+        phone: &str,
+        dedup: &str,
+        attempt_count: i32,
+        max_attempts: i32,
+    ) -> anyhow::Result<Uuid> {
+        let id: Uuid = sqlx::query(
+            r#"
+            insert into outbound_messages
+              (user_id, phone, content, dedup_key, status, attempt_count, max_attempts, next_attempt_at)
+            values ($1, $2, 'hi', $3, 'sending', $4, $5, now())
+            returning id
+            "#,
+        )
+        .bind(user_id)
+        .bind(phone)
+        .bind(dedup)
+        .bind(attempt_count)
+        .bind(max_attempts)
+        .fetch_one(pool)
+        .await?
+        .try_get("id")?;
+        Ok(id)
+    }
+
+    async fn status_of(pool: &PgPool, id: Uuid) -> anyhow::Result<(String, bool)> {
+        let row = sqlx::query(
+            "select status, dead_lettered_at is not null as dead from outbound_messages where id = $1",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+        Ok((row.try_get("status")?, row.try_get("dead")?))
+    }
+
+    // Retryable with attempts left -> back to pending, not dead-lettered.
+    let id = seed(&pool, user_id, &phone, &format!("k1-{user_id}"), 1, 8).await?;
+    mark_outbound_failed(&pool, id, "server_error:500", true).await?;
+    assert_eq!(status_of(&pool, id).await?, ("pending".to_string(), false));
+
+    // Retryable but attempts exhausted -> dead-lettered.
+    let id = seed(&pool, user_id, &phone, &format!("k2-{user_id}"), 8, 8).await?;
+    mark_outbound_failed(&pool, id, "server_error:500", true).await?;
+    assert_eq!(status_of(&pool, id).await?, ("failed".to_string(), true));
+
+    // Non-retryable (auth) -> dead-lettered immediately even with attempts left.
+    let id = seed(&pool, user_id, &phone, &format!("k3-{user_id}"), 1, 8).await?;
+    mark_outbound_failed(&pool, id, "auth:401", false).await?;
+    assert_eq!(status_of(&pool, id).await?, ("failed".to_string(), true));
+
+    // A failed row is never reclaimed by the due-claimer.
+    let claimed = claim_due_outbound_messages(&pool, Utc::now(), 50).await?;
+    assert!(
+        !claimed
+            .iter()
+            .any(|m| m.dedup_key.as_deref() == Some(&format!("k3-{user_id}"))),
+        "dead-lettered messages must not be reclaimed"
+    );
+
+    Ok(())
+}

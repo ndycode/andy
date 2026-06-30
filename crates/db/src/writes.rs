@@ -1,4 +1,7 @@
 use andy_shared::categories::Category;
+use andy_shared::memory::{
+    compact_memory_content, normalize_memory_content, should_promote_memory_kind,
+};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1041,32 +1044,6 @@ fn truncate_note(value: &str) -> String {
     truncate(value, NOTE_MAX)
 }
 
-fn normalize_memory_content(content: &str) -> String {
-    content
-        .to_ascii_lowercase()
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn compact_memory_content(content: &str) -> String {
-    normalize_memory_content(content).replace(' ', "")
-}
-
-fn should_promote_memory_kind(current: &str, next: &str) -> bool {
-    memory_kind_rank(next) < memory_kind_rank(current)
-}
-
-fn memory_kind_rank(kind: &str) -> i64 {
-    match kind {
-        "payday" => 0,
-        "fact" | "preference" => 1,
-        "goal" => 2,
-        _ => 3,
-    }
-}
-
 fn escape_like(value: &str) -> String {
     value
         .replace('\\', r"\\")
@@ -1076,20 +1053,9 @@ fn escape_like(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn memory_normalization_matches_punctuated_duplicates() {
-        assert_eq!(
-            normalize_memory_content("  Payday: every Friday! "),
-            "payday every friday"
-        );
-        assert_eq!(compact_memory_content("Pay day"), "payday");
-    }
-
-    #[test]
-    fn memory_kind_promotion_keeps_stronger_kind() {
-        assert!(should_promote_memory_kind("other", "payday"));
-        assert!(!should_promote_memory_kind("payday", "fact"));
+    fn truncate_clips_to_char_boundary() {
+        assert_eq!(super::truncate("hello", 3), "hel");
+        assert_eq!(super::truncate("hi", 5), "hi");
     }
 }
