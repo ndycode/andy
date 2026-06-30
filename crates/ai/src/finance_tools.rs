@@ -61,6 +61,10 @@ pub fn finance_tool_specs() -> Vec<ToolSpec> {
                 ("category", string("Expense category.")),
                 ("note", optional_string("Merchant or short note.")),
                 ("date", optional_string("YYYY-MM-DD; omit for today.")),
+                (
+                    "account",
+                    optional_string("Account/wallet it came from, e.g. BPI, GCash, cash."),
+                ),
             ]),
         ),
         tool(
@@ -70,6 +74,24 @@ pub fn finance_tool_specs() -> Vec<ToolSpec> {
                 (
                     "amount",
                     string("Amount exactly as written, e.g. 180 or 25k."),
+                ),
+                ("note", optional_string("Short note.")),
+                ("date", optional_string("YYYY-MM-DD; omit for today.")),
+                (
+                    "account",
+                    optional_string("Account/wallet it landed in, e.g. BPI, GCash, cash."),
+                ),
+            ]),
+        ),
+        tool(
+            "logTransfer",
+            "Record moving money between the user's own accounts (cash in, move to savings, gcash to bank, paid credit card from BPI). Not income or expense.",
+            object(&[
+                ("amount", string("Amount moved.")),
+                ("fromAccount", optional_string("Source account, e.g. BPI.")),
+                (
+                    "toAccount",
+                    optional_string("Destination account, e.g. savings."),
                 ),
                 ("note", optional_string("Short note.")),
                 ("date", optional_string("YYYY-MM-DD; omit for today.")),
@@ -247,6 +269,17 @@ pub fn finance_tool_specs() -> Vec<ToolSpec> {
             "Read current recurring reminders.",
             object(&[]),
         ),
+        tool(
+            "searchTransfers",
+            "Read recent account-to-account transfers, optionally for one account. Use for \"show transfers\" or \"what moved out of BPI\".",
+            object(&[
+                (
+                    "account",
+                    optional_string("Filter to this account (either side)."),
+                ),
+                ("limit", optional_i64("Max rows, capped server-side.")),
+            ]),
+        ),
     ]
 }
 
@@ -266,6 +299,7 @@ pub async fn execute_finance_tool(
     let result = match call.function.name.as_str() {
         "logExpense" => parse_and(call, |args| log_expense(ctx, writes, args)),
         "logIncome" => parse_and(call, |args| log_income(ctx, writes, args)),
+        "logTransfer" => parse_and(call, |args| log_transfer(ctx, writes, args)),
         "editLast" => parse_and(call, |args| edit_last(ctx, writes, args)),
         "deleteLast" => parse_and(call, |_args: EmptyArgs| delete_last(ctx, writes)),
         "setBudget" => parse_and(call, |args| set_budget(ctx, writes, args)),
@@ -296,6 +330,7 @@ fn is_read_tool(name: &str) -> bool {
         "getMonthOverview"
             | "getCategorySpend"
             | "searchTransactions"
+            | "searchTransfers"
             | "listBudgets"
             | "listGoals"
             | "listRecurring"
@@ -321,6 +356,10 @@ async fn execute_read_tool(call: &ToolCall, ctx: &FinanceToolContext<'_>) -> Val
         "listBudgets" => list_budgets_tool(ctx).await,
         "listGoals" => Ok(list_goals_tool(ctx)),
         "listRecurring" => Ok(list_recurring_tool(ctx)),
+        "searchTransfers" => match parse::<TransfersQueryArgs>(call) {
+            Ok(args) => search_transfers_tool(ctx, args).await,
+            Err(err) => Err(err),
+        },
         other => Ok(json!({ "ok": false, "error": format!("unsupported tool {other}") })),
     };
     result.unwrap_or_else(|err| json!({ "ok": false, "error": err }))
@@ -442,11 +481,24 @@ struct LogExpenseArgs {
     category: String,
     note: Option<String>,
     date: Option<String>,
+    account: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LogIncomeArgs {
     amount: String,
+    note: Option<String>,
+    date: Option<String>,
+    account: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransferArgs {
+    amount: String,
+    #[serde(rename = "fromAccount")]
+    from_account: Option<String>,
+    #[serde(rename = "toAccount")]
+    to_account: Option<String>,
     note: Option<String>,
     date: Option<String>,
 }
@@ -569,6 +621,12 @@ struct SearchArgs {
     limit: Option<i64>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct TransfersQueryArgs {
+    account: Option<String>,
+    limit: Option<i64>,
+}
+
 /// Resolve a `YYYY-MM` arg (or `None` = current month) to inclusive bounds.
 fn resolve_month(month: Option<&str>, today: NaiveDate) -> Result<(NaiveDate, NaiveDate), String> {
     match month {
@@ -680,6 +738,38 @@ async fn list_budgets_tool(ctx: &FinanceToolContext<'_>) -> Result<Value, String
     Ok(json!({ "ok": true, "start": start, "end": end, "budgets": items }))
 }
 
+async fn search_transfers_tool(
+    ctx: &FinanceToolContext<'_>,
+    args: TransfersQueryArgs,
+) -> Result<Value, String> {
+    let limit = args
+        .limit
+        .unwrap_or(READ_RESULT_CAP)
+        .clamp(1, READ_RESULT_CAP);
+    let account = args
+        .account
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty());
+    let rows = reader(ctx)?
+        .transfers(ctx.user_id, account, limit)
+        .await
+        .map_err(|err| err.to_string())?;
+    let items = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "amount": format_php(row.amount_centavos),
+                "from": row.from_account,
+                "to": row.to_account,
+                "note": sanitize_note(row.note.as_deref()),
+                "date": row.local_date,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "ok": true, "count": items.len(), "transfers": items }))
+}
+
 fn list_goals_tool(ctx: &FinanceToolContext<'_>) -> Value {
     let goals = ctx
         .snapshot
@@ -754,6 +844,7 @@ fn log_expense(
         category,
         note: args.note.filter(|note| !note.trim().is_empty()),
         local_date: date,
+        account: clean_account(args.account),
     });
     Ok(json!({ "ok": true, "logged": format_php(amount), "category": category, "date": date }))
 }
@@ -772,8 +863,44 @@ fn log_income(
         category: Category::Income,
         note: args.note.filter(|note| !note.trim().is_empty()),
         local_date: date,
+        account: clean_account(args.account),
     });
     Ok(json!({ "ok": true, "logged": format_php(amount), "date": date }))
+}
+
+fn log_transfer(
+    ctx: &FinanceToolContext<'_>,
+    writes: &mut Vec<WriteIntent>,
+    args: TransferArgs,
+) -> Result<Value, String> {
+    let amount = amount(&args.amount)?;
+    let date = log_date(args.date.as_deref(), ctx.today)?;
+    let from_account = clean_account(args.from_account);
+    let to_account = clean_account(args.to_account);
+    if from_account.is_none() && to_account.is_none() {
+        return Ok(json!({ "ok": false, "error": "a transfer needs a from or to account" }));
+    }
+    writes.push(WriteIntent::Transfer {
+        user_id: ctx.user_id,
+        amount_centavos: amount,
+        from_account: from_account.clone(),
+        to_account: to_account.clone(),
+        note: args.note.filter(|note| !note.trim().is_empty()),
+        local_date: date,
+    });
+    Ok(json!({
+        "ok": true,
+        "transferred": format_php(amount),
+        "from": from_account,
+        "to": to_account,
+        "date": date,
+    }))
+}
+
+fn clean_account(account: Option<String>) -> Option<String> {
+    account
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
 }
 
 fn edit_last(
@@ -1490,6 +1617,7 @@ mod tests {
             category: Category::Transport,
             note: None,
             local_date: "2026-06-15".parse().unwrap(),
+            account: None,
         }];
         execute_finance_tool(
             &call("editLast", json!({ "amount": "200" })),
@@ -1586,6 +1714,62 @@ mod tests {
         .await;
         assert!(result.content.contains("\"ok\":false"));
         assert!(writes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn log_transfer_buffers_transfer_not_transaction() {
+        let snapshot = AgentSnapshot::default();
+        let mut writes = Vec::new();
+        let result = execute_finance_tool(
+            &call(
+                "logTransfer",
+                json!({ "amount": "5000", "fromAccount": "BPI", "toAccount": "savings" }),
+            ),
+            &ctx(&snapshot),
+            &mut writes,
+        )
+        .await;
+        assert!(result.content.contains("\"ok\":true"));
+        assert!(matches!(
+            writes[0],
+            WriteIntent::Transfer {
+                amount_centavos: 500_000,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn log_transfer_requires_an_account() {
+        let snapshot = AgentSnapshot::default();
+        let mut writes = Vec::new();
+        let result = execute_finance_tool(
+            &call("logTransfer", json!({ "amount": "5000" })),
+            &ctx(&snapshot),
+            &mut writes,
+        )
+        .await;
+        assert!(result.content.contains("\"ok\":false"));
+        assert!(writes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn log_expense_carries_account() {
+        let snapshot = AgentSnapshot::default();
+        let mut writes = Vec::new();
+        execute_finance_tool(
+            &call(
+                "logExpense",
+                json!({ "amount": "180", "category": "food", "account": "GCash" }),
+            ),
+            &ctx(&snapshot),
+            &mut writes,
+        )
+        .await;
+        assert!(matches!(
+            &writes[0],
+            WriteIntent::Transaction { account: Some(a), .. } if a == "GCash"
+        ));
     }
 
     #[test]

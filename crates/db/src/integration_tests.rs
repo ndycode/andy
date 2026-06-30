@@ -49,6 +49,7 @@ async fn claim_flush_and_outbound_are_idempotent() -> anyhow::Result<()> {
                     category: Category::Transport,
                     note: Some("grab".into()),
                     local_date: "2026-06-15".parse()?,
+                    account: None,
                 },
                 WriteIntent::SaveTurn {
                     user_id,
@@ -216,6 +217,7 @@ async fn read_tools_return_real_month_category_and_search_results() -> anyhow::R
                 category: Category::Income,
                 note: Some("sweldo".into()),
                 local_date: "2026-06-01".parse()?,
+                account: None,
             },
             WriteIntent::Transaction {
                 kind: TxKind::Expense,
@@ -224,6 +226,7 @@ async fn read_tools_return_real_month_category_and_search_results() -> anyhow::R
                 category: Category::Food,
                 note: Some("lunch grab".into()),
                 local_date: "2026-06-05".parse()?,
+                account: None,
             },
             WriteIntent::Transaction {
                 kind: TxKind::Expense,
@@ -232,6 +235,7 @@ async fn read_tools_return_real_month_category_and_search_results() -> anyhow::R
                 category: Category::Food,
                 note: Some("dinner".into()),
                 local_date: "2026-06-12".parse()?,
+                account: None,
             },
             // Different month — must be excluded from June totals.
             WriteIntent::Transaction {
@@ -241,6 +245,7 @@ async fn read_tools_return_real_month_category_and_search_results() -> anyhow::R
                 category: Category::Food,
                 note: Some("old".into()),
                 local_date: "2026-05-30".parse()?,
+                account: None,
             },
         ],
     )
@@ -308,6 +313,7 @@ async fn pending_confirmation_confirm_applies_writes_once() -> anyhow::Result<()
         category: Category::Bills,
         note: Some("big bill".into()),
         local_date: "2026-06-15".parse()?,
+        account: None,
     }];
     let id = save_pending_confirmation(
         &pool,
@@ -415,6 +421,7 @@ async fn ledger_events_trace_create_edit_delete() -> anyhow::Result<()> {
             category: Category::Food,
             note: Some("lunch".into()),
             local_date: "2026-06-15".parse()?,
+            account: None,
         }],
     )
     .await?;
@@ -507,6 +514,7 @@ async fn superseded_flush_writes_no_ledger_events() -> anyhow::Result<()> {
             category: Category::Food,
             note: None,
             local_date: "2026-06-15".parse()?,
+            account: None,
         }],
     )
     .await?;
@@ -535,6 +543,7 @@ async fn superseded_flush_writes_no_ledger_events() -> anyhow::Result<()> {
             category: Category::Food,
             note: None,
             local_date: "2026-06-15".parse()?,
+            account: None,
         }],
     )
     .await?;
@@ -615,6 +624,54 @@ async fn outbound_dead_letters_after_max_or_on_non_retryable() -> anyhow::Result
             .any(|m| m.dedup_key.as_deref() == Some(&format!("k3-{user_id}"))),
         "dead-lettered messages must not be reclaimed"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn transfers_do_not_affect_income_or_expense_totals() -> anyhow::Result<()> {
+    use crate::{PgFinanceRead, search_transfers};
+
+    let pool = test_pool().await;
+    let user_id = resolve_user_id(&pool, &unique_phone()).await?;
+
+    flush_writes(
+        &pool,
+        None,
+        &[
+            WriteIntent::Transaction {
+                kind: TxKind::Income,
+                user_id,
+                amount_centavos: 5_000_000,
+                category: Category::Income,
+                note: Some("sweldo".into()),
+                local_date: "2026-06-01".parse()?,
+                account: Some("BPI".into()),
+            },
+            WriteIntent::Transfer {
+                user_id,
+                amount_centavos: 1_000_000,
+                from_account: Some("BPI".into()),
+                to_account: Some("savings".into()),
+                note: Some("move to savings".into()),
+                local_date: "2026-06-02".parse()?,
+            },
+        ],
+    )
+    .await?;
+
+    let reader = PgFinanceRead::new(pool.clone());
+    let overview = reader
+        .month_overview(user_id, "2026-06-01".parse()?, "2026-06-30".parse()?)
+        .await?;
+    // The transfer must not show up as income or expense.
+    assert_eq!(overview.income, 5_000_000);
+    assert_eq!(overview.expense, 0);
+
+    let transfers = search_transfers(&pool, user_id, Some("savings"), 10).await?;
+    assert_eq!(transfers.len(), 1);
+    assert_eq!(transfers[0].amount_centavos, 1_000_000);
+    assert_eq!(transfers[0].to_account.as_deref(), Some("savings"));
 
     Ok(())
 }

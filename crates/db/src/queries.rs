@@ -81,6 +81,57 @@ pub struct TransactionSearch {
     pub limit: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferRow {
+    pub amount_centavos: i64,
+    pub from_account: Option<String>,
+    pub to_account: Option<String>,
+    pub note: Option<String>,
+    pub local_date: NaiveDate,
+}
+
+/// Recent transfers (account-to-account movements), newest first. Optional
+/// `account` filters to transfers touching that account on either side.
+pub async fn search_transfers(
+    pool: &PgPool,
+    user_id: Uuid,
+    account: Option<&str>,
+    limit: i64,
+) -> Result<Vec<TransferRow>, sqlx::Error> {
+    let limit = limit.clamp(1, 50);
+    let account = account
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty());
+    let rows = sqlx::query(
+        r#"
+        select amount_centavos, from_account, to_account, note, local_date
+        from transfers
+        where user_id = $1
+          and ($2::text is null
+               or lower(coalesce(from_account, '')) = lower($2)
+               or lower(coalesce(to_account, '')) = lower($2))
+        order by local_date desc, created_at desc
+        limit $3
+        "#,
+    )
+    .bind(user_id)
+    .bind(account)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(TransferRow {
+                amount_centavos: row.try_get("amount_centavos")?,
+                from_account: row.try_get("from_account")?,
+                to_account: row.try_get("to_account")?,
+                note: row.try_get("note")?,
+                local_date: row.try_get("local_date")?,
+            })
+        })
+        .collect()
+}
+
 pub async fn claim_slot(
     pool: &PgPool,
     message_id: &str,

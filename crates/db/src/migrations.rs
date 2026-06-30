@@ -69,6 +69,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0016_outbound_dead_letter",
         include_str!("../../../packages/db/migrations/0016_outbound_dead_letter.sql"),
     ),
+    (
+        "0017_accounts_transfers",
+        include_str!("../../../packages/db/migrations/0017_accounts_transfers.sql"),
+    ),
 ];
 
 pub async fn run(pool: &PgPool) -> Result<(), sqlx::Error> {

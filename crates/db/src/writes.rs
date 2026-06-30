@@ -15,6 +15,7 @@ pub const LABEL_MAX: usize = 100;
 pub const OUTBOUND_CONTENT_MAX: usize = 4000;
 pub const PHONE_MAX: usize = 80;
 pub const DEDUP_KEY_MAX: usize = 200;
+pub const ACCOUNT_MAX: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecurringInput {
@@ -135,6 +136,7 @@ pub enum WriteIntent {
         category: Category,
         note: Option<String>,
         local_date: NaiveDate,
+        account: Option<String>,
     },
     GoalContribution {
         user_id: Uuid,
@@ -217,6 +219,16 @@ pub enum WriteIntent {
         cadence: Option<Cadence>,
         day_of_month: Option<Option<i64>>,
         day_of_week: Option<Option<i64>>,
+    },
+    /// A movement between the user's own accounts. Stored in `transfers`, never
+    /// in `transactions`, so it does not count as income or expense.
+    Transfer {
+        user_id: Uuid,
+        amount_centavos: i64,
+        from_account: Option<String>,
+        to_account: Option<String>,
+        note: Option<String>,
+        local_date: NaiveDate,
     },
 }
 
@@ -323,12 +335,13 @@ async fn apply_write_intent(
             category,
             note,
             local_date,
+            account,
         } => {
             let row = sqlx::query(
                 r#"
                 insert into transactions
-                  (user_id, kind, amount_centavos, category, note, local_date, source_message_id)
-                values ($1, $2::tx_kind, $3, $4::category, $5, $6, $7)
+                  (user_id, kind, amount_centavos, category, note, local_date, source_message_id, account)
+                values ($1, $2::tx_kind, $3, $4::category, $5, $6, $7, $8)
                 returning id
                 "#,
             )
@@ -339,6 +352,7 @@ async fn apply_write_intent(
             .bind(note.as_deref().map(truncate_note))
             .bind(local_date)
             .bind(state.source_message_id.as_deref())
+            .bind(account.as_deref().map(|a| truncate(a, ACCOUNT_MAX)))
             .fetch_one(&mut **tx)
             .await?;
             let tx_id: Uuid = row.try_get("id")?;
@@ -669,6 +683,31 @@ async fn apply_write_intent(
                 .execute(&mut **tx)
                 .await?;
             }
+        }
+        WriteIntent::Transfer {
+            user_id,
+            amount_centavos,
+            from_account,
+            to_account,
+            note,
+            local_date,
+        } => {
+            sqlx::query(
+                r#"
+                insert into transfers
+                  (user_id, amount_centavos, from_account, to_account, note, local_date, source_message_id)
+                values ($1, $2, $3, $4, $5, $6, $7)
+                "#,
+            )
+            .bind(user_id)
+            .bind(amount_centavos)
+            .bind(from_account.as_deref().map(|a| truncate(a, ACCOUNT_MAX)))
+            .bind(to_account.as_deref().map(|a| truncate(a, ACCOUNT_MAX)))
+            .bind(note.as_deref().map(truncate_note))
+            .bind(local_date)
+            .bind(state.source_message_id.as_deref())
+            .execute(&mut **tx)
+            .await?;
         }
     }
     Ok(())

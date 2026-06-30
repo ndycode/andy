@@ -23,11 +23,12 @@ pub use ops::{
 };
 pub use queries::{
     BudgetStatus, ClaimResult, ConversationTurn, GoalRow, MonthOverview, TransactionRow,
-    TransactionSearch, TransactionSummaryRow, budget_statuses, budget_statuses_for,
+    TransactionSearch, TransactionSummaryRow, TransferRow, budget_statuses, budget_statuses_for,
     category_amounts_this_month, claim_slot, find_goal_by_name, find_goals_by_name,
     find_recent_duplicate, get_month_overview, get_month_overview_between, get_recent_transactions,
     get_spending_by_category, get_spending_by_category_between, last_transaction, list_goals,
-    recent_turns, resolve_user_id, search_transactions, sum_by_category, sum_spend_between,
+    recent_turns, resolve_user_id, search_transactions, search_transfers, sum_by_category,
+    sum_spend_between,
 };
 pub use read::{CategorySpend, FinanceRead, PgFinanceRead, ToolReadError};
 pub use writes::{FlushResult, RecurringInput, WriteIntent, flush_writes};

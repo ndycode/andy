@@ -94,6 +94,10 @@ fn instructions(input: &RunAgentInput<'_>) -> String {
          Categories: Food, Transport, Bills, Shopping, Health, Entertainment, Savings/Goals, Income, Other.\n\
          Corrections like 'make that 200' should call editLast; undo/delete should call deleteLast.\n\
          Goal contributions use contributeToGoal, not a generic expense. Recurring reminders do not auto-log.\n\
+         Money moved between the user's own accounts — \"cash in\", \"move to savings\", \"gcash to bank\",\n\
+         \"transfer\", \"paid credit card from BPI\" — is a logTransfer, not income or expense. If it's ambiguous\n\
+         whether something is a transfer or a real expense/income, ask before logging. Transfers are excluded\n\
+         from spending and income totals. logExpense/logIncome accept an optional account.\n\
          Use remember only for durable facts or preferences, never for ordinary transactions or one-off chat.\n\
          Use listMemory before answering what you remember. Never invent memories; use only the server snapshot and tool results.\n\
          For questions about money — 'how much did I spend on food this month?', 'what was my biggest expense?',\n\

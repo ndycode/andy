@@ -109,6 +109,7 @@ fn is_constructive_ledger(intent: &WriteIntent) -> bool {
             | WriteIntent::SetBudget { .. }
             | WriteIntent::AddRecurring { .. }
             | WriteIntent::EditRecurring { .. }
+            | WriteIntent::Transfer { .. }
     )
 }
 
@@ -133,6 +134,9 @@ fn max_amount_centavos(writes: &[WriteIntent]) -> Option<i64> {
                 amount_centavos, ..
             }
             | WriteIntent::GoalContribution {
+                amount_centavos, ..
+            }
+            | WriteIntent::Transfer {
                 amount_centavos, ..
             } => Some(*amount_centavos),
             WriteIntent::EditLast {
@@ -172,6 +176,7 @@ fn describe(intent: &WriteIntent) -> &'static str {
         WriteIntent::AddRecurring { .. } => "add a recurring reminder",
         WriteIntent::RemoveRecurring { .. } => "remove a recurring reminder",
         WriteIntent::EditRecurring { .. } => "edit a recurring reminder",
+        WriteIntent::Transfer { .. } => "move money between accounts",
         WriteIntent::SaveTurn { .. } | WriteIntent::OutboundReply { .. } => "note the conversation",
     }
 }
@@ -276,6 +281,7 @@ mod tests {
             category: Category::Food,
             note: None,
             local_date: "2026-06-15".parse().unwrap(),
+            account: None,
         }
     }
 
@@ -389,5 +395,33 @@ mod tests {
         // Not bare answers — must not be treated as confirmations.
         assert_eq!(confirm_reply("yes please log 200 for grab"), None);
         assert_eq!(confirm_reply("grab 180"), None);
+    }
+
+    #[test]
+    fn ordinary_transfer_is_safe_but_large_one_confirms() {
+        let small = WriteIntent::Transfer {
+            user_id: Uuid::nil(),
+            amount_centavos: 50_000,
+            from_account: Some("BPI".into()),
+            to_account: Some("savings".into()),
+            note: None,
+            local_date: "2026-06-15".parse().unwrap(),
+        };
+        assert_eq!(
+            classify_writes("move to savings", std::slice::from_ref(&small), settings()),
+            WriteRisk::Safe
+        );
+        let big = WriteIntent::Transfer {
+            user_id: Uuid::nil(),
+            amount_centavos: 9_000_000,
+            from_account: Some("BPI".into()),
+            to_account: Some("savings".into()),
+            note: None,
+            local_date: "2026-06-15".parse().unwrap(),
+        };
+        assert!(matches!(
+            classify_writes("move 90k to savings", &[big], settings()),
+            WriteRisk::NeedsConfirmation { .. }
+        ));
     }
 }

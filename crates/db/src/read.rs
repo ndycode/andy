@@ -17,9 +17,9 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::queries::{
-    BudgetStatus, MonthOverview, TransactionSearch, TransactionSummaryRow, budget_statuses_for,
-    get_month_overview_between, get_spending_by_category_between, search_transactions,
-    sum_spend_between,
+    BudgetStatus, MonthOverview, TransactionSearch, TransactionSummaryRow, TransferRow,
+    budget_statuses_for, get_month_overview_between, get_spending_by_category_between,
+    search_transactions, search_transfers, sum_spend_between,
 };
 
 /// Failure surfaced to the AI layer. Deliberately opaque: it never carries SQL,
@@ -88,6 +88,14 @@ pub trait FinanceRead: Send + Sync {
         start: NaiveDate,
         end: NaiveDate,
     ) -> Result<Vec<BudgetStatus>, ToolReadError>;
+
+    /// Recent account-to-account transfers, optionally filtered to one account.
+    async fn transfers(
+        &self,
+        user_id: Uuid,
+        account: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<TransferRow>, ToolReadError>;
 }
 
 /// Postgres-backed [`FinanceRead`]. Wraps a clone of the request pool.
@@ -166,5 +174,14 @@ impl FinanceRead for PgFinanceRead {
     ) -> Result<Vec<BudgetStatus>, ToolReadError> {
         let categories = Category::ALL.to_vec();
         Ok(budget_statuses_for(&self.pool, user_id, &categories, start, end).await?)
+    }
+
+    async fn transfers(
+        &self,
+        user_id: Uuid,
+        account: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<TransferRow>, ToolReadError> {
+        Ok(search_transfers(&self.pool, user_id, account, limit).await?)
     }
 }
