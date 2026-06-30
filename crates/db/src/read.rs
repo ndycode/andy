@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::queries::{
     BudgetStatus, MonthOverview, TransactionSearch, TransactionSummaryRow, TransferRow,
     budget_statuses_for, get_month_overview_between, get_spending_by_category_between,
-    search_transactions, search_transfers, sum_spend_between,
+    search_transactions, search_transfers, sum_and_count_spend_between,
 };
 
 /// Failure surfaced to the AI layer. Deliberately opaque: it never carries SQL,
@@ -129,17 +129,9 @@ impl FinanceRead for PgFinanceRead {
         start: NaiveDate,
         end: NaiveDate,
     ) -> Result<(i64, i64), ToolReadError> {
-        let total = sum_spend_between(&self.pool, user_id, start, end, Some(category)).await?;
-        let opts = TransactionSearch {
-            category: Some(category),
-            start_date: Some(start),
-            end_date: Some(end),
-            kind: Some("expense".to_string()),
-            limit: 50,
-            ..TransactionSearch::default()
-        };
-        let count = search_transactions(&self.pool, user_id, &opts).await?.len() as i64;
-        Ok((total, count))
+        // Aggregate count(*), not a capped search, so the entry count is exact
+        // even when a category has more than the search limit of matches.
+        Ok(sum_and_count_spend_between(&self.pool, user_id, start, end, Some(category)).await?)
     }
 
     async fn spending_by_category(

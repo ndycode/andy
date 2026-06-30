@@ -22,6 +22,11 @@ pub struct PendingConfirmation {
 /// Park a turn's writes pending user confirmation. `summary` is the short
 /// human description shown back to the user; `expires_at` bounds how long a
 /// later "yes" can apply it.
+///
+/// Idempotent per `source_message_id`: a retry of the same inbound message
+/// (e.g. after its processed-messages claim goes stale) will not create a
+/// second pending row, so two later "yes" replies cannot apply the same risky
+/// writes twice. Relies on the partial unique index from migration 0020.
 pub async fn save_pending_confirmation(
     pool: &PgPool,
     user_id: Uuid,
@@ -30,16 +35,17 @@ pub async fn save_pending_confirmation(
     summary: &str,
     writes: &[WriteIntent],
     expires_at: DateTime<Utc>,
-) -> Result<Uuid, sqlx::Error> {
+) -> Result<(), sqlx::Error> {
     let payload = serde_json::to_value(writes).map_err(|err| sqlx::Error::Encode(Box::new(err)))?;
     let phone = truncate(phone.trim(), PHONE_MAX);
     let summary = truncate(summary.trim(), 500);
-    let row = sqlx::query(
+    sqlx::query(
         r#"
         insert into pending_confirmations
           (user_id, phone, source_message_id, summary, payload_json, expires_at)
         values ($1, $2, $3, $4, $5, $6)
-        returning id
+        on conflict (source_message_id) where source_message_id is not null
+          do nothing
         "#,
     )
     .bind(user_id)
@@ -48,9 +54,9 @@ pub async fn save_pending_confirmation(
     .bind(summary)
     .bind(payload)
     .bind(expires_at)
-    .fetch_one(pool)
+    .execute(pool)
     .await?;
-    row.try_get("id")
+    Ok(())
 }
 
 /// Load the latest still-pending, non-expired confirmation for a user without
@@ -104,6 +110,30 @@ pub async fn consume_confirmation(
     .bind(id)
     .bind(user_id)
     .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// Transaction-scoped consume, used by `flush_writes` so the consume and the
+/// parked writes commit (or roll back) together. Returns true if the row was
+/// still pending. When this returns false the caller must abort the flush so a
+/// double "yes" or a superseded retry cannot re-apply the writes.
+pub(crate) async fn consume_confirmation_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+    user_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query(
+        r#"
+        update pending_confirmations
+        set status = 'consumed'
+        where id = $1 and user_id = $2 and status = 'pending'
+        returning id
+        "#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
     .await?;
     Ok(row.is_some())
 }

@@ -113,13 +113,15 @@ fn is_constructive_ledger(intent: &WriteIntent) -> bool {
     )
 }
 
-/// Conversation bookkeeping (turns, outbound replies) never affects the ledger
-/// and is excluded from all counts and checks.
+/// Conversation bookkeeping (turns, outbound replies, confirmation consume)
+/// never affects the ledger and is excluded from all counts and checks.
 #[must_use]
 fn is_bookkeeping(intent: &WriteIntent) -> bool {
     matches!(
         intent,
-        WriteIntent::SaveTurn { .. } | WriteIntent::OutboundReply { .. }
+        WriteIntent::SaveTurn { .. }
+            | WriteIntent::OutboundReply { .. }
+            | WriteIntent::ConsumeConfirmation { .. }
     )
 }
 
@@ -178,6 +180,7 @@ fn describe(intent: &WriteIntent) -> &'static str {
         WriteIntent::EditRecurring { .. } => "edit a recurring reminder",
         WriteIntent::Transfer { .. } => "move money between accounts",
         WriteIntent::SaveTurn { .. } | WriteIntent::OutboundReply { .. } => "note the conversation",
+        WriteIntent::ConsumeConfirmation { .. } => "apply a confirmed action",
     }
 }
 

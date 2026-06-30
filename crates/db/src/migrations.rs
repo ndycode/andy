@@ -81,6 +81,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0019_inbound_rate_limits",
         include_str!("../../../packages/db/migrations/0019_inbound_rate_limits.sql"),
     ),
+    (
+        "0020_pending_confirmation_unique_source",
+        include_str!("../../../packages/db/migrations/0020_pending_confirmation_unique_source.sql"),
+    ),
 ];
 
 pub async fn run(pool: &PgPool) -> Result<(), sqlx::Error> {

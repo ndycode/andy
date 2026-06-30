@@ -230,6 +230,15 @@ pub enum WriteIntent {
         note: Option<String>,
         local_date: NaiveDate,
     },
+    /// Consume a pending confirmation as part of this flush. If the row is no
+    /// longer `pending` (already consumed by a racing "yes", or this flush is a
+    /// superseded retry) the whole transaction is rolled back, so the parked
+    /// writes apply exactly once and only when the consume succeeds. Place this
+    /// first in the intent list for a "yes" turn.
+    ConsumeConfirmation {
+        user_id: Uuid,
+        id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,7 +304,12 @@ pub async fn flush_writes(
         ..FlushState::default()
     };
     for intent in intents {
-        apply_write_intent(&mut tx, intent, &mut state).await?;
+        // A ConsumeConfirmation that finds the row already gone aborts the whole
+        // flush so the parked writes never apply twice.
+        if !apply_write_intent(&mut tx, intent, &mut state).await? {
+            tx.rollback().await?;
+            return Ok(FlushResult::Superseded);
+        }
     }
 
     if let Some(message_id) = message_id {
@@ -322,11 +336,15 @@ pub async fn flush_writes(
     Ok(FlushResult::Committed)
 }
 
+/// Apply one intent within the flush transaction. Returns `Ok(false)` only when
+/// a `ConsumeConfirmation` finds its row already gone, signalling the caller to
+/// roll the whole flush back as superseded; every other intent returns
+/// `Ok(true)`.
 async fn apply_write_intent(
     tx: &mut Transaction<'_, Postgres>,
     intent: &WriteIntent,
     state: &mut FlushState,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     match intent {
         WriteIntent::Transaction {
             kind,
@@ -656,7 +674,7 @@ async fn apply_write_intent(
                 && day_of_month.is_none()
                 && day_of_week.is_none()
             {
-                return Ok(());
+                return Ok(true);
             }
             if let Some(target_id) = recurring_target_id(tx, *user_id, query).await? {
                 sqlx::query(
@@ -709,8 +727,15 @@ async fn apply_write_intent(
             .execute(&mut **tx)
             .await?;
         }
+        WriteIntent::ConsumeConfirmation { user_id, id } => {
+            // If the row is no longer pending, abort the flush: another "yes"
+            // already applied these writes, or this is a superseded retry.
+            if !crate::confirmations::consume_confirmation_in_tx(tx, *id, *user_id).await? {
+                return Ok(false);
+            }
+        }
     }
-    Ok(())
+    Ok(true)
 }
 
 async fn delete_transaction(

@@ -6,10 +6,9 @@ use uuid::Uuid;
 use crate::{
     ClaimResult, FinanceRead, FlushResult, PgFinanceRead, RateDecision, RecurringInput,
     TransactionSearch, WriteIntent, cancel_pending_confirmations, check_and_increment,
-    claim_outbound_by_dedup_key, claim_reminder, claim_slot, consume_confirmation,
-    due_recurring_today, find_goal_by_name, flush_writes, latest_pending_confirmation, list_goals,
-    list_memories, list_recurring, mark_outbound_sent, migrations, resolve_user_id,
-    save_pending_confirmation,
+    claim_outbound_by_dedup_key, claim_reminder, claim_slot, due_recurring_today,
+    find_goal_by_name, flush_writes, latest_pending_confirmation, list_goals, list_memories,
+    list_recurring, mark_outbound_sent, migrations, resolve_user_id, save_pending_confirmation,
     writes::{Cadence, MemoryKind, MessageRole, TxKind},
 };
 
@@ -316,7 +315,9 @@ async fn pending_confirmation_confirm_applies_writes_once() -> anyhow::Result<()
         local_date: "2026-06-15".parse()?,
         account: None,
     }];
-    let id = save_pending_confirmation(
+    // Saving is idempotent per source_message_id: a retry must not create a
+    // second pending row.
+    save_pending_confirmation(
         &pool,
         user_id,
         &phone,
@@ -326,17 +327,46 @@ async fn pending_confirmation_confirm_applies_writes_once() -> anyhow::Result<()
         now + Duration::minutes(60),
     )
     .await?;
+    save_pending_confirmation(
+        &pool,
+        user_id,
+        &phone,
+        Some("m1"),
+        "log expense",
+        &parked,
+        now + Duration::minutes(60),
+    )
+    .await?;
+    let dupes: i64 = sqlx::query(
+        "select count(*)::bigint as c from pending_confirmations where source_message_id = 'm1'",
+    )
+    .fetch_one(&pool)
+    .await?
+    .try_get("c")?;
+    assert_eq!(dupes, 1, "retry must not create a second pending row");
 
     let pending = latest_pending_confirmation(&pool, user_id, now)
         .await?
         .expect("pending exists");
-    assert_eq!(pending.id, id);
     assert_eq!(pending.writes, parked);
 
-    // First "yes" consumes and applies; a racing second "yes" must be a no-op.
-    assert!(consume_confirmation(&pool, id, user_id).await?);
-    flush_writes(&pool, None, &pending.writes).await?;
-    assert!(!consume_confirmation(&pool, id, user_id).await?);
+    // "Yes": consume + parked writes commit atomically in one flush.
+    let mut yes_writes = vec![WriteIntent::ConsumeConfirmation {
+        user_id,
+        id: pending.id,
+    }];
+    yes_writes.extend(pending.writes.clone());
+    assert_eq!(
+        flush_writes(&pool, None, &yes_writes).await?,
+        FlushResult::Committed
+    );
+
+    // A racing second "yes" finds the row already consumed: the flush is
+    // superseded and applies nothing.
+    assert_eq!(
+        flush_writes(&pool, None, &yes_writes).await?,
+        FlushResult::Superseded
+    );
     assert!(
         latest_pending_confirmation(&pool, user_id, now)
             .await?
@@ -349,7 +379,7 @@ async fn pending_confirmation_confirm_applies_writes_once() -> anyhow::Result<()
             .fetch_one(&pool)
             .await?
             .try_get("count")?;
-    assert_eq!(tx_count, 1);
+    assert_eq!(tx_count, 1, "writes must apply exactly once");
     Ok(())
 }
 

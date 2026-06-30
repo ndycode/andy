@@ -14,9 +14,9 @@ use andy_ai::{
 };
 use andy_db::{
     ClaimResult, FlushResult, PgFinanceRead, WriteIntent, budget_statuses_for,
-    cancel_pending_confirmations, claim_slot, connect_pool, consume_confirmation, flush_writes,
-    last_transaction, latest_pending_confirmation, list_goals, list_memories, list_recurring,
-    recent_turns, resolve_user_id, save_pending_confirmation,
+    cancel_pending_confirmations, claim_slot, connect_pool, flush_writes, last_transaction,
+    latest_pending_confirmation, list_goals, list_memories, list_recurring, recent_turns,
+    resolve_user_id, save_pending_confirmation,
 };
 use andy_shared::{
     allowlist::is_allowed, budget::budget_reaction_lines, dedup::content_dedup_key, env::Env,
@@ -173,7 +173,7 @@ impl<'a> InboundMessageService<'a> {
             WriteRisk::NeedsConfirmation { reason, summary } => {
                 // Park the ledger writes; persist only the conversation turns
                 // and a confirmation request. Nothing risky is committed yet.
-                let (ledger, turns): (Vec<_>, Vec<_>) =
+                let (ledger, mut turns): (Vec<_>, Vec<_>) =
                     writes.into_iter().partition(|w| !is_conversation_turn(w));
                 let expires_at = Utc::now() + chrono::Duration::minutes(CONFIRM_TTL_MINUTES);
                 save_pending_confirmation(
@@ -188,6 +188,10 @@ impl<'a> InboundMessageService<'a> {
                 .await?;
                 let ask =
                     format!("before i do that — {reason}. confirm? ({summary}). reply yes or no.");
+                // The user receives `ask`, not the model's original reply, so
+                // record `ask` as the assistant turn — otherwise recent_turns
+                // would feed the model a false "done"-style history.
+                rewrite_assistant_turn(&mut turns, &ask);
                 let mut confirm_writes = turns;
                 confirm_writes.push(WriteIntent::OutboundReply {
                     user_id,
@@ -206,13 +210,17 @@ impl<'a> InboundMessageService<'a> {
             }
             WriteRisk::Reject { reason } => {
                 // Drop the risky writes; keep the turns and tell the user.
-                let (_, turns): (Vec<_>, Vec<_>) =
+                let (_, mut turns): (Vec<_>, Vec<_>) =
                     writes.into_iter().partition(|w| !is_conversation_turn(w));
+                let rejection = format!("i can't do that — {reason}.");
+                // Record what was actually sent, not the model's pre-policy
+                // reply, so the next turn's history isn't misleading.
+                rewrite_assistant_turn(&mut turns, &rejection);
                 let mut reject_writes = turns;
                 reject_writes.push(WriteIntent::OutboundReply {
                     user_id,
                     phone: phone.clone(),
-                    content: format!("i can't do that — {reason}."),
+                    content: rejection,
                     dedup_key: Some(outbound_dedup_key.clone()),
                 });
                 commit_and_reply_writes(
@@ -256,11 +264,16 @@ impl<'a> InboundMessageService<'a> {
                     .await?;
             }
             ConfirmReply::Yes => {
-                // Consume first; if another "yes" already did, do nothing.
-                if !consume_confirmation(pool, pending.id, user_id).await? {
-                    return Ok(Some(()));
-                }
-                let mut writes = pending.writes;
+                // Consume + apply atomically: ConsumeConfirmation runs first
+                // inside flush_writes, and if the row is no longer pending
+                // (double "yes" or superseded retry) the whole flush rolls back
+                // so the parked writes never apply twice — and they only apply
+                // if the consume itself commits.
+                let mut writes = vec![WriteIntent::ConsumeConfirmation {
+                    user_id,
+                    id: pending.id,
+                }];
+                writes.extend(pending.writes);
                 writes.push(WriteIntent::OutboundReply {
                     user_id,
                     phone: phone.to_string(),
@@ -278,6 +291,23 @@ impl<'a> InboundMessageService<'a> {
 #[must_use]
 fn is_conversation_turn(intent: &WriteIntent) -> bool {
     matches!(intent, WriteIntent::SaveTurn { .. })
+}
+
+/// Overwrite the assistant `SaveTurn`'s content with the message actually sent.
+/// The agent buffers a turn for its original reply, but on confirm/reject the
+/// user receives different text; recording `sent` keeps `recent_turns` honest
+/// for the next model turn.
+fn rewrite_assistant_turn(turns: &mut [WriteIntent], sent: &str) {
+    for intent in turns.iter_mut() {
+        if let WriteIntent::SaveTurn {
+            role: andy_db::writes::MessageRole::Assistant,
+            content,
+            ..
+        } = intent
+        {
+            *content = sent.to_string();
+        }
+    }
 }
 
 /// Commit a turn's writes (ledger + turns), append the outbound reply, and
@@ -368,5 +398,51 @@ async fn append_budget_reaction(
         Ok(reply.to_string())
     } else {
         Ok(format!("{reply}\n\n{}", lines.join("\n")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use andy_db::writes::MessageRole;
+    use uuid::Uuid;
+
+    #[test]
+    fn rewrite_assistant_turn_replaces_only_assistant_content() {
+        let uid = Uuid::nil();
+        let mut turns = vec![
+            WriteIntent::SaveTurn {
+                user_id: uid,
+                role: MessageRole::User,
+                content: "delete that".into(),
+            },
+            WriteIntent::SaveTurn {
+                user_id: uid,
+                role: MessageRole::Assistant,
+                content: "deleted it".into(), // model's pre-policy reply
+            },
+        ];
+        rewrite_assistant_turn(
+            &mut turns,
+            "before i do that — this removes saved data. confirm?",
+        );
+
+        match &turns[0] {
+            WriteIntent::SaveTurn { role, content, .. } => {
+                assert_eq!(*role, MessageRole::User);
+                assert_eq!(content, "delete that", "user turn is untouched");
+            }
+            _ => panic!("expected user turn"),
+        }
+        match &turns[1] {
+            WriteIntent::SaveTurn { role, content, .. } => {
+                assert_eq!(*role, MessageRole::Assistant);
+                assert!(
+                    content.contains("confirm?"),
+                    "assistant turn records what was sent"
+                );
+            }
+            _ => panic!("expected assistant turn"),
+        }
     }
 }

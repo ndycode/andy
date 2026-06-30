@@ -357,6 +357,35 @@ pub async fn sum_spend_between(
     row.try_get("total")
 }
 
+/// Total expense and entry count for an optional category over `[start, end]`.
+/// Uses an aggregate `count(*)`, so the count is exact regardless of how many
+/// rows match (unlike counting a capped `search_transactions` result).
+pub async fn sum_and_count_spend_between(
+    pool: &PgPool,
+    user_id: Uuid,
+    start: NaiveDate,
+    end: NaiveDate,
+    category: Option<Category>,
+) -> Result<(i64, i64), sqlx::Error> {
+    let category = category.map(|category| category.as_str().to_string());
+    let row = sqlx::query(
+        r#"
+        select coalesce(sum(amount_centavos), 0)::bigint as total,
+               count(*)::bigint as entries
+        from transactions
+        where user_id = $1 and kind = 'expense' and local_date between $2 and $3
+          and ($4::text is null or category = $4::category)
+        "#,
+    )
+    .bind(user_id)
+    .bind(start)
+    .bind(end)
+    .bind(category)
+    .fetch_one(pool)
+    .await?;
+    Ok((row.try_get("total")?, row.try_get("entries")?))
+}
+
 pub async fn category_amounts_this_month(
     pool: &PgPool,
     user_id: Uuid,
