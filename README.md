@@ -129,6 +129,22 @@ Every transaction stores the inbound `source_message_id` it came from, and each
 create/edit/delete appends a sanitized row to an append-only `ledger_events`
 table, so any number can be traced back to the message that produced it.
 
+## accounts and transfers
+
+Moving money between your own accounts ("cash in", "move to savings", "gcash to
+bank", "paid credit card from BPI") is recorded as a transfer, not income or an
+expense, so it never distorts spending or income totals. `logExpense`/
+`logIncome` also accept an optional account tag (BPI, GCash, cash).
+
+## rate limiting
+
+Inbound webhooks are rate limited durably in Postgres (keyed on a hash of the
+token and phone, no raw secret stored), so the limit holds across serverless
+instances. Defaults are 60 requests per 60s window, configurable via
+`ANDY_INBOUND_RATE_LIMIT` / `ANDY_INBOUND_RATE_WINDOW_SECONDS`. If the limit
+check itself fails, the webhook fails closed (503) rather than letting traffic
+through unchecked.
+
 ## env
 
 required:
