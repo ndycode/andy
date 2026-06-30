@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod client;
+pub mod confirmations;
 pub mod migrations;
 pub mod ops;
 pub mod queries;
@@ -8,6 +9,10 @@ pub mod read;
 pub mod writes;
 
 pub use client::{connect_pool, is_pooler_url};
+pub use confirmations::{
+    PendingConfirmation, cancel_pending_confirmations, consume_confirmation,
+    latest_pending_confirmation, reap_pending_confirmations, save_pending_confirmation,
+};
 pub use ops::{
     InsightSummary, MemoryRow, OutboundMessageRow, RecurringRow, add_recurring,
     claim_due_outbound_messages, claim_outbound_by_dedup_key, claim_reminder, due_recurring_today,

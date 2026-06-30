@@ -1,13 +1,14 @@
 use andy_shared::categories::Category;
-use chrono::{TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::{
     ClaimResult, FinanceRead, FlushResult, PgFinanceRead, RecurringInput, TransactionSearch,
-    WriteIntent, claim_outbound_by_dedup_key, claim_reminder, claim_slot, due_recurring_today,
-    find_goal_by_name, flush_writes, list_goals, list_memories, list_recurring, mark_outbound_sent,
-    migrations, resolve_user_id,
+    WriteIntent, cancel_pending_confirmations, claim_outbound_by_dedup_key, claim_reminder,
+    claim_slot, consume_confirmation, due_recurring_today, find_goal_by_name, flush_writes,
+    latest_pending_confirmation, list_goals, list_memories, list_recurring, mark_outbound_sent,
+    migrations, resolve_user_id, save_pending_confirmation,
     writes::{Cadence, MemoryKind, MessageRole, TxKind},
 };
 
@@ -290,5 +291,108 @@ async fn read_tools_return_real_month_category_and_search_results() -> anyhow::R
     assert_eq!(grabs.len(), 1);
     assert_eq!(grabs[0].amount_centavos, 18_000);
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_confirmation_confirm_applies_writes_once() -> anyhow::Result<()> {
+    let pool = test_pool().await;
+    let phone = unique_phone();
+    let user_id = resolve_user_id(&pool, &phone).await?;
+    let now = Utc::now();
+
+    let parked = vec![WriteIntent::Transaction {
+        kind: TxKind::Expense,
+        user_id,
+        amount_centavos: 6_000_000,
+        category: Category::Bills,
+        note: Some("big bill".into()),
+        local_date: "2026-06-15".parse()?,
+    }];
+    let id = save_pending_confirmation(
+        &pool,
+        user_id,
+        &phone,
+        Some("m1"),
+        "log expense",
+        &parked,
+        now + Duration::minutes(60),
+    )
+    .await?;
+
+    let pending = latest_pending_confirmation(&pool, user_id, now)
+        .await?
+        .expect("pending exists");
+    assert_eq!(pending.id, id);
+    assert_eq!(pending.writes, parked);
+
+    // First "yes" consumes and applies; a racing second "yes" must be a no-op.
+    assert!(consume_confirmation(&pool, id, user_id).await?);
+    flush_writes(&pool, None, &pending.writes).await?;
+    assert!(!consume_confirmation(&pool, id, user_id).await?);
+    assert!(
+        latest_pending_confirmation(&pool, user_id, now)
+            .await?
+            .is_none()
+    );
+
+    let tx_count: i64 =
+        sqlx::query("select count(*)::bigint as count from transactions where user_id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await?
+            .try_get("count")?;
+    assert_eq!(tx_count, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_confirmation_cancel_and_expiry() -> anyhow::Result<()> {
+    let pool = test_pool().await;
+    let phone = unique_phone();
+    let user_id = resolve_user_id(&pool, &phone).await?;
+    let now = Utc::now();
+
+    // Cancel path.
+    save_pending_confirmation(
+        &pool,
+        user_id,
+        &phone,
+        None,
+        "delete the last entry",
+        &[WriteIntent::DeleteLast {
+            user_id,
+            target_id: None,
+            target_same_turn: false,
+        }],
+        now + Duration::minutes(60),
+    )
+    .await?;
+    assert_eq!(cancel_pending_confirmations(&pool, user_id).await?, 1);
+    assert!(
+        latest_pending_confirmation(&pool, user_id, now)
+            .await?
+            .is_none()
+    );
+
+    // Expiry path: an already-expired confirmation is never returned.
+    save_pending_confirmation(
+        &pool,
+        user_id,
+        &phone,
+        None,
+        "remove a budget",
+        &[WriteIntent::RemoveBudget {
+            user_id,
+            category: Category::Food,
+        }],
+        now - Duration::minutes(1),
+    )
+    .await?;
+    assert!(
+        latest_pending_confirmation(&pool, user_id, now)
+            .await?
+            .is_none()
+    );
     Ok(())
 }

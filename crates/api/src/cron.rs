@@ -3,8 +3,8 @@ use std::future::Future;
 use andy_db::{
     budget_statuses, category_amounts_this_month, claim_reminder, due_recurring_today,
     get_month_overview, get_spending_by_category, has_summary_for_week, list_goals, reap_messages,
-    reap_nudges, reap_processed_messages, reap_summary_runs, reconcile_goal_balances, record_nudge,
-    record_summary, resolve_user_id,
+    reap_nudges, reap_pending_confirmations, reap_processed_messages, reap_summary_runs,
+    reconcile_goal_balances, record_nudge, record_summary, resolve_user_id,
 };
 use andy_shared::{
     analytics::{should_warn_pace, spending_pace},
@@ -152,6 +152,10 @@ async fn run_daily_hygiene(
         reap_summary_runs(pool, now, 12)
     })
     .await;
+    let reaped_confirmations = count_or_zero("cron.reap_confirmations.error", || {
+        reap_pending_confirmations(pool, now)
+    })
+    .await;
 
     Ok(HygieneResult {
         reaped: reaped.0 as i64,
@@ -161,7 +165,8 @@ async fn run_daily_hygiene(
             && reaped_messages.1
             && fixed.1
             && reaped_nudges.1
-            && reaped_summaries.1),
+            && reaped_summaries.1
+            && reaped_confirmations.1),
     })
 }
 

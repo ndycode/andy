@@ -4,11 +4,15 @@ use std::{
     time::{Duration, Instant},
 };
 
-use andy_ai::{AgentSnapshot, OpenRouterClient, RunAgentInput, openrouter_from_env, run_agent};
+use andy_ai::{
+    AgentSnapshot, ConfirmReply, OpenRouterClient, PolicySettings, RunAgentInput, WriteRisk,
+    classify_writes, confirm_reply, openrouter_from_env, run_agent,
+};
 use andy_db::{
-    ClaimResult, FlushResult, PgFinanceRead, WriteIntent, budget_statuses_for, claim_slot,
-    connect_pool, flush_writes, last_transaction, list_goals, list_memories, list_recurring,
-    recent_turns, resolve_user_id,
+    ClaimResult, FlushResult, PgFinanceRead, WriteIntent, budget_statuses_for,
+    cancel_pending_confirmations, claim_slot, connect_pool, consume_confirmation, flush_writes,
+    last_transaction, latest_pending_confirmation, list_goals, list_memories, list_recurring,
+    recent_turns, resolve_user_id, save_pending_confirmation,
 };
 use andy_shared::{
     allowlist::is_allowed,
@@ -320,6 +324,23 @@ async fn handle_inbound(
     }
 
     let user_id = resolve_user_id(&pool, &phone).await?;
+
+    // Confirmation flow: a bare "yes"/"no" answers an outstanding risky-write
+    // confirmation rather than starting a new turn. Falls through to normal
+    // handling when there is nothing pending to confirm.
+    if let Some(reply) = confirm_reply(&text) {
+        let sendblue = state
+            .sendblue
+            .clone()
+            .unwrap_or_else(|| SendblueClient::from_env(env));
+        if resolve_pending_confirmation(&pool, &sendblue, user_id, &phone, &dedup_id, reply)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+    }
+
     let (last_transaction, goals, recurring, memory_rows, recent_turns) = tokio::try_join!(
         last_transaction(&pool, user_id),
         list_goals(&pool, user_id),
@@ -357,7 +378,7 @@ async fn handle_inbound(
     })
     .await;
 
-    let (reply, mut writes) = match agent {
+    let (reply, writes) = match agent {
         Ok(output) => (output.reply, output.writes),
         Err(err) => {
             let sendblue = state
@@ -376,24 +397,175 @@ async fn handle_inbound(
 
     let reply = append_budget_reaction(&pool, user_id, &reply, &writes).await?;
     let outbound_dedup_key = format!("inbound-reply:{dedup_id}");
-    writes.push(WriteIntent::OutboundReply {
-        user_id,
-        phone: phone.clone(),
-        content: reply,
-        dedup_key: Some(outbound_dedup_key.clone()),
-    });
 
-    let flushed = flush_writes(&pool, Some(&dedup_id), &writes).await?;
-    if flushed == FlushResult::Superseded {
-        return Ok(());
-    }
-
+    // Deterministic safety gate between model output and the ledger. The model
+    // is not the final authority on destructive or high-value writes.
+    let settings = PolicySettings::from_threshold(env.confirm_amount_threshold_centavos);
     let sendblue = state
         .sendblue
         .clone()
         .unwrap_or_else(|| SendblueClient::from_env(env));
-    deliver_outbound_by_dedup_key(&pool, &sendblue, &outbound_dedup_key).await?;
+
+    match classify_writes(&text, &writes, settings) {
+        WriteRisk::Safe => {
+            commit_and_reply(
+                &pool,
+                &sendblue,
+                &dedup_id,
+                &outbound_dedup_key,
+                user_id,
+                &phone,
+                reply,
+                writes,
+            )
+            .await?;
+        }
+        WriteRisk::NeedsConfirmation { reason, summary } => {
+            // Park the ledger writes; persist only the conversation turns and a
+            // confirmation request. Nothing risky is committed yet.
+            let (ledger, turns): (Vec<_>, Vec<_>) =
+                writes.into_iter().partition(|w| !is_conversation_turn(w));
+            let expires_at = Utc::now() + chrono::Duration::minutes(CONFIRM_TTL_MINUTES);
+            save_pending_confirmation(
+                &pool,
+                user_id,
+                &phone,
+                message_id.as_deref(),
+                &summary,
+                &ledger,
+                expires_at,
+            )
+            .await?;
+            let ask =
+                format!("before i do that — {reason}. confirm? ({summary}). reply yes or no.");
+            let mut confirm_writes = turns;
+            confirm_writes.push(WriteIntent::OutboundReply {
+                user_id,
+                phone: phone.clone(),
+                content: ask,
+                dedup_key: Some(outbound_dedup_key.clone()),
+            });
+            commit_and_reply_writes(
+                &pool,
+                &sendblue,
+                &dedup_id,
+                &outbound_dedup_key,
+                confirm_writes,
+            )
+            .await?;
+        }
+        WriteRisk::Reject { reason } => {
+            // Drop the risky writes entirely; keep the turns and tell the user.
+            let (_, turns): (Vec<_>, Vec<_>) =
+                writes.into_iter().partition(|w| !is_conversation_turn(w));
+            let mut reject_writes = turns;
+            reject_writes.push(WriteIntent::OutboundReply {
+                user_id,
+                phone: phone.clone(),
+                content: format!("i can't do that — {reason}."),
+                dedup_key: Some(outbound_dedup_key.clone()),
+            });
+            commit_and_reply_writes(
+                &pool,
+                &sendblue,
+                &dedup_id,
+                &outbound_dedup_key,
+                reject_writes,
+            )
+            .await?;
+        }
+    }
     Ok(())
+}
+
+const CONFIRM_TTL_MINUTES: i64 = 60;
+
+#[must_use]
+fn is_conversation_turn(intent: &WriteIntent) -> bool {
+    matches!(intent, WriteIntent::SaveTurn { .. })
+}
+
+/// Commit a turn's writes (ledger + turns), append the outbound reply, and
+/// deliver it — the original Safe path.
+#[allow(clippy::too_many_arguments)]
+async fn commit_and_reply(
+    pool: &PgPool,
+    sendblue: &SendblueClient,
+    dedup_id: &str,
+    outbound_dedup_key: &str,
+    user_id: uuid::Uuid,
+    phone: &str,
+    reply: String,
+    mut writes: Vec<WriteIntent>,
+) -> Result<(), anyhow::Error> {
+    writes.push(WriteIntent::OutboundReply {
+        user_id,
+        phone: phone.to_string(),
+        content: reply,
+        dedup_key: Some(outbound_dedup_key.to_string()),
+    });
+    commit_and_reply_writes(pool, sendblue, dedup_id, outbound_dedup_key, writes).await
+}
+
+/// Flush a prepared write set (which already includes its OutboundReply) under
+/// the dedup/supersession guard, then deliver the queued reply.
+async fn commit_and_reply_writes(
+    pool: &PgPool,
+    sendblue: &SendblueClient,
+    dedup_id: &str,
+    outbound_dedup_key: &str,
+    writes: Vec<WriteIntent>,
+) -> Result<(), anyhow::Error> {
+    let flushed = flush_writes(pool, Some(dedup_id), &writes).await?;
+    if flushed == FlushResult::Superseded {
+        return Ok(());
+    }
+    deliver_outbound_by_dedup_key(pool, sendblue, outbound_dedup_key).await?;
+    Ok(())
+}
+
+/// Apply a "yes"/"no" answer to the latest pending confirmation. Returns
+/// `Some(())` when a confirmation was handled (caller should stop), or `None`
+/// when there was nothing pending (caller treats the message normally).
+async fn resolve_pending_confirmation(
+    pool: &PgPool,
+    sendblue: &SendblueClient,
+    user_id: uuid::Uuid,
+    phone: &str,
+    dedup_id: &str,
+    reply: ConfirmReply,
+) -> Result<Option<()>, anyhow::Error> {
+    let Some(pending) = latest_pending_confirmation(pool, user_id, Utc::now()).await? else {
+        return Ok(None);
+    };
+    let outbound_dedup_key = format!("inbound-reply:{dedup_id}");
+    match reply {
+        ConfirmReply::No => {
+            cancel_pending_confirmations(pool, user_id).await?;
+            let writes = vec![WriteIntent::OutboundReply {
+                user_id,
+                phone: phone.to_string(),
+                content: "okay, cancelled — nothing changed.".to_string(),
+                dedup_key: Some(outbound_dedup_key.clone()),
+            }];
+            commit_and_reply_writes(pool, sendblue, dedup_id, &outbound_dedup_key, writes).await?;
+        }
+        ConfirmReply::Yes => {
+            // Consume first; if another "yes" already did, do nothing.
+            if !consume_confirmation(pool, pending.id, user_id).await? {
+                return Ok(Some(()));
+            }
+            let mut writes = pending.writes;
+            writes.push(WriteIntent::OutboundReply {
+                user_id,
+                phone: phone.to_string(),
+                content: format!("done — {}.", pending.summary),
+                dedup_key: Some(outbound_dedup_key.clone()),
+            });
+            commit_and_reply_writes(pool, sendblue, dedup_id, &outbound_dedup_key, writes).await?;
+        }
+    }
+    Ok(Some(()))
 }
 
 async fn append_budget_reaction(

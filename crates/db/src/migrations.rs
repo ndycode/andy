@@ -57,6 +57,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0013_outbound_messages",
         include_str!("../../../packages/db/migrations/0013_outbound_messages.sql"),
     ),
+    (
+        "0014_pending_confirmations",
+        include_str!("../../../packages/db/migrations/0014_pending_confirmations.sql"),
+    ),
 ];
 
 pub async fn run(pool: &PgPool) -> Result<(), sqlx::Error> {
@@ -120,18 +124,42 @@ async fn ensure_tracking_table(tx: &mut Transaction<'_, Postgres>) -> Result<(),
     Ok(())
 }
 
+/// Migrations that predate the in-binary migration runner. On a legacy
+/// production DB these objects already exist (created by the old Drizzle
+/// tooling), so they must be marked applied rather than re-run. Anything after
+/// this list is a new migration and must actually execute, even on a DB that
+/// was baselined. Keep this list frozen — never append new migrations here.
+const LEGACY_BASELINE: &[&str] = &[
+    "0000_tiresome_paibok",
+    "0001_workable_golden_guardian",
+    "0002_deep_firebird",
+    "0003_complex_wolverine",
+    "0004_premium_scream",
+    "0005_correctness_seq_budgets_memory",
+    "0006_correctness_nudges_pk_goal_check",
+    "0007_schema_hardening_checks",
+    "0008_messages_seq_ordering",
+    "0009_schema_audit_0009",
+    "0010_audit_remediation_0010",
+    "0011_damp_luckman",
+    "0012_cool_gauntlet",
+    "0013_outbound_messages",
+];
+
 async fn baseline_existing_schema(tx: &mut Transaction<'_, Postgres>) -> Result<(), sqlx::Error> {
     if applied_count(tx).await? > 0 || !table_exists(tx, "users").await? {
         return Ok(());
     }
 
+    // Legacy DB with no migration tracking: mark the pre-runner migrations
+    // applied so they are not re-executed, then let any newer migration run
+    // normally. `outbound_messages` (0013) may or may not exist on the oldest
+    // databases, so gate that final legacy entry on its table.
     let outbound_exists = table_exists(tx, "outbound_messages").await?;
-    let baseline_through = if outbound_exists {
-        MIGRATIONS.len()
-    } else {
-        MIGRATIONS.len() - 1
-    };
-    for (version, _) in &MIGRATIONS[..baseline_through] {
+    for version in LEGACY_BASELINE {
+        if *version == "0013_outbound_messages" && !outbound_exists {
+            continue;
+        }
         mark_applied(tx, version).await?;
     }
     Ok(())
