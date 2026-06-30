@@ -68,9 +68,66 @@ andy is now a Rust workspace. the old TypeScript/Bun app code was removed; SQL m
 
 | route | purpose |
 | --- | --- |
-| `GET /health` | health check |
+| `GET /health` | static liveness check, no env or DB |
+| `GET /ready` | readiness: validates env, pings DB, reports migration + provider config (no secrets) |
 | `POST /webhooks/sendblue?t=<WEBHOOK_URL_TOKEN>` | inbound Sendblue messages |
 | `GET /api/cron/daily` | daily reminders, budget checks, cleanup |
+
+`/health` is for liveness probes and never touches env or the database.
+`/ready` is for deploy gating — it returns `200` only when required env is
+present, the database answers a lightweight query, and all bundled migrations
+are applied. It reports whether OpenRouter and Sendblue are configured as
+booleans and never echoes a key, secret, or connection string:
+
+```json
+{
+  "ok": true,
+  "service": "andy",
+  "db": "ok",
+  "openrouterConfigured": true,
+  "sendblueConfigured": true,
+  "migrations": "ok"
+}
+```
+
+## database migrations
+
+Migrations are forward-only and bundled into the binary. Run them once per
+deploy, before routing traffic to the new build:
+
+```bash
+cargo xtask migrate
+```
+
+`migrate` loads env, connects with `DATABASE_URL`, applies any pending
+migrations under an advisory lock, and exits non-zero on failure so a deploy
+pipeline can gate on it. It is idempotent and safe to re-run. Recommended
+deploy order: **migrate → deploy → verify `/ready` returns 200**.
+
+## answering with real data
+
+Andy answers money questions from saved records, not guesses. The model calls
+read-only tools — month overview, category spend, transaction search, budgets,
+goals, recurring — and replies with the period, total, count, and the largest
+relevant item (e.g. "You spent ₱4,820.00 on Food this month across 12 entries.
+Biggest was lunch ₱780.00 on Jun 12."). Read tools can never modify the ledger.
+
+## write safety and confirmation
+
+Before anything is committed, a deterministic policy classifies the turn's
+writes. Ordinary single logs and budgets commit immediately. Destructive
+actions (delete/undo, removing a budget/goal/reminder, forgetting a memory),
+unusually large amounts (≥ `ANDY_CONFIRM_AMOUNT_THRESHOLD_CENTAVOS`, default
+₱50,000.00), too many writes at once, or mixed destructive+constructive turns
+are held and Andy asks you to confirm. Reply "yes" to apply, "no" to cancel.
+Pending confirmations expire after an hour. The model is never the final
+authority on dangerous ledger changes.
+
+## auditability
+
+Every transaction stores the inbound `source_message_id` it came from, and each
+create/edit/delete appends a sanitized row to an append-only `ledger_events`
+table, so any number can be traced back to the message that produced it.
 
 ## env
 
@@ -81,7 +138,7 @@ DATABASE_URL
 SENDBLUE_API_KEY
 SENDBLUE_API_SECRET
 SENDBLUE_FROM_NUMBER
-WEBHOOK_URL_TOKEN
+WEBHOOK_URL_TOKEN          # or WEBHOOK_URL_TOKEN_SHA256 (see below)
 CRON_SECRET
 ALLOWED_PHONE
 ```
@@ -89,8 +146,13 @@ ALLOWED_PHONE
 optional:
 
 ```text
+WEBHOOK_URL_TOKEN_SHA256             # store the token as a sha256 hash instead of plaintext
 OPENROUTER_API_KEY
 OPENROUTER_MODEL
+OPENROUTER_BASE_URL                  # OpenRouter-compatible proxy/self-host; mainly for tests
+ANDY_CONFIRM_AMOUNT_THRESHOLD_CENTAVOS  # confirmation threshold, default 5_000_000 (₱50k)
+ANDY_INBOUND_RATE_LIMIT                  # default 60
+ANDY_INBOUND_RATE_WINDOW_SECONDS         # default 60
 APP_TIMEZONE
 APP_TIMEZONE_OFFSET_MINUTES
 ```
