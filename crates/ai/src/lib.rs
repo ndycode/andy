@@ -8,4 +8,4 @@ pub mod openrouter;
 pub use agent::{RunAgentInput, RunAgentOutput, run_agent};
 pub use finance_tools::AgentSnapshot;
 pub use model::{DEFAULT_MODEL_ID, ModelConfig, resolve_model_config};
-pub use openrouter::OpenRouterClient;
+pub use openrouter::{OpenRouterClient, openrouter_from_env};

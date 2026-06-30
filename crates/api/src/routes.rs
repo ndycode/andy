@@ -4,9 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use andy_ai::{
-    AgentSnapshot, OpenRouterClient, RunAgentInput, model::resolve_model_config, run_agent,
-};
+use andy_ai::{AgentSnapshot, OpenRouterClient, RunAgentInput, openrouter_from_env, run_agent};
 use andy_db::{
     ClaimResult, FlushResult, WriteIntent, budget_statuses_for, claim_slot, connect_pool,
     flush_writes, last_transaction, list_goals, list_memories, list_recurring, recent_turns,
@@ -68,11 +66,7 @@ impl AppState {
     pub async fn from_env() -> Result<Self, anyhow::Error> {
         let env = Env::from_process()?;
         let pool = connect_pool(&env.database_url).await?;
-        let model_config = resolve_model_config(env.openrouter_model.as_deref(), None)?;
-        let openrouter = env
-            .openrouter_api_key
-            .clone()
-            .map(|api_key| OpenRouterClient::new(api_key, model_config));
+        let openrouter = openrouter_from_env(&env)?;
         let sendblue = SendblueClient::from_env(&env);
         Ok(Self {
             env: Some(env),
@@ -262,12 +256,19 @@ async fn handle_inbound(
         .map(|row| row.content)
         .collect::<Vec<_>>();
     let today = local_date(Utc::now(), default_offset_minutes());
+    // In serverless lazy mode `state.openrouter` is None even when the key is
+    // configured, so fall back to building a client from env. Without this the
+    // agent always returns ModelUnavailable in production.
+    let local_openrouter = match state.openrouter.clone() {
+        Some(client) => Some(client),
+        None => openrouter_from_env(env)?,
+    };
     let agent = run_agent(RunAgentInput {
         text: &text,
         user_id,
         timezone: &app_timezone(),
         today,
-        model: state.openrouter.as_ref(),
+        model: local_openrouter.as_ref(),
         snapshot: AgentSnapshot {
             last_transaction,
             goals,
@@ -425,12 +426,17 @@ mod tests {
             sendblue_api_secret: "s".into(),
             sendblue_from_number: "+1".into(),
             webhook_url_token: "token".into(),
+            webhook_url_token_sha256: None,
             cron_secret: "cron".into(),
             allowed_phone: "+639171234567".into(),
             openrouter_api_key: None,
             openrouter_model: None,
+            openrouter_base_url: None,
             app_timezone: "Asia/Manila".into(),
             app_timezone_offset_minutes: 480,
+            confirm_amount_threshold_centavos: None,
+            inbound_rate_limit: None,
+            inbound_rate_window_seconds: None,
         }
     }
 
@@ -493,5 +499,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // Phase 1: production_lazy() carries no OpenRouter client, so the inbound
+    // path must resolve one from env. These tests exercise that resolution
+    // directly (no DB, no network) to prove the three acceptance criteria.
+    #[test]
+    fn production_lazy_resolves_openrouter_from_env_credentials() {
+        assert!(AppState::production_lazy().openrouter.is_none());
+
+        let mut env = env();
+        env.openrouter_api_key = Some("sk-test".into());
+        // A client is now available even though state.openrouter is None, so
+        // the agent is no longer guaranteed to fail with ModelUnavailable.
+        let resolved = openrouter_from_env(&env).expect("valid config");
+        assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn missing_openrouter_key_still_yields_safe_failure() {
+        let env = env();
+        assert!(env.openrouter_api_key.is_none());
+        // No client -> run_agent returns ModelUnavailable, which failure_reply
+        // maps to the safe "not configured" copy rather than panicking.
+        let resolved = openrouter_from_env(&env).expect("no key is not an error");
+        assert!(resolved.is_none());
+        let reply = andy_shared::errors::failure_reply(
+            &andy_ai::agent::AgentError::ModelUnavailable.to_string(),
+        );
+        assert!(reply.contains("not configured"));
+    }
+
+    #[test]
+    fn bad_openrouter_model_is_surfaced_without_panicking() {
+        let mut env = env();
+        env.openrouter_api_key = Some("sk-test".into());
+        env.openrouter_model = Some("openai/gpt-4o".into());
+        let resolved = openrouter_from_env(&env);
+        assert!(resolved.is_err(), "non-free model must be rejected");
+    }
+
+    // Phase 1 (route-level): with a fake OpenRouter endpoint wired through env,
+    // a production-lazy webhook reaches the model instead of failing on the
+    // missing state.openrouter. We stop at the DB boundary (no TEST_DATABASE_URL
+    // here) but prove the resolver hands back a usable client bound to the mock.
+    #[tokio::test]
+    async fn lazy_state_uses_fake_model_endpoint() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content": "ok" } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let mut env = env();
+        env.openrouter_api_key = Some("sk-test".into());
+        env.openrouter_base_url = Some(server.uri());
+        let client = openrouter_from_env(&env)
+            .expect("valid config")
+            .expect("client present");
+        let reply = client
+            .chat(&[andy_ai::openrouter::ChatMessage::text("user", "hi")])
+            .await
+            .expect("fake model responds");
+        assert_eq!(reply, "ok");
     }
 }

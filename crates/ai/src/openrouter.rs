@@ -1,9 +1,29 @@
+use andy_shared::env::Env;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::model::ModelConfig;
+use crate::model::{ModelConfig, ModelConfigError, resolve_model_config};
+
+/// Build an [`OpenRouterClient`] from process [`Env`] for serverless lazy
+/// initialization.
+///
+/// Returns `Ok(None)` when no `OPENROUTER_API_KEY` is configured (the caller
+/// then surfaces a safe "model not configured" failure), and an error only when
+/// `OPENROUTER_MODEL` is invalid. It never panics and never performs a network
+/// call, so it is safe to invoke on every inbound request.
+pub fn openrouter_from_env(env: &Env) -> Result<Option<OpenRouterClient>, ModelConfigError> {
+    let Some(api_key) = env.openrouter_api_key.clone() else {
+        return Ok(None);
+    };
+    let model_config = resolve_model_config(env.openrouter_model.as_deref(), None)?;
+    let client = match env.openrouter_base_url.as_deref() {
+        Some(base_url) => OpenRouterClient::with_base_url(api_key, model_config, base_url),
+        None => OpenRouterClient::new(api_key, model_config),
+    };
+    Ok(Some(client))
+}
 
 #[derive(Debug, Clone)]
 pub struct OpenRouterClient {
@@ -220,6 +240,47 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
         matchers::{bearer_token, method, path},
     };
+
+    fn env_with(api_key: Option<&str>, model: Option<&str>) -> Env {
+        Env {
+            database_url: "postgres://x".into(),
+            sendblue_api_key: "k".into(),
+            sendblue_api_secret: "s".into(),
+            sendblue_from_number: "+1".into(),
+            webhook_url_token: "t".into(),
+            webhook_url_token_sha256: None,
+            cron_secret: "c".into(),
+            allowed_phone: "+1".into(),
+            openrouter_api_key: api_key.map(ToString::to_string),
+            openrouter_model: model.map(ToString::to_string),
+            openrouter_base_url: None,
+            app_timezone: "Asia/Manila".into(),
+            app_timezone_offset_minutes: 480,
+            confirm_amount_threshold_centavos: None,
+            inbound_rate_limit: None,
+            inbound_rate_window_seconds: None,
+        }
+    }
+
+    #[test]
+    fn openrouter_from_env_builds_client_when_key_present() {
+        let env = env_with(Some("sk-test"), None);
+        let client = openrouter_from_env(&env).expect("valid config");
+        assert!(client.is_some(), "client should be built when key is present");
+    }
+
+    #[test]
+    fn openrouter_from_env_is_none_without_key() {
+        let env = env_with(None, None);
+        assert!(openrouter_from_env(&env).expect("ok").is_none());
+    }
+
+    #[test]
+    fn openrouter_from_env_surfaces_bad_model_without_panicking() {
+        let env = env_with(Some("sk-test"), Some("openai/gpt-4o"));
+        let result = openrouter_from_env(&env);
+        assert!(matches!(result, Err(ModelConfigError::NonFreeModel(_))));
+    }
 
     #[tokio::test]
     async fn sends_openrouter_chat_request() {
