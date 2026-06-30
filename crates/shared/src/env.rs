@@ -194,7 +194,10 @@ mod tests {
     fn parses_optional_numeric_thresholds() {
         let mut values = base();
         values.insert("WEBHOOK_URL_TOKEN", "t".to_string());
-        values.insert("ANDY_CONFIRM_AMOUNT_THRESHOLD_CENTAVOS", "5000000".to_string());
+        values.insert(
+            "ANDY_CONFIRM_AMOUNT_THRESHOLD_CENTAVOS",
+            "5000000".to_string(),
+        );
         values.insert("ANDY_INBOUND_RATE_LIMIT", "120".to_string());
         values.insert("ANDY_INBOUND_RATE_WINDOW_SECONDS", "30".to_string());
         let env = Env::from_getter(|key| values.get(key).cloned()).unwrap();

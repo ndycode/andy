@@ -336,6 +336,18 @@ pub async fn get_month_overview(
     at: DateTime<Utc>,
 ) -> Result<MonthOverview, sqlx::Error> {
     let (start, end) = month_range(at, MANILA_OFFSET_MINUTES);
+    get_month_overview_between(pool, user_id, start, end).await
+}
+
+/// Income/expense/net for an explicit inclusive `[start, end]` window. The
+/// clock-based [`get_month_overview`] delegates here; read tools call this
+/// directly with caller-supplied bounds so the timezone stays explicit.
+pub async fn get_month_overview_between(
+    pool: &PgPool,
+    user_id: Uuid,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<MonthOverview, sqlx::Error> {
     let row = sqlx::query(
         r#"
         select
@@ -365,6 +377,17 @@ pub async fn get_spending_by_category(
     at: DateTime<Utc>,
 ) -> Result<Vec<(Category, i64)>, sqlx::Error> {
     let (start, end) = month_range(at, MANILA_OFFSET_MINUTES);
+    get_spending_by_category_between(pool, user_id, start, end).await
+}
+
+/// Expense totals grouped by category over an explicit inclusive window,
+/// largest first. Backs both the clock-based wrapper and the read tools.
+pub async fn get_spending_by_category_between(
+    pool: &PgPool,
+    user_id: Uuid,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<Vec<(Category, i64)>, sqlx::Error> {
     let rows = sqlx::query(
         r#"
         select category::text as category, sum(amount_centavos)::bigint as total

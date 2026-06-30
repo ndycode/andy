@@ -12,6 +12,7 @@ db-integration = []
 [dependencies]
 andy_shared = { path = "../shared" }
 anyhow.workspace = true
+async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
 sqlx.workspace = true

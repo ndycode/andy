@@ -91,10 +91,11 @@ pub const fn bundled_count() -> usize {
 /// applied count otherwise. Performs no writes and no locking, so it is cheap
 /// enough for a `/ready` handler.
 pub async fn applied_count_if_tracked(pool: &PgPool) -> Result<Option<i64>, sqlx::Error> {
-    let tracked = sqlx::query("select to_regclass('public._andy_migrations') is not null as exists")
-        .fetch_one(pool)
-        .await?
-        .try_get::<bool, _>("exists")?;
+    let tracked =
+        sqlx::query("select to_regclass('public._andy_migrations') is not null as exists")
+            .fetch_one(pool)
+            .await?
+            .try_get::<bool, _>("exists")?;
     if !tracked {
         return Ok(None);
     }

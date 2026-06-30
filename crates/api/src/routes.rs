@@ -6,9 +6,9 @@ use std::{
 
 use andy_ai::{AgentSnapshot, OpenRouterClient, RunAgentInput, openrouter_from_env, run_agent};
 use andy_db::{
-    ClaimResult, FlushResult, WriteIntent, budget_statuses_for, claim_slot, connect_pool,
-    flush_writes, last_transaction, list_goals, list_memories, list_recurring, recent_turns,
-    resolve_user_id,
+    ClaimResult, FlushResult, PgFinanceRead, WriteIntent, budget_statuses_for, claim_slot,
+    connect_pool, flush_writes, last_transaction, list_goals, list_memories, list_recurring,
+    recent_turns, resolve_user_id,
 };
 use andy_shared::{
     allowlist::is_allowed,
@@ -339,12 +339,14 @@ async fn handle_inbound(
         Some(client) => Some(client),
         None => openrouter_from_env(env)?,
     };
+    let reader = PgFinanceRead::new(pool.clone());
     let agent = run_agent(RunAgentInput {
         text: &text,
         user_id,
         timezone: &app_timezone(),
         today,
         model: local_openrouter.as_ref(),
+        reader: Some(&reader),
         snapshot: AgentSnapshot {
             last_transaction,
             goals,

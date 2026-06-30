@@ -266,7 +266,10 @@ mod tests {
     fn openrouter_from_env_builds_client_when_key_present() {
         let env = env_with(Some("sk-test"), None);
         let client = openrouter_from_env(&env).expect("valid config");
-        assert!(client.is_some(), "client should be built when key is present");
+        assert!(
+            client.is_some(),
+            "client should be built when key is present"
+        );
     }
 
     #[test]

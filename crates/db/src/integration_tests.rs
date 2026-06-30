@@ -4,9 +4,10 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::{
-    ClaimResult, FlushResult, RecurringInput, WriteIntent, claim_outbound_by_dedup_key,
-    claim_reminder, claim_slot, due_recurring_today, find_goal_by_name, flush_writes, list_goals,
-    list_memories, list_recurring, mark_outbound_sent, migrations, resolve_user_id,
+    ClaimResult, FinanceRead, FlushResult, PgFinanceRead, RecurringInput, TransactionSearch,
+    WriteIntent, claim_outbound_by_dedup_key, claim_reminder, claim_slot, due_recurring_today,
+    find_goal_by_name, flush_writes, list_goals, list_memories, list_recurring, mark_outbound_sent,
+    migrations, resolve_user_id,
     writes::{Cadence, MemoryKind, MessageRole, TxKind},
 };
 
@@ -194,6 +195,100 @@ async fn goal_balances_and_recurring_claims_use_real_constraints() -> anyhow::Re
     assert!(claim_reminder(&pool, recurring[0].id, user_id, now).await?);
     assert!(due_recurring_today(&pool, user_id, now).await?.is_empty());
     assert_eq!(list_recurring(&pool, user_id).await?.len(), 1);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn read_tools_return_real_month_category_and_search_results() -> anyhow::Result<()> {
+    let pool = test_pool().await;
+    let user_id = resolve_user_id(&pool, &unique_phone()).await?;
+
+    flush_writes(
+        &pool,
+        None,
+        &[
+            WriteIntent::Transaction {
+                kind: TxKind::Income,
+                user_id,
+                amount_centavos: 5_000_000,
+                category: Category::Income,
+                note: Some("sweldo".into()),
+                local_date: "2026-06-01".parse()?,
+            },
+            WriteIntent::Transaction {
+                kind: TxKind::Expense,
+                user_id,
+                amount_centavos: 18_000,
+                category: Category::Food,
+                note: Some("lunch grab".into()),
+                local_date: "2026-06-05".parse()?,
+            },
+            WriteIntent::Transaction {
+                kind: TxKind::Expense,
+                user_id,
+                amount_centavos: 78_000,
+                category: Category::Food,
+                note: Some("dinner".into()),
+                local_date: "2026-06-12".parse()?,
+            },
+            // Different month — must be excluded from June totals.
+            WriteIntent::Transaction {
+                kind: TxKind::Expense,
+                user_id,
+                amount_centavos: 99_000,
+                category: Category::Food,
+                note: Some("old".into()),
+                local_date: "2026-05-30".parse()?,
+            },
+        ],
+    )
+    .await?;
+
+    let reader = PgFinanceRead::new(pool.clone());
+    let start = "2026-06-01".parse()?;
+    let end = "2026-06-30".parse()?;
+
+    let overview = reader.month_overview(user_id, start, end).await?;
+    assert_eq!(overview.income, 5_000_000);
+    assert_eq!(overview.expense, 96_000);
+    assert_eq!(overview.net, 4_904_000);
+
+    let (total, count) = reader
+        .category_spend(user_id, Category::Food, start, end)
+        .await?;
+    assert_eq!(total, 96_000, "May food spend must be excluded");
+    assert_eq!(count, 2);
+
+    // Largest-first search, scoped to June expenses.
+    let biggest = reader
+        .search(
+            user_id,
+            &TransactionSearch {
+                kind: Some("expense".into()),
+                start_date: Some(start),
+                end_date: Some(end),
+                by_amount: true,
+                limit: 5,
+                ..TransactionSearch::default()
+            },
+        )
+        .await?;
+    assert_eq!(biggest.first().map(|t| t.amount_centavos), Some(78_000));
+
+    // Text search matches notes.
+    let grabs = reader
+        .search(
+            user_id,
+            &TransactionSearch {
+                text: Some("grab".into()),
+                limit: 5,
+                ..TransactionSearch::default()
+            },
+        )
+        .await?;
+    assert_eq!(grabs.len(), 1);
+    assert_eq!(grabs[0].amount_centavos, 18_000);
 
     Ok(())
 }
