@@ -77,6 +77,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0018_length_constraints",
         include_str!("../../../packages/db/migrations/0018_length_constraints.sql"),
     ),
+    (
+        "0019_inbound_rate_limits",
+        include_str!("../../../packages/db/migrations/0019_inbound_rate_limits.sql"),
+    ),
 ];
 
 pub async fn run(pool: &PgPool) -> Result<(), sqlx::Error> {

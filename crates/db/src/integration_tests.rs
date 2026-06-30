@@ -4,11 +4,12 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::{
-    ClaimResult, FinanceRead, FlushResult, PgFinanceRead, RecurringInput, TransactionSearch,
-    WriteIntent, cancel_pending_confirmations, claim_outbound_by_dedup_key, claim_reminder,
-    claim_slot, consume_confirmation, due_recurring_today, find_goal_by_name, flush_writes,
-    latest_pending_confirmation, list_goals, list_memories, list_recurring, mark_outbound_sent,
-    migrations, resolve_user_id, save_pending_confirmation,
+    ClaimResult, FinanceRead, FlushResult, PgFinanceRead, RateDecision, RecurringInput,
+    TransactionSearch, WriteIntent, cancel_pending_confirmations, check_and_increment,
+    claim_outbound_by_dedup_key, claim_reminder, claim_slot, consume_confirmation,
+    due_recurring_today, find_goal_by_name, flush_writes, latest_pending_confirmation, list_goals,
+    list_memories, list_recurring, mark_outbound_sent, migrations, resolve_user_id,
+    save_pending_confirmation,
     writes::{Cadence, MemoryKind, MessageRole, TxKind},
 };
 
@@ -710,6 +711,33 @@ async fn length_constraints_accept_app_truncated_writes() -> anyhow::Result<()> 
         stored.chars().count(),
         500,
         "note should be truncated to the CHECK limit"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn durable_rate_limit_increments_and_blocks_at_limit() -> anyhow::Result<()> {
+    let pool = test_pool().await;
+    let key = format!("ratekey-{}", Uuid::new_v4());
+    let now = Utc.with_ymd_and_hms(2026, 6, 15, 12, 0, 0).unwrap();
+
+    // Limit of 3 in a 60s window: first 3 allowed, 4th blocked.
+    for _ in 0..3 {
+        assert_eq!(
+            check_and_increment(&pool, &key, now, 60, 3).await?,
+            RateDecision::Allow
+        );
+    }
+    assert_eq!(
+        check_and_increment(&pool, &key, now, 60, 3).await?,
+        RateDecision::Limited
+    );
+
+    // A later window resets the counter.
+    let next_window = now + Duration::seconds(60);
+    assert_eq!(
+        check_and_increment(&pool, &key, next_window, 60, 3).await?,
+        RateDecision::Allow
     );
     Ok(())
 }

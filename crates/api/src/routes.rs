@@ -1,18 +1,14 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::collections::HashMap;
 
 use andy_ai::{
     AgentSnapshot, ConfirmReply, OpenRouterClient, PolicySettings, RunAgentInput, WriteRisk,
     classify_writes, confirm_reply, openrouter_from_env, run_agent,
 };
 use andy_db::{
-    ClaimResult, FlushResult, PgFinanceRead, WriteIntent, budget_statuses_for,
-    cancel_pending_confirmations, claim_slot, connect_pool, consume_confirmation, flush_writes,
-    last_transaction, latest_pending_confirmation, list_goals, list_memories, list_recurring,
-    recent_turns, resolve_user_id, save_pending_confirmation,
+    ClaimResult, FlushResult, PgFinanceRead, RateDecision, WriteIntent, budget_statuses_for,
+    cancel_pending_confirmations, check_and_increment, claim_slot, connect_pool,
+    consume_confirmation, flush_writes, last_transaction, latest_pending_confirmation, list_goals,
+    list_memories, list_recurring, recent_turns, resolve_user_id, save_pending_confirmation,
 };
 use andy_shared::{
     allowlist::is_allowed,
@@ -20,7 +16,7 @@ use andy_shared::{
     dedup::content_dedup_key,
     env::Env,
     errors::failure_reply,
-    security::{constant_time_equal, token_matches_hash},
+    security::{constant_time_equal, sha256_hex, token_matches_hash},
     time::AppTimeConfig,
 };
 use axum::{
@@ -43,8 +39,6 @@ use crate::{
 };
 
 const MAX_BODY_BYTES: usize = 16_384;
-const INBOUND_BURST_MAX: usize = 60;
-const INBOUND_BURST_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -52,7 +46,6 @@ pub struct AppState {
     pub pool: Option<PgPool>,
     pub sendblue: Option<SendblueClient>,
     pub openrouter: Option<OpenRouterClient>,
-    burst: Arc<Mutex<VecDeque<Instant>>>,
 }
 
 impl AppState {
@@ -63,7 +56,6 @@ impl AppState {
             pool: None,
             sendblue: None,
             openrouter: None,
-            burst: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -77,7 +69,6 @@ impl AppState {
             pool: Some(pool),
             sendblue: Some(sendblue),
             openrouter,
-            burst: Arc::new(Mutex::new(VecDeque::new())),
         })
     }
 
@@ -243,17 +234,56 @@ async fn sendblue_webhook(
         ));
     };
 
-    if !allow_burst(&state) {
-        return Ok(json_status(
-            StatusCode::TOO_MANY_REQUESTS,
-            OkResponse { ok: false },
-        ));
+    // Durable, cross-instance rate limit keyed on a hash of token+phone (no raw
+    // secret/PII stored). Fail closed: if the check errors we return 503 rather
+    // than let unknown traffic reach the model.
+    match durable_rate_ok(&state, &env, token.as_deref(), &msg.phone).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return Ok(json_status(
+                StatusCode::TOO_MANY_REQUESTS,
+                OkResponse { ok: false },
+            ));
+        }
+        Err(_) => {
+            return Ok(json_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                OkResponse { ok: false },
+            ));
+        }
     }
 
     handle_inbound(&state, &env, msg.phone, msg.text, msg.message_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(json_status(StatusCode::OK, OkResponse { ok: true }))
+}
+
+const DEFAULT_INBOUND_RATE_LIMIT: i64 = 60;
+const DEFAULT_INBOUND_RATE_WINDOW_SECONDS: i64 = 60;
+
+/// Durable rate-limit gate. Resolves a pool (from state or env), increments the
+/// fixed-window counter for `sha256(token|phone)`, and returns whether the
+/// request is under the configured limit. Errors propagate so the caller can
+/// fail closed.
+async fn durable_rate_ok(
+    state: &AppState,
+    env: &Env,
+    token: Option<&str>,
+    phone: &str,
+) -> Result<bool, anyhow::Error> {
+    let pool = if let Some(pool) = state.pool.clone() {
+        pool
+    } else {
+        connect_pool(&env.database_url).await?
+    };
+    let limit = env.inbound_rate_limit.unwrap_or(DEFAULT_INBOUND_RATE_LIMIT);
+    let window = env
+        .inbound_rate_window_seconds
+        .unwrap_or(DEFAULT_INBOUND_RATE_WINDOW_SECONDS);
+    let key_hash = sha256_hex(&format!("{}|{}", token.unwrap_or_default(), phone));
+    let decision = check_and_increment(&pool, &key_hash, Utc::now(), window, limit).await?;
+    Ok(decision == RateDecision::Allow)
 }
 
 async fn daily_cron(
@@ -689,22 +719,6 @@ fn percent_decode(value: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-fn allow_burst(state: &AppState) -> bool {
-    let now = Instant::now();
-    let mut hits = state.burst.lock().expect("burst mutex poisoned");
-    while hits
-        .front()
-        .is_some_and(|hit| now.duration_since(*hit) >= INBOUND_BURST_WINDOW)
-    {
-        hits.pop_front();
-    }
-    if hits.len() >= INBOUND_BURST_MAX {
-        return false;
-    }
-    hits.push_back(now);
-    true
 }
 
 fn json_status<T: Serialize>(status: StatusCode, value: T) -> Response {

@@ -5,6 +5,7 @@ pub mod confirmations;
 pub mod migrations;
 pub mod ops;
 pub mod queries;
+pub mod ratelimit;
 pub mod read;
 pub mod writes;
 
@@ -30,6 +31,7 @@ pub use queries::{
     recent_turns, resolve_user_id, search_transactions, search_transfers, sum_by_category,
     sum_spend_between,
 };
+pub use ratelimit::{RateDecision, check_and_increment, reap_inbound_rate_limits};
 pub use read::{CategorySpend, FinanceRead, PgFinanceRead, ToolReadError};
 pub use writes::{FlushResult, RecurringInput, WriteIntent, flush_writes};
 
