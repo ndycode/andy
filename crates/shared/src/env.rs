@@ -14,6 +14,13 @@ pub struct Env {
     /// inbound webhook verifies `sha256(query token)` against this instead of
     /// comparing the raw token, so the plaintext token need not live in env.
     pub webhook_url_token_sha256: Option<String>,
+    /// Optional Sendblue webhook signing secret. When set, the inbound webhook
+    /// additionally verifies the `sb-signing-secret` request header against this
+    /// (constant-time) as a second authenticity factor beyond the URL token.
+    /// Sendblue delivers this configured secret verbatim in the header (a plain
+    /// shared-secret comparison, not an HMAC over the body). When unset, the URL
+    /// token remains the sole authenticity boundary (backward compatible).
+    pub sendblue_signing_secret: Option<String>,
     pub cron_secret: String,
     pub allowed_phone: String,
     pub openrouter_api_key: Option<String>,
@@ -91,6 +98,7 @@ impl Env {
             sendblue_from_number: required(&mut get, "SENDBLUE_FROM_NUMBER")?,
             webhook_url_token,
             webhook_url_token_sha256,
+            sendblue_signing_secret: optional(&mut get, "SENDBLUE_SIGNING_SECRET"),
             cron_secret: required(&mut get, "CRON_SECRET")?,
             allowed_phone: required(&mut get, "ALLOWED_PHONE")?,
             openrouter_api_key: optional(&mut get, "OPENROUTER_API_KEY"),
@@ -237,5 +245,17 @@ mod tests {
         let cfg = env.time_config();
         assert_eq!(cfg.label, "UTC");
         assert_eq!(cfg.offset_minutes, 0);
+    }
+
+    #[test]
+    fn signing_secret_is_optional() {
+        let mut values = base();
+        values.insert("WEBHOOK_URL_TOKEN", "t".to_string());
+        let env = Env::from_getter(|key| values.get(key).cloned()).unwrap();
+        assert_eq!(env.sendblue_signing_secret, None);
+
+        values.insert("SENDBLUE_SIGNING_SECRET", "shh".to_string());
+        let env = Env::from_getter(|key| values.get(key).cloned()).unwrap();
+        assert_eq!(env.sendblue_signing_secret.as_deref(), Some("shh"));
     }
 }

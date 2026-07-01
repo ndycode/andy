@@ -336,6 +336,7 @@ mod tests {
             sendblue_from_number: "+1".into(),
             webhook_url_token: "t".into(),
             webhook_url_token_sha256: None,
+            sendblue_signing_secret: None,
             cron_secret: "c".into(),
             allowed_phone: "+1".into(),
             openrouter_api_key: api_key.map(ToString::to_string),

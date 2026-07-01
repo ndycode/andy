@@ -103,7 +103,6 @@ name = "andy_shared"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "hmac",
  "once_cell",
  "proptest",
  "regex",

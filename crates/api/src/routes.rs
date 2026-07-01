@@ -232,6 +232,17 @@ async fn sendblue_webhook(
         ));
     }
 
+    // Optional second authenticity factor: when a signing secret is configured,
+    // the `sb-signing-secret` header must match it (constant time). Sendblue
+    // delivers the configured secret verbatim in this header. When unset, the
+    // URL token stays the sole boundary (backward compatible).
+    if !signing_secret_valid(&parts.headers, &env) {
+        return Ok(json_status(
+            StatusCode::UNAUTHORIZED,
+            OkResponse { ok: false },
+        ));
+    }
+
     let raw = to_bytes(body, MAX_BODY_BYTES + 1).await.map_err(|err| {
         warn!(event = "webhook.body.read_error", error = %err);
         StatusCode::BAD_REQUEST
@@ -277,7 +288,7 @@ async fn sendblue_webhook(
     // Durable, cross-instance rate limit keyed on a hash of token+phone (no raw
     // secret/PII stored). Fail closed: if the check errors we return 503 rather
     // than let unknown traffic reach the model.
-    match durable_rate_ok(&pool, &env, token.as_deref(), &msg.phone).await {
+    match durable_rate_ok(&pool, &env, token.as_deref()).await {
         Ok(true) => {}
         Ok(false) => {
             return Ok(json_status(
@@ -308,20 +319,25 @@ const DEFAULT_INBOUND_RATE_LIMIT: i64 = 60;
 const DEFAULT_INBOUND_RATE_WINDOW_SECONDS: i64 = 60;
 
 /// Durable rate-limit gate. Increments the fixed-window counter for
-/// `sha256(token|phone)` on the caller-provided pool and returns whether the
-/// request is under the configured limit. Errors propagate so the caller can
-/// fail closed.
+/// `sha256(token)` on the caller-provided pool and returns whether the request
+/// is under the configured limit. Errors propagate so the caller can fail
+/// closed.
+///
+/// The key is the token hash ALONE, not `token|phone`: `phone` comes from the
+/// attacker-controlled request body, so including it would let a token-holder
+/// rotate the number field to land in a fresh bucket on every request and churn
+/// the limiter. This is a single-allowed-phone app, so per-token granularity is
+/// exactly right.
 async fn durable_rate_ok(
     pool: &PgPool,
     env: &Env,
     token: Option<&str>,
-    phone: &str,
 ) -> Result<bool, anyhow::Error> {
     let limit = env.inbound_rate_limit.unwrap_or(DEFAULT_INBOUND_RATE_LIMIT);
     let window = env
         .inbound_rate_window_seconds
         .unwrap_or(DEFAULT_INBOUND_RATE_WINDOW_SECONDS);
-    let key_hash = sha256_hex(&format!("{}|{}", token.unwrap_or_default(), phone));
+    let key_hash = sha256_hex(token.unwrap_or_default());
     let decision = check_and_increment(pool, &key_hash, Utc::now(), window, limit).await?;
     Ok(decision == RateDecision::Allow)
 }
@@ -397,6 +413,21 @@ fn webhook_token_valid(actual: Option<&str>, env: &Env) -> bool {
     !env.webhook_url_token.is_empty() && constant_time_equal(actual, &env.webhook_url_token)
 }
 
+/// Verify the optional Sendblue `sb-signing-secret` header. Returns `true` when
+/// no signing secret is configured (feature off) or when the header matches the
+/// configured secret in constant time. A configured secret with a missing or
+/// mismatched header fails closed.
+fn signing_secret_valid(headers: &HeaderMap, env: &Env) -> bool {
+    let Some(expected) = env.sendblue_signing_secret.as_deref() else {
+        return true;
+    };
+    let presented = headers
+        .get("sb-signing-secret")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    constant_time_equal(presented, expected)
+}
+
 /// Extract a single query parameter value (percent-decoded). Returns `None`
 /// when the key is absent or appears more than once, so an attacker cannot
 /// smuggle a second `t=` past the check.
@@ -466,6 +497,7 @@ mod tests {
             sendblue_from_number: "+1".into(),
             webhook_url_token: "token".into(),
             webhook_url_token_sha256: None,
+            sendblue_signing_secret: None,
             cron_secret: "cron".into(),
             allowed_phone: "+639171234567".into(),
             openrouter_api_key: None,
@@ -642,6 +674,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn webhook_requires_signing_secret_header_when_configured() {
+        // With a signing secret configured, a valid token but missing/mismatched
+        // sb-signing-secret header must be rejected.
+        let mut state = AppState::test();
+        let mut e = env();
+        e.sendblue_signing_secret = Some("shh".into());
+        state.env = Some(e);
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/sendblue?t=token")
+                    .body(Body::from(r#"{"status":"DELIVERED"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn webhook_accepts_matching_signing_secret_header() {
+        let mut state = AppState::test();
+        let mut e = env();
+        e.sendblue_signing_secret = Some("shh".into());
+        state.env = Some(e);
+        // Valid token + matching header + non-actionable body -> 200 ack.
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/sendblue?t=token")
+                    .header("sb-signing-secret", "shh")
+                    .body(Body::from(r#"{"status":"DELIVERED"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
