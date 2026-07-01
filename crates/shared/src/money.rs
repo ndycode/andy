@@ -85,9 +85,13 @@ pub fn parse_amount(raw: &str) -> Result<i64, MoneyError> {
 
     let multiplier = Decimal::from(10_i64.pow(2 + suffix_exp));
     let pesos = Decimal::from_str(&s).map_err(|_| MoneyError::NotFinite)?;
-    let centavos = (pesos * multiplier)
-        .round()
-        .to_i64()
+    // checked_mul: a hostile-but-numeric input (e.g. a 27-digit run) can make
+    // the Decimal multiply overflow. That must be a clean Err, never a panic —
+    // this path is reachable from the unauthenticated webhook body.
+    let centavos = pesos
+        .checked_mul(multiplier)
+        .map(|product| product.round())
+        .and_then(|rounded| rounded.to_i64())
         .ok_or(MoneyError::NotFinite)?;
 
     if centavos <= 0 {
@@ -102,13 +106,17 @@ pub fn parse_amount(raw: &str) -> Result<i64, MoneyError> {
 #[must_use]
 pub fn format_php(centavos: i64) -> String {
     let sign = if centavos < 0 { "-" } else { "" };
-    let abs = centavos.abs();
+    // unsigned_abs, not abs(): i64::MIN.abs() has no positive i64 and panics
+    // (debug) / corrupts (release). format_php runs on sums/deltas/goal
+    // balances, not just capped entries, so a large negative aggregate can
+    // reach i64::MIN. u64 covers |i64::MIN| exactly.
+    let abs = centavos.unsigned_abs();
     let pesos = abs / 100;
     let cents = abs % 100;
     format!("{sign}₱{}.{cents:02}", group_thousands(pesos))
 }
 
-fn group_thousands(value: i64) -> String {
+fn group_thousands(value: u64) -> String {
     let raw = value.to_string();
     let mut out = String::with_capacity(raw.len() + raw.len() / 3);
     for (idx, ch) in raw.chars().rev().enumerate() {

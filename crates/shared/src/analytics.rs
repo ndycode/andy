@@ -31,7 +31,11 @@ pub struct PaceVerdict {
 
 #[must_use]
 pub fn spending_delta(current: i64, previous: i64) -> SpendingComparison {
-    let delta = current - previous;
+    // saturating_sub, not `-`: extreme (current, previous) would overflow and
+    // wrap with the WRONG SIGN in release (a decrease reported as an increase).
+    // Saturating clamps to i64::MIN/MAX and preserves sign, keeping Direction
+    // and pct_change coherent.
+    let delta = current.saturating_sub(previous);
     let raw_pct = if previous < PCT_BASELINE_FLOOR_CENTAVOS {
         None
     } else {
@@ -68,7 +72,10 @@ pub fn project_month_end(spent_so_far: i64, day_of_month: i64, days_in_month: i6
 
 #[must_use]
 pub fn project_month_end_robust(amounts: &[i64], day_of_month: i64, days_in_month: i64) -> i64 {
-    let spent_so_far = amounts.iter().sum::<i64>();
+    // saturating fold, not sum::<i64>(): sum uses unchecked `+` and would
+    // panic (debug) / silently wrap (release, money corruption) on extreme
+    // aggregates. Saturating clamps instead.
+    let spent_so_far = amounts.iter().copied().fold(0_i64, i64::saturating_add);
     if day_of_month < 1 {
         return spent_so_far;
     }
@@ -79,7 +86,10 @@ pub fn project_month_end_robust(amounts: &[i64], day_of_month: i64, days_in_mont
     sorted.sort_unstable();
     let mid = sorted.len() / 2;
     let median = if sorted.len().is_multiple_of(2) {
-        (sorted[mid - 1] + sorted[mid]) as f64 / 2.0
+        // Cast each operand to f64 BEFORE adding: the i64 pair-sum could
+        // overflow pre-cast, producing a negative median that misclassifies
+        // every amount.
+        (sorted[mid - 1] as f64 + sorted[mid] as f64) / 2.0
     } else {
         sorted[mid] as f64
     };
@@ -88,17 +98,19 @@ pub fn project_month_end_robust(amounts: &[i64], day_of_month: i64, days_in_mont
     let mut typical_total = 0_i64;
     for amount in amounts {
         if *amount as f64 > threshold {
-            outlier_total += amount;
+            outlier_total = outlier_total.saturating_add(*amount);
         } else {
-            typical_total += amount;
+            typical_total = typical_total.saturating_add(*amount);
         }
     }
     if outlier_total == 0 {
         return project_month_end(spent_so_far, day_of_month, days_in_month);
     }
-    let projected = ((typical_total as f64 / day_of_month as f64) * days_in_month as f64).round()
-        as i64
-        + outlier_total;
+    // saturating_add the outlier total: the projection + outlier sum can
+    // overflow i64 and wrap to a large negative in release.
+    let typical_projection =
+        ((typical_total as f64 / day_of_month as f64) * days_in_month as f64).round() as i64;
+    let projected = typical_projection.saturating_add(outlier_total);
     projected.max(spent_so_far)
 }
 

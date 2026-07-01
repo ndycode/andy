@@ -9,10 +9,21 @@ const KEY_SEPARATOR: char = '\0';
 pub fn content_dedup_key(phone: &str, text: &str, at: DateTime<Utc>) -> String {
     let offset_ms = i64::from(MANILA_OFFSET_MINUTES) * 60_000;
     let minute_bucket = (at.timestamp_millis() + offset_ms).div_euclid(60_000);
-    let input = [phone, text.trim(), &minute_bucket.to_string()].join(&KEY_SEPARATOR.to_string());
+    // Strip control chars (notably the \0 that serves as the field separator)
+    // before joining, so no phone/text content can inject a separator and shift
+    // the field boundary to collide with a different (phone, text) pair. Keeps
+    // the key injective over the three fields.
+    let phone = strip_control(phone);
+    let text = strip_control(text.trim());
+    let input = [phone.as_str(), text.as_str(), &minute_bucket.to_string()]
+        .join(&KEY_SEPARATOR.to_string());
     let digest = Sha256::digest(input.as_bytes());
     let hex = format!("{digest:x}");
     format!("ch_{}", &hex[..32])
+}
+
+fn strip_control(value: &str) -> String {
+    value.chars().filter(|c| !c.is_control()).collect()
 }
 
 #[cfg(test)]

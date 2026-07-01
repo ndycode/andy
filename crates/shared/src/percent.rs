@@ -22,7 +22,10 @@ pub fn percent_rounded(numerator: i64, denominator: i64) -> Option<i64> {
     } else {
         (num - den / 2) / den
     };
-    Some(rounded as i64)
+    // Narrow with a checked conversion: a percent that exceeds i64 (e.g.
+    // i64::MAX / 1) must return None, not a sign-flipped wrap that would turn a
+    // massive overspend into an apparent credit. Callers already handle None.
+    i64::try_from(rounded).ok()
 }
 
 /// True when `numerator / denominator` reaches or exceeds `threshold_percent`,

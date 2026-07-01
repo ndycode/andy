@@ -36,6 +36,15 @@ fn parse_calendar_date(input: &str) -> DateResult {
     if parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2 {
         return DateResult::Err("date must be YYYY-MM-DD");
     }
+    // Require pure ASCII digits per part: Rust's integer FromStr accepts a
+    // leading '+' (and surrounding cases), so "2026-+6-15" or "+123-06-15"
+    // would otherwise slip past a strict-YYYY-MM-DD validator.
+    if parts
+        .iter()
+        .any(|part| !part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return DateResult::Err("date must be YYYY-MM-DD");
+    }
     let Ok(year) = parts[0].parse::<i32>() else {
         return DateResult::Err("date must be YYYY-MM-DD");
     };

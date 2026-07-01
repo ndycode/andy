@@ -53,7 +53,12 @@ impl AppTimeConfig {
 
 #[must_use]
 pub fn local_date(at: DateTime<Utc>, offset_minutes: i32) -> NaiveDate {
-    (at + Duration::minutes(i64::from(offset_minutes))).date_naive()
+    // checked_add_signed, not `+`: chrono's Add panics at the DateTime::MAX/MIN
+    // extreme. No current caller reaches it (all `at` derive from Utc::now()
+    // and offsets are clamped to +/-14h), but this keeps local_date total.
+    at.checked_add_signed(Duration::minutes(i64::from(offset_minutes)))
+        .unwrap_or(at)
+        .date_naive()
 }
 
 #[must_use]
@@ -72,12 +77,16 @@ pub fn month_range(at: DateTime<Utc>, offset_minutes: i32) -> (NaiveDate, NaiveD
 #[must_use]
 pub fn month_bounds(date: NaiveDate) -> (NaiveDate, NaiveDate) {
     let first = NaiveDate::from_ymd_opt(date.year(), date.month(), 1).expect("valid month first");
-    let next_month = if date.month() == 12 {
-        NaiveDate::from_ymd_opt(date.year() + 1, 1, 1).expect("valid next year")
+    // December's last day is always the 31st — computing it directly avoids
+    // constructing year+1, which panics at chrono's max year. For other months
+    // the last day is (first-of-next-month - 1 day), same year.
+    let last = if date.month() == 12 {
+        NaiveDate::from_ymd_opt(date.year(), 12, 31).expect("Dec 31 is valid")
     } else {
         NaiveDate::from_ymd_opt(date.year(), date.month() + 1, 1).expect("valid next month")
+            - Duration::days(1)
     };
-    (first, next_month - Duration::days(1))
+    (first, last)
 }
 
 /// Parse a `YYYY-MM` string into a validated `(year, month)` pair. Returns
