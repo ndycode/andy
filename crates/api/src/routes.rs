@@ -19,7 +19,7 @@ use tracing::{error, warn};
 
 use crate::{
     cron::{DailyCheckResult, run_daily_checks},
-    inbound::parse_inbound,
+    inbound::{InboundOutcome, parse_inbound},
     outbound::SendblueClient,
 };
 
@@ -215,11 +215,22 @@ async fn sendblue_webhook(
         ));
     }
 
-    let Some(msg) = parse_inbound(&raw) else {
-        return Ok(json_status(
-            StatusCode::UNAUTHORIZED,
-            OkResponse { ok: false },
-        ));
+    let msg = match parse_inbound(&raw) {
+        InboundOutcome::Actionable(msg) => msg,
+        // Well-formed but non-actionable (status callback, outbound echo,
+        // blank): acknowledge with 200 so the provider does not retry or
+        // disable the endpoint. 401 is reserved strictly for auth failures.
+        InboundOutcome::Ignore => {
+            return Ok(json_status(StatusCode::OK, OkResponse { ok: true }));
+        }
+        // Genuinely unparseable body: this is a client error, not auth.
+        InboundOutcome::Malformed => {
+            warn!(event = "webhook.body.malformed");
+            return Ok(json_status(
+                StatusCode::BAD_REQUEST,
+                OkResponse { ok: false },
+            ));
+        }
     };
 
     // Durable, cross-instance rate limit keyed on a hash of token+phone (no raw
@@ -529,9 +540,8 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_hashed_token_passes_auth_gate() {
-        // A correct hashed token must not be rejected at the token gate. With a
-        // non-RECEIVED body it still 401s at parse, so compare against a wrong
-        // token: both reach the same handler path only if auth passed.
+        // A correct hashed token passes the gate; a well-formed non-actionable
+        // body ({}) is then acknowledged with 200 (ack-and-ignore), never 401.
         let mut state = AppState::test();
         let mut e = env();
         e.webhook_url_token = String::new();
@@ -541,14 +551,50 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/webhooks/sendblue?t=wrong-token")
+                    .uri("/webhooks/sendblue?t=token")
                     .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
             .unwrap();
-        // Wrong token is rejected at the gate.
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn webhook_acks_status_callback_with_200() {
+        // An authenticated SENT/DELIVERED status callback is a legitimate event,
+        // not an auth failure: ack it with 200 so the provider keeps the
+        // endpoint healthy.
+        let mut state = AppState::test();
+        state.env = Some(env());
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/sendblue?t=token")
+                    .body(Body::from(r#"{"status":"DELIVERED","number":"+1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn webhook_rejects_unparseable_body_with_400() {
+        let mut state = AppState::test();
+        state.env = Some(env());
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/sendblue?t=token")
+                    .body(Body::from("not json at all"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
