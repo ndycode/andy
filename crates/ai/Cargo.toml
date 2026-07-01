@@ -20,6 +20,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+proptest = "1.9.0"
 wiremock.workspace = true
 
 [lints]
