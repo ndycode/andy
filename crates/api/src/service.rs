@@ -50,7 +50,7 @@ impl<'a> InboundMessageService<'a> {
         Self {
             state,
             env,
-            clock: AppTimeConfig::from_env(),
+            clock: env.time_config(),
         }
     }
 

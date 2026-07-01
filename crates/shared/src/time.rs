@@ -9,9 +9,9 @@ pub const APP_TIMEZONE_DEFAULT: &str = "Asia/Manila";
 /// product invariant rather than per-request state. This struct makes that
 /// invariant explicit and injectable: business logic that needs the offset
 /// should take an `AppTimeConfig` instead of reaching for `MANILA_OFFSET_MINUTES`
-/// or reading env deep in a helper. [`AppTimeConfig::from_env`] honors the
-/// `APP_TIMEZONE` / `APP_TIMEZONE_OFFSET_MINUTES` overrides for tests and
-/// relocation, defaulting to Manila.
+/// or reading env deep in a helper. Build it from validated config via
+/// [`crate::env::Env::time_config`], which honors the `APP_TIMEZONE` /
+/// `APP_TIMEZONE_OFFSET_MINUTES` overrides and defaults to Manila.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppTimeConfig {
     pub label: String,
@@ -38,15 +38,6 @@ impl AppTimeConfig {
         }
     }
 
-    /// Read from process env, falling back to the Manila invariant.
-    #[must_use]
-    pub fn from_env() -> Self {
-        Self {
-            label: app_timezone(),
-            offset_minutes: default_offset_minutes(),
-        }
-    }
-
     /// Local calendar date for an instant under this config.
     #[must_use]
     pub fn local_date(&self, at: DateTime<Utc>) -> NaiveDate {
@@ -58,23 +49,6 @@ impl AppTimeConfig {
     pub fn month_range(&self, at: DateTime<Utc>) -> (NaiveDate, NaiveDate) {
         month_range(at, self.offset_minutes)
     }
-}
-
-#[must_use]
-pub fn app_timezone() -> String {
-    std::env::var("APP_TIMEZONE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| APP_TIMEZONE_DEFAULT.to_string())
-}
-
-#[must_use]
-pub fn default_offset_minutes() -> i32 {
-    std::env::var("APP_TIMEZONE_OFFSET_MINUTES")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<i32>().ok())
-        .filter(|mins| mins.abs() <= 14 * 60)
-        .unwrap_or(MANILA_OFFSET_MINUTES)
 }
 
 #[must_use]

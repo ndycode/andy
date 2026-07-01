@@ -1,6 +1,8 @@
 use std::env;
 use thiserror::Error;
 
+use crate::time::{AppTimeConfig, APP_TIMEZONE_DEFAULT, MANILA_OFFSET_MINUTES};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Env {
     pub database_url: String,
@@ -53,7 +55,7 @@ impl Env {
     pub fn from_getter(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self, EnvError> {
         let app_timezone = get("APP_TIMEZONE")
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "Asia/Manila".to_string());
+            .unwrap_or_else(|| APP_TIMEZONE_DEFAULT.to_string());
         let app_timezone_offset_minutes = match get("APP_TIMEZONE_OFFSET_MINUTES") {
             Some(raw) if !raw.trim().is_empty() => raw
                 .trim()
@@ -61,7 +63,7 @@ impl Env {
                 .ok()
                 .filter(|mins| mins.abs() <= 14 * 60)
                 .ok_or(EnvError::InvalidOffset)?,
-            _ => 480,
+            _ => MANILA_OFFSET_MINUTES,
         };
 
         let webhook_url_token_sha256 = match optional(&mut get, "WEBHOOK_URL_TOKEN_SHA256") {
@@ -100,6 +102,14 @@ impl Env {
             inbound_rate_limit,
             inbound_rate_window_seconds,
         })
+    }
+
+    /// The app clock built from the already-validated timezone fields. This is
+    /// the single source of truth for date math config — callers holding an
+    /// [`Env`] should use this instead of re-reading process env.
+    #[must_use]
+    pub fn time_config(&self) -> AppTimeConfig {
+        AppTimeConfig::new(self.app_timezone.clone(), self.app_timezone_offset_minutes)
     }
 }
 
@@ -204,5 +214,28 @@ mod tests {
         assert_eq!(env.confirm_amount_threshold_centavos, Some(5_000_000));
         assert_eq!(env.inbound_rate_limit, Some(120));
         assert_eq!(env.inbound_rate_window_seconds, Some(30));
+    }
+
+    #[test]
+    fn invalid_offset_fails_once_at_env() {
+        // The offset is validated exactly once, at Env construction — a bad
+        // value is a hard error rather than a silent fallback parsed twice.
+        let mut values = base();
+        values.insert("WEBHOOK_URL_TOKEN", "t".to_string());
+        values.insert("APP_TIMEZONE_OFFSET_MINUTES", "not-a-number".to_string());
+        let env = Env::from_getter(|key| values.get(key).cloned());
+        assert_eq!(env, Err(EnvError::InvalidOffset));
+    }
+
+    #[test]
+    fn time_config_reflects_validated_fields() {
+        let mut values = base();
+        values.insert("WEBHOOK_URL_TOKEN", "t".to_string());
+        values.insert("APP_TIMEZONE", "UTC".to_string());
+        values.insert("APP_TIMEZONE_OFFSET_MINUTES", "0".to_string());
+        let env = Env::from_getter(|key| values.get(key).cloned()).unwrap();
+        let cfg = env.time_config();
+        assert_eq!(cfg.label, "UTC");
+        assert_eq!(cfg.offset_minutes, 0);
     }
 }
