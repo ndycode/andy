@@ -2,9 +2,25 @@ use andy_shared::env::Env;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 use thiserror::Error;
 
 use crate::model::{ModelConfig, ModelConfigError, resolve_model_config};
+
+/// Whole-request timeout. The model reasons and may chain several tool rounds,
+/// so this is more generous than the Sendblue client's 10s, but still well
+/// under the serverless function budget so a hung upstream fails fast rather
+/// than consuming the whole invocation.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+/// TCP connect timeout — a dead host should fail quickly regardless of the
+/// overall request budget.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Max attempts for one chat call (initial try + retries) on transient
+/// failures. Kept small to respect the function budget; retrying is safe
+/// because writes are only buffered during the agent loop and flushed by the
+/// caller after the run completes, so a retried transport call never
+/// double-applies ledger effects.
+const MAX_ATTEMPTS: u32 = 3;
 
 /// Build an [`OpenRouterClient`] from process [`Env`] for serverless lazy
 /// initialization.
@@ -167,8 +183,13 @@ impl OpenRouterClient {
         config: ModelConfig,
         base_url: impl Into<String>,
     ) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .unwrap_or_default();
         Self {
-            http: reqwest::Client::new(),
+            http,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key,
             config,
@@ -192,6 +213,29 @@ impl OpenRouterClient {
             return Err(OpenRouterError::MissingApiKey);
         }
 
+        let mut attempt = 1;
+        loop {
+            match self.chat_turn_once(messages, tools).await {
+                Ok(turn) => return Ok(turn),
+                Err(err) if attempt < MAX_ATTEMPTS && is_retryable(&err) => {
+                    // Jittered backoff derived from the attempt count (no rng
+                    // dependency): 200ms, then 400ms + a small deterministic
+                    // spread so concurrent cold starts don't retry in lockstep.
+                    let base = 200 * u64::from(attempt);
+                    let jitter = (messages.len() as u64 * 17) % 100;
+                    tokio::time::sleep(Duration::from_millis(base + jitter)).await;
+                    attempt += 1;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    async fn chat_turn_once(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[ToolSpec]>,
+    ) -> Result<AssistantTurn, OpenRouterError> {
         let request = ChatRequest {
             model: &self.config.model_id,
             messages,
@@ -234,6 +278,20 @@ impl OpenRouterClient {
                 .filter(|text| !text.is_empty()),
             tool_calls: message.tool_calls,
         })
+    }
+}
+
+/// Transient failures worth one more attempt within the function budget:
+/// transport-level errors (connect failures, timeouts) and 429/5xx from the
+/// provider. Other 4xx (bad key, bad request) are terminal — retrying wastes
+/// budget and never succeeds.
+fn is_retryable(err: &OpenRouterError) -> bool {
+    match err {
+        OpenRouterError::Request(_) => true,
+        OpenRouterError::Http { status, .. } => {
+            *status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+        }
+        OpenRouterError::MissingApiKey | OpenRouterError::EmptyResponse => false,
     }
 }
 
@@ -415,5 +473,77 @@ mod tests {
             .unwrap();
 
         assert_eq!(turn.tool_calls[0].function.name, "logExpense");
+    }
+
+    #[tokio::test]
+    async fn retries_transient_429_then_succeeds() {
+        let server = MockServer::start().await;
+        // First response: 429 (retryable). Expect exactly one such hit.
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+                "error": "rate limited"
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Then: 200 with a reply.
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content": "recovered" } }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = OpenRouterClient::with_base_url(
+            "sk-test".into(),
+            ModelConfig {
+                model_id: "openai/gpt-oss-120b:free".into(),
+            },
+            server.uri(),
+        );
+        let reply = client
+            .chat(&[ChatMessage::text("user", "hi")])
+            .await
+            .unwrap();
+        assert_eq!(reply, "recovered");
+        // Mock `.expect()` assertions verified on drop confirm the 429 was
+        // retried exactly once and the 200 served the result.
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_terminal_400() {
+        let server = MockServer::start().await;
+        // A 400 must be terminal: exactly one request, no retry.
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "bad request"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = OpenRouterClient::with_base_url(
+            "sk-test".into(),
+            ModelConfig {
+                model_id: "openai/gpt-oss-120b:free".into(),
+            },
+            server.uri(),
+        );
+        let err = client
+            .chat(&[ChatMessage::text("user", "hi")])
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            OpenRouterError::Http {
+                status: StatusCode::BAD_REQUEST,
+                ..
+            }
+        ));
     }
 }
