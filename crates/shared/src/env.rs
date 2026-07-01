@@ -1,7 +1,7 @@
 use std::env;
 use thiserror::Error;
 
-use crate::time::{AppTimeConfig, APP_TIMEZONE_DEFAULT, MANILA_OFFSET_MINUTES};
+use crate::time::{APP_TIMEZONE_DEFAULT, AppTimeConfig, MANILA_OFFSET_MINUTES};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Env {

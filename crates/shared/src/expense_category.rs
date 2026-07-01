@@ -1,4 +1,4 @@
-use crate::categories::{coerce_category, Category};
+use crate::categories::{Category, coerce_category};
 
 #[must_use]
 pub fn coerce_expense_category(value: Option<&str>, note: Option<&str>) -> Category {

@@ -16,4 +16,4 @@ pub mod percent;
 pub mod security;
 pub mod time;
 
-pub use categories::{coerce_category, Category};
+pub use categories::{Category, coerce_category};
