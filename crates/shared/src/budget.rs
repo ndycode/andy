@@ -1,4 +1,8 @@
-use crate::{categories::Category, money::format_php, percent::percent_rounded};
+use crate::{
+    categories::Category,
+    money::format_php,
+    percent::{percent_rounded, ratio_crossed},
+};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -10,9 +14,12 @@ pub struct BudgetSnapshot {
     pub spent: i64,
 }
 
-pub const BUDGET_NEAR_RATIO: f64 = 0.8;
-/// Integer counterpart of [`BUDGET_NEAR_RATIO`] for exact percent comparisons.
+/// Canonical "near budget" threshold as a whole percent, used by the exact
+/// integer [`ratio_crossed`] comparisons.
 pub const BUDGET_NEAR_PERCENT: i64 = 80;
+/// Float counterpart of [`BUDGET_NEAR_PERCENT`], derived so the two cannot
+/// drift. Only for callers that genuinely need an `f64` ratio (e.g. pace math).
+pub const BUDGET_NEAR_RATIO: f64 = BUDGET_NEAR_PERCENT as f64 / 100.0;
 
 #[must_use]
 pub fn counts_toward_budget_reaction(local_date: NaiveDate, month: (NaiveDate, NaiveDate)) -> bool {
@@ -25,8 +32,8 @@ pub fn budget_reaction_line(current: BudgetSnapshot, prior_spent: i64) -> Option
         return None;
     }
 
-    let crossed_now = current.spent * 100 >= BUDGET_NEAR_PERCENT * current.limit;
-    let crossed_before = prior_spent * 100 >= BUDGET_NEAR_PERCENT * current.limit;
+    let crossed_now = ratio_crossed(current.spent, current.limit, BUDGET_NEAR_PERCENT);
+    let crossed_before = ratio_crossed(prior_spent, current.limit, BUDGET_NEAR_PERCENT);
 
     if current.spent > current.limit && prior_spent <= current.limit {
         let over = current.spent - current.limit;

@@ -106,16 +106,25 @@ pub fn month_bounds(date: NaiveDate) -> (NaiveDate, NaiveDate) {
     (first, next_month - Duration::days(1))
 }
 
-/// Parse a `YYYY-MM` month string into its inclusive first/last day bounds.
-/// Returns `None` for malformed input or out-of-range year/month.
+/// Parse a `YYYY-MM` string into a validated `(year, month)` pair. Returns
+/// `None` for malformed input or an out-of-range year (2000..=2100) / month.
+/// Single source of truth for [`month_bounds_from_str`] and [`month_anchor`].
 #[must_use]
-pub fn month_bounds_from_str(yyyymm: &str) -> Option<(NaiveDate, NaiveDate)> {
+pub fn parse_year_month(yyyymm: &str) -> Option<(i32, u32)> {
     let (year, month) = yyyymm.trim().split_once('-')?;
     let year = year.parse::<i32>().ok()?;
     let month = month.parse::<u32>().ok()?;
     if !(2000..=2100).contains(&year) || !(1..=12).contains(&month) {
         return None;
     }
+    Some((year, month))
+}
+
+/// Parse a `YYYY-MM` month string into its inclusive first/last day bounds.
+/// Returns `None` for malformed input or out-of-range year/month.
+#[must_use]
+pub fn month_bounds_from_str(yyyymm: &str) -> Option<(NaiveDate, NaiveDate)> {
+    let (year, month) = parse_year_month(yyyymm)?;
     let first = NaiveDate::from_ymd_opt(year, month, 1)?;
     Some(month_bounds(first))
 }
@@ -152,12 +161,7 @@ pub fn days_in_local_month(at: DateTime<Utc>, offset_minutes: i32) -> u32 {
 
 #[must_use]
 pub fn month_anchor(yyyymm: &str) -> Option<DateTime<Utc>> {
-    let (year, month) = yyyymm.trim().split_once('-')?;
-    let year = year.parse::<i32>().ok()?;
-    let month = month.parse::<u32>().ok()?;
-    if !(2000..=2100).contains(&year) || !(1..=12).contains(&month) {
-        return None;
-    }
+    let (year, month) = parse_year_month(yyyymm)?;
     Utc.with_ymd_and_hms(year, month, 15, 4, 0, 0).single()
 }
 

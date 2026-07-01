@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::budget::BUDGET_NEAR_RATIO;
+use crate::{budget::BUDGET_NEAR_RATIO, percent::percent_rounded};
 
 const PCT_BASELINE_FLOOR_CENTAVOS: i64 = 100;
 
@@ -35,7 +35,9 @@ pub fn spending_delta(current: i64, previous: i64) -> SpendingComparison {
     let raw_pct = if previous < PCT_BASELINE_FLOOR_CENTAVOS {
         None
     } else {
-        Some(((delta as f64 / previous as f64) * 100.0).round() as i64)
+        // Exact integer percent (i128 internally); previous >= floor > 0 so this
+        // is always Some here.
+        percent_rounded(delta, previous)
     };
     let pct_change = if raw_pct == Some(0) && delta != 0 {
         None
