@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::sql::escape_like;
 use crate::writes::{MessageRole, TxKind};
 
 pub const CLAIM_TTL_MS: i64 = 2 * 60 * 1000;
@@ -564,21 +565,4 @@ fn transaction_summary_from_row(
         note: row.try_get("note")?,
         local_date: row.try_get("local_date")?,
     })
-}
-
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', r"\\")
-        .replace('%', r"\%")
-        .replace('_', r"\_")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn escapes_like_metacharacters() {
-        assert_eq!(escape_like(r"50%_off\deal"), r"50\%\_off\\deal");
-    }
 }

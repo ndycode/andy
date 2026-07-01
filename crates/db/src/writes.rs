@@ -8,6 +8,8 @@ use serde_json::json;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
+use crate::sql::{escape_like, truncate};
+
 const FLUSH_STATEMENT_TIMEOUT_MS: i64 = 30_000;
 pub const NOTE_MAX: usize = 500;
 pub const NAME_MAX: usize = 100;
@@ -1154,30 +1156,13 @@ async fn recurring_target_id(
     }
 }
 
-fn truncate(value: &str, max: usize) -> String {
-    value.chars().take(max).collect()
-}
-
 fn truncate_note(value: &str) -> String {
     truncate(value, NOTE_MAX)
-}
-
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', r"\\")
-        .replace('%', r"\%")
-        .replace('_', r"\_")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn truncate_clips_to_char_boundary() {
-        assert_eq!(super::truncate("hello", 3), "hel");
-        assert_eq!(super::truncate("hi", 5), "hi");
-    }
 
     #[test]
     fn enum_from_db_parses_known_and_rejects_unknown() {

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::sql::truncate;
 use crate::writes::{Cadence, DEDUP_KEY_MAX, OUTBOUND_CONTENT_MAX, PHONE_MAX, TxKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -431,8 +432,4 @@ fn outbound_from_row(row: sqlx::postgres::PgRow) -> Result<OutboundMessageRow, s
         dedup_key: row.try_get("dedup_key")?,
         attempt_count: i64::from(row.try_get::<i32, _>("attempt_count")?),
     })
-}
-
-fn truncate(value: &str, max: usize) -> String {
-    value.chars().take(max).collect()
 }

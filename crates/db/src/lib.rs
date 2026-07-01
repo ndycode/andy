@@ -7,6 +7,7 @@ pub mod ops;
 pub mod queries;
 pub mod ratelimit;
 pub mod read;
+mod sql;
 pub mod writes;
 
 pub use client::{connect_pool, is_pooler_url};
