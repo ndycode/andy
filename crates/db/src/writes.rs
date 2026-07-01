@@ -1183,4 +1183,49 @@ mod tests {
         assert_eq!(Cadence::Monthly.to_string(), "monthly");
         assert_eq!(MessageRole::User.label(), "user");
     }
+
+    // GUARD: WriteIntent's serialized form is persisted in
+    // pending_confirmations.payload_json, so a "yes" later deserializes it back
+    // and replays the parked writes. Its JSON shape is therefore a storage
+    // contract, not an internal detail: any change to the enum's serde
+    // representation (variant names, field names, tag style) would make already-
+    // stored confirmations undeserializable. This pins the exact wire shape —
+    // externally tagged, with TxKind/Category/MemoryKind as their variant names —
+    // so such a change fails loudly here. It must keep passing verbatim across
+    // the WS13 type relocation.
+    #[test]
+    fn write_intent_serde_shape_is_a_stable_storage_contract() {
+        let uid = Uuid::nil();
+        let tx = WriteIntent::Transaction {
+            kind: TxKind::Expense,
+            user_id: uid,
+            amount_centavos: 18_000,
+            category: Category::Food,
+            note: Some("lunch".into()),
+            local_date: "2026-06-15".parse().unwrap(),
+            account: None,
+        };
+        let tx_json = r#"{"Transaction":{"kind":"Expense","user_id":"00000000-0000-0000-0000-000000000000","amount_centavos":18000,"category":"Food","note":"lunch","local_date":"2026-06-15","account":null}}"#;
+        assert_eq!(serde_json::to_string(&tx).unwrap(), tx_json);
+        assert_eq!(
+            serde_json::from_str::<WriteIntent>(tx_json).unwrap(),
+            tx,
+            "stored payload_json must round-trip back to the same intent"
+        );
+
+        let mem = WriteIntent::SaveMemory {
+            user_id: uid,
+            content: "payday is the 15th".into(),
+            kind: MemoryKind::Payday,
+        };
+        let mem_json = r#"{"SaveMemory":{"user_id":"00000000-0000-0000-0000-000000000000","content":"payday is the 15th","kind":"Payday"}}"#;
+        assert_eq!(serde_json::to_string(&mem).unwrap(), mem_json);
+        assert_eq!(serde_json::from_str::<WriteIntent>(mem_json).unwrap(), mem);
+
+        // A whole Vec<WriteIntent> is what confirmations actually stores.
+        let batch = vec![tx, mem];
+        let round_tripped: Vec<WriteIntent> =
+            serde_json::from_value(serde_json::to_value(&batch).unwrap()).unwrap();
+        assert_eq!(round_tripped, batch);
+    }
 }
