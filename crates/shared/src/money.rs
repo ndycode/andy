@@ -29,8 +29,6 @@ pub enum MoneyError {
     NonPositive,
     #[error("exceeds per-entry cap")]
     ExceedsCap,
-    #[error("format_php expects integer centavos")]
-    NonInteger,
 }
 
 pub fn parse_amount(raw: &str) -> Result<i64, MoneyError> {
