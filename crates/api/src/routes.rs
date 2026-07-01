@@ -15,6 +15,7 @@ use axum::{
 use chrono::Utc;
 use serde::Serialize;
 use sqlx::PgPool;
+use tracing::{error, warn};
 
 use crate::{
     cron::{DailyCheckResult, run_daily_checks},
@@ -68,6 +69,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ready", get(ready))
         .route("/webhooks/sendblue", post(sendblue_webhook))
         .route("/api/cron/daily", get(daily_cron))
+        .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }
 
@@ -185,7 +187,8 @@ async fn sendblue_webhook(
 
     let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
         Ok(env) => env,
-        Err(_) => {
+        Err(err) => {
+            error!(event = "webhook.env.error", error = %err);
             return Ok(json_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 OkResponse { ok: false },
@@ -201,9 +204,10 @@ async fn sendblue_webhook(
         ));
     }
 
-    let raw = to_bytes(body, MAX_BODY_BYTES + 1)
-        .await
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let raw = to_bytes(body, MAX_BODY_BYTES + 1).await.map_err(|err| {
+        warn!(event = "webhook.body.read_error", error = %err);
+        StatusCode::BAD_REQUEST
+    })?;
     if raw.len() > MAX_BODY_BYTES {
         return Ok(json_status(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -229,7 +233,8 @@ async fn sendblue_webhook(
                 OkResponse { ok: false },
             ));
         }
-        Err(_) => {
+        Err(err) => {
+            error!(event = "webhook.ratelimit.error", error = %err);
             return Ok(json_status(
                 StatusCode::SERVICE_UNAVAILABLE,
                 OkResponse { ok: false },
@@ -240,7 +245,10 @@ async fn sendblue_webhook(
     crate::service::InboundMessageService::new(&state, &env)
         .handle(msg.phone, msg.text, msg.message_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| {
+            error!(event = "webhook.handle.error", error = %err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(json_status(StatusCode::OK, OkResponse { ok: true }))
 }
 
@@ -277,7 +285,8 @@ async fn daily_cron(
 ) -> Result<Response, StatusCode> {
     let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
         Ok(env) => env,
-        Err(_) => {
+        Err(err) => {
+            error!(event = "cron.env.error", error = %err);
             return Ok(json_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 OkResponse { ok: false },
@@ -299,9 +308,10 @@ async fn daily_cron(
     let pool = if let Some(pool) = state.pool.clone() {
         pool
     } else {
-        connect_pool(&env.database_url)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        connect_pool(&env.database_url).await.map_err(|err| {
+            error!(event = "cron.pool.error", error = %err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
     };
     let sendblue = state
         .sendblue
@@ -309,7 +319,10 @@ async fn daily_cron(
         .unwrap_or_else(|| SendblueClient::from_env(&env));
     let result = run_daily_checks(&pool, &sendblue, &env.allowed_phone, Utc::now())
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| {
+            error!(event = "cron.run.error", error = %err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(json_status(
         StatusCode::OK,
         CronOkResponse { ok: true, result },
