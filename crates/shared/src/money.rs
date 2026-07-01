@@ -158,4 +158,41 @@ mod tests {
         assert_eq!(format_php(2_500_000), "₱25,000.00");
         assert_eq!(format_php(-18_050), "-₱180.50");
     }
+
+    // Characterization tests: pin the current rounding + cap contract so any
+    // refactor of the parse path is caught. Rounding follows rust_decimal's
+    // default `.round()` (banker's / half-to-even) on the centavo value.
+    #[test]
+    fn rounding_at_half_centavo_boundaries_is_locked() {
+        assert_eq!(parse_amount("180.505").unwrap(), 18_050); // 18050.5 -> even 18050
+        assert_eq!(parse_amount("180.995").unwrap(), 18_100); // 18099.5 -> even 18100
+        assert_eq!(parse_amount("0.015").unwrap(), 2); // 1.5 -> even 2
+        assert_eq!(parse_amount("2.675").unwrap(), 268); // 267.5 -> even 268
+    }
+
+    #[test]
+    fn million_suffix_scales_to_centavos() {
+        assert_eq!(parse_amount("2m").unwrap(), 200_000_000);
+    }
+
+    #[test]
+    fn grouped_amount_with_fraction_rounds() {
+        assert_eq!(parse_amount("1,000,000.999").unwrap(), 100_000_100);
+    }
+
+    #[test]
+    fn value_just_over_entry_cap_is_rejected() {
+        // MAX_ENTRY_CENTAVOS is exactly 1_000_000_000.00 pesos.
+        assert_eq!(parse_amount("1000000000.00").unwrap(), MAX_ENTRY_CENTAVOS);
+        assert_eq!(parse_amount("1000000000.01"), Err(MoneyError::ExceedsCap));
+    }
+
+    #[test]
+    fn value_overflowing_i64_is_not_finite() {
+        // 1e17 pesos * 100 overflows i64 before the cap check runs.
+        assert_eq!(
+            parse_amount("99999999999999999"),
+            Err(MoneyError::NotFinite)
+        );
+    }
 }

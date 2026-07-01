@@ -173,4 +173,50 @@ mod tests {
         let verdict = spending_pace(1_000, 10, 30, 2_000, None);
         assert!(should_warn_pace(verdict, 10, None, None, None));
     }
+
+    // Characterization: pin the delta/percent contract at its edges.
+    #[test]
+    fn spending_delta_edges() {
+        // Denominator below the baseline floor -> no percent.
+        assert_eq!(spending_delta(5_000, 99).pct_change, None);
+        // Real drop reports a negative percent and Down direction.
+        let down = spending_delta(50, 100);
+        assert_eq!(down.pct_change, Some(-50));
+        assert_eq!(down.direction, Direction::Down);
+        // Sub-rounding change would round to 0% but delta != 0 -> suppressed.
+        assert_eq!(spending_delta(10_001, 10_000).pct_change, None);
+        // Flat.
+        let flat = spending_delta(100, 100);
+        assert_eq!(flat.delta, 0);
+        assert_eq!(flat.direction, Direction::Flat);
+        assert_eq!(flat.pct_change, Some(0));
+    }
+
+    #[test]
+    fn robust_projection_without_outliers_matches_plain() {
+        // No amount exceeds 2x median -> falls back to plain projection.
+        let plain = project_month_end(300, 3, 30);
+        assert_eq!(project_month_end_robust(&[100, 100, 100], 3, 30), plain);
+    }
+
+    #[test]
+    fn robust_projection_even_count_uses_median_pair() {
+        // 4 amounts: median = (100+100)/2 = 100, threshold 200, 10_000 is an
+        // outlier counted once; typical (300) projected over the month + outlier.
+        let projected = project_month_end_robust(&[100, 100, 100, 10_000], 3, 30);
+        assert_eq!(projected, 13_000);
+    }
+
+    #[test]
+    fn should_warn_pace_gates() {
+        let verdict = spending_pace(1_000, 10, 30, 2_000, None);
+        // Before min_day -> never warns.
+        assert!(!should_warn_pace(verdict, 3, Some(5), None, None));
+        // Already near the limit (spent >= limit*near_ratio) -> short-circuits.
+        let near = spending_pace(1_900, 10, 30, 2_000, None);
+        assert!(!should_warn_pace(near, 10, None, Some(0.9), None));
+        // No budget -> never warns.
+        let no_budget = spending_pace(1_000, 10, 30, 0, None);
+        assert!(!should_warn_pace(no_budget, 10, None, None, None));
+    }
 }

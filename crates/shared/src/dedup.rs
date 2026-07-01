@@ -28,4 +28,45 @@ mod tests {
             content_dedup_key("+1", "grab 180", b)
         );
     }
+
+    // Characterization: the key must DIFFER across every dimension that should
+    // not collapse, so double-log protection stays scoped to true duplicates.
+    #[test]
+    fn adjacent_minute_buckets_differ() {
+        let a = "2026-06-15T00:00:59Z".parse().unwrap();
+        let b = "2026-06-15T00:01:00Z".parse().unwrap();
+        assert_ne!(
+            content_dedup_key("+1", "grab 180", a),
+            content_dedup_key("+1", "grab 180", b)
+        );
+    }
+
+    #[test]
+    fn same_text_from_two_phones_differs() {
+        let at = "2026-06-15T00:00:10Z".parse().unwrap();
+        assert_ne!(
+            content_dedup_key("+1", "grab 180", at),
+            content_dedup_key("+2", "grab 180", at)
+        );
+    }
+
+    #[test]
+    fn two_texts_in_one_bucket_differ() {
+        let at = "2026-06-15T00:00:10Z".parse().unwrap();
+        assert_ne!(
+            content_dedup_key("+1", "grab 180", at),
+            content_dedup_key("+1", "grab 200", at)
+        );
+    }
+
+    #[test]
+    fn separator_prevents_field_boundary_collision() {
+        // Without the \0 separator, ("+1","23") and ("+12","3") would hash the
+        // same concatenation. The separator must keep them distinct.
+        let at = "2026-06-15T00:00:10Z".parse().unwrap();
+        assert_ne!(
+            content_dedup_key("+1", "23", at),
+            content_dedup_key("+12", "3", at)
+        );
+    }
 }

@@ -140,4 +140,90 @@ mod tests {
         assert!(!goal_pace(&goal).on_track);
         assert!(goal_progress_message(&goal).contains("Behind pace"));
     }
+
+    // Characterization: lock the exact per_week_centavos ceil-division contract.
+    // per_week = ceil(remaining / weeks_remaining); weeks_remaining is the whole
+    // weeks (floored, min 1) between `today` and target midnight UTC.
+    #[test]
+    fn per_week_two_weeks_out_is_exact_half() {
+        // remaining 18_000 over 2 whole weeks -> 9_000/week.
+        let goal = GoalProgressInput {
+            name: "Trip".into(),
+            saved_centavos: 2_000,
+            target_centavos: 20_000,
+            created_at: dt("2026-06-01T00:00:00Z"),
+            today: dt("2026-06-08T00:00:00Z"),
+            target_date: Some("2026-06-22".parse().unwrap()),
+        };
+        let v = goal_pace(&goal);
+        assert!(!v.on_track);
+        assert_eq!(v.per_week_centavos, Some(9_000));
+    }
+
+    #[test]
+    fn per_week_three_weeks_out_divides_evenly() {
+        // remaining 18_000 over 3 whole weeks -> 6_000/week.
+        let goal = GoalProgressInput {
+            name: "Trip".into(),
+            saved_centavos: 2_000,
+            target_centavos: 20_000,
+            created_at: dt("2026-06-01T00:00:00Z"),
+            today: dt("2026-06-08T00:00:00Z"),
+            target_date: Some("2026-07-02".parse().unwrap()),
+        };
+        let v = goal_pace(&goal);
+        assert!(!v.on_track);
+        assert_eq!(v.per_week_centavos, Some(6_000));
+    }
+
+    #[test]
+    fn per_week_rounds_up_remainder() {
+        // remaining 10_000 over 3 whole weeks -> ceil(3333.3) = 3_334/week.
+        // Long span keeps us behind pace while 3 weeks still remain.
+        let goal = GoalProgressInput {
+            name: "House".into(),
+            saved_centavos: 30_000,
+            target_centavos: 40_000,
+            created_at: dt("2026-01-01T00:00:00Z"),
+            today: dt("2026-08-05T00:00:00Z"),
+            target_date: Some("2026-08-29".parse().unwrap()),
+        };
+        let v = goal_pace(&goal);
+        assert!(!v.on_track);
+        assert_eq!(v.per_week_centavos, Some(3_334));
+    }
+
+    #[test]
+    fn on_track_when_saved_fraction_meets_elapsed_fraction() {
+        // Halfway through the span with half saved -> exactly on track.
+        let goal = GoalProgressInput {
+            name: "Even".into(),
+            saved_centavos: 10_000,
+            target_centavos: 20_000,
+            created_at: dt("2026-06-01T00:00:00Z"),
+            today: dt("2026-06-11T00:00:00Z"),
+            target_date: Some("2026-06-21".parse().unwrap()),
+        };
+        let v = goal_pace(&goal);
+        assert!(v.on_track);
+        assert_eq!(v.per_week_centavos, None);
+    }
+
+    #[test]
+    fn nonpositive_span_treats_deadline_as_elapsed() {
+        // target_date on or before created_at -> span <= 0 -> elapsed_fraction 1.0,
+        // so any goal under target is behind and weeks_remaining floors to 1.
+        let goal = GoalProgressInput {
+            name: "Past".into(),
+            saved_centavos: 2_000,
+            target_centavos: 20_000,
+            created_at: dt("2026-06-01T00:00:00Z"),
+            today: dt("2026-06-01T00:00:00Z"),
+            target_date: Some("2026-05-01".parse().unwrap()),
+        };
+        let v = goal_pace(&goal);
+        assert!(v.has_deadline);
+        assert!(!v.on_track);
+        assert_eq!(v.per_week_centavos, Some(18_000));
+    }
 }
