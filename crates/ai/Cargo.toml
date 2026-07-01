@@ -7,7 +7,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-andy_db = { path = "../db" }
 andy_shared = { path = "../shared" }
 anyhow.workspace = true
 async-trait.workspace = true

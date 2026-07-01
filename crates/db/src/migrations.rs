@@ -1,3 +1,12 @@
+//! Forward-only, idempotently-tracked database migrations.
+//!
+//! The SQL files are vendored from the legacy TypeScript/Bun monorepo and live
+//! at `packages/db/migrations/` (outside this crate). They are pulled in with
+//! `include_str!` below, so the dependency is compile-time enforced: if any
+//! referenced `.sql` file is moved or deleted, `cargo build` fails immediately
+//! rather than at runtime. If the TS side is ever retired, vendor the files
+//! under `crates/db/` and repoint these paths.
+
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 const MIGRATIONS: &[(&str, &str)] = &[

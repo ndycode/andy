@@ -1,5 +1,5 @@
 use andy_shared::{
-    categories::{Category, coerce_category},
+    categories::coerce_category,
     time::{MANILA_OFFSET_MINUTES, current_week_start, days_in_local_month, local_date},
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
@@ -8,26 +8,19 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::sql::truncate;
-use crate::writes::{Cadence, DEDUP_KEY_MAX, OUTBOUND_CONTENT_MAX, PHONE_MAX, TxKind};
+use crate::writes::{
+    Cadence, DEDUP_KEY_MAX, OUTBOUND_CONTENT_MAX, PHONE_MAX, cadence_from_db, tx_kind_from_db,
+};
+
+// RecurringRow is a pure DTO in andy_shared::domain; re-export so existing
+// `andy_db::RecurringRow` paths keep working. db owns only the row mapper.
+pub use andy_shared::domain::RecurringRow;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryRow {
     pub id: Uuid,
     pub content: String,
     pub kind: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecurringRow {
-    pub id: Uuid,
-    pub label: String,
-    pub kind: TxKind,
-    pub amount_centavos: i64,
-    pub category: Category,
-    pub cadence: Cadence,
-    pub day_of_month: Option<i64>,
-    pub day_of_week: Option<i64>,
-    pub last_reminded_date: Option<NaiveDate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,10 +404,10 @@ fn recurring_from_row(row: sqlx::postgres::PgRow) -> Result<RecurringRow, sqlx::
     Ok(RecurringRow {
         id: row.try_get("id")?,
         label: row.try_get("label")?,
-        kind: TxKind::from_db(&kind)?,
+        kind: tx_kind_from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
-        cadence: Cadence::from_db(&cadence)?,
+        cadence: cadence_from_db(&cadence)?,
         day_of_month: row.try_get("day_of_month")?,
         day_of_week: row.try_get("day_of_week")?,
         last_reminded_date: row.try_get("last_reminded_date")?,

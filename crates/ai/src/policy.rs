@@ -6,7 +6,7 @@
 //! explicit user confirmation, or must be rejected outright. It is pure and
 //! fully testable — no IO, no clock — so the rules are auditable.
 
-use andy_db::writes::{TxKind, WriteIntent};
+use andy_shared::domain::{TxKind, WriteIntent};
 use serde::{Deserialize, Serialize};
 
 /// Default high-value threshold: ₱50,000.00 in centavos. A single create/edit
@@ -304,7 +304,7 @@ mod tests {
     fn bookkeeping_only_is_safe() {
         let writes = vec![WriteIntent::SaveTurn {
             user_id: Uuid::nil(),
-            role: andy_db::writes::MessageRole::User,
+            role: andy_shared::domain::MessageRole::User,
             content: "hi".into(),
         }];
         assert_eq!(classify_writes("hi", &writes, settings()), WriteRisk::Safe);
@@ -369,7 +369,7 @@ mod tests {
         let writes = vec![WriteIntent::SaveMemory {
             user_id: Uuid::nil(),
             content: "spent 180 on coffee today".into(),
-            kind: andy_db::writes::MemoryKind::Fact,
+            kind: andy_shared::domain::MemoryKind::Fact,
         }];
         assert!(matches!(
             classify_writes("remember I spent 180 on coffee", &writes, settings()),

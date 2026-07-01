@@ -6,6 +6,7 @@ pub mod budget;
 pub mod categories;
 pub mod date_validation;
 pub mod dedup;
+pub mod domain;
 pub mod env;
 pub mod errors;
 pub mod expense_category;

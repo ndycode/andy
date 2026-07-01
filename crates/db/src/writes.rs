@@ -2,8 +2,13 @@ use andy_shared::categories::Category;
 use andy_shared::memory::{
     compact_memory_content, normalize_memory_content, should_promote_memory_kind,
 };
-use chrono::NaiveDate;
-use serde::{Deserialize, Serialize};
+// Domain contracts now live in andy_shared::domain; db owns only the sqlx glue
+// (the from_db parsers below and the row mappers). Re-exported so existing
+// `andy_db::{WriteIntent, TxKind, ...}` and `andy_db::writes::*` paths keep
+// working unchanged for api, xtask, and db-internal code.
+pub use andy_shared::domain::{
+    Cadence, MemoryKind, MessageRole, RecurringInput, TxKind, WriteIntent,
+};
 use serde_json::json;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
@@ -19,251 +24,39 @@ pub const PHONE_MAX: usize = 80;
 pub const DEDUP_KEY_MAX: usize = 200;
 pub const ACCOUNT_MAX: usize = 100;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecurringInput {
-    pub label: String,
-    pub kind: TxKind,
-    pub amount_centavos: i64,
-    pub category: Category,
-    pub cadence: Cadence,
-    pub day_of_month: Option<i64>,
-    pub day_of_week: Option<i64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TxKind {
-    Income,
-    Expense,
-}
-
-impl TxKind {
-    pub(crate) const fn as_db(self) -> &'static str {
-        match self {
-            Self::Income => "income",
-            Self::Expense => "expense",
-        }
-    }
-
-    /// Parse a `tx_kind` value read from the database. Returns a decode error
-    /// for any value the enum does not recognize, so a bad DB value surfaces
-    /// explicitly instead of being silently coerced.
-    pub(crate) fn from_db(value: &str) -> Result<Self, sqlx::Error> {
-        match value {
-            "income" => Ok(Self::Income),
-            "expense" => Ok(Self::Expense),
-            other => Err(decode_error("tx_kind", other)),
-        }
+/// Parse a `tx_kind` value read from the database. Returns a decode error for
+/// any unrecognized value, so a bad DB value surfaces explicitly instead of
+/// being silently coerced. (The pure enum lives in `andy_shared::domain`; this
+/// sqlx-coupled parser stays in `db`.)
+pub(crate) fn tx_kind_from_db(value: &str) -> Result<TxKind, sqlx::Error> {
+    match value {
+        "income" => Ok(TxKind::Income),
+        "expense" => Ok(TxKind::Expense),
+        other => Err(decode_error("tx_kind", other)),
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Cadence {
-    Weekly,
-    Monthly,
-}
-
-impl Cadence {
-    pub(crate) const fn as_db(self) -> &'static str {
-        match self {
-            Self::Weekly => "weekly",
-            Self::Monthly => "monthly",
-        }
-    }
-
-    /// Parse a `cadence` value read from the database.
-    pub(crate) fn from_db(value: &str) -> Result<Self, sqlx::Error> {
-        match value {
-            "weekly" => Ok(Self::Weekly),
-            "monthly" => Ok(Self::Monthly),
-            other => Err(decode_error("cadence", other)),
-        }
+/// Parse a `cadence` value read from the database.
+pub(crate) fn cadence_from_db(value: &str) -> Result<Cadence, sqlx::Error> {
+    match value {
+        "weekly" => Ok(Cadence::Weekly),
+        "monthly" => Ok(Cadence::Monthly),
+        other => Err(decode_error("cadence", other)),
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MessageRole {
-    User,
-    Assistant,
-}
-
-impl MessageRole {
-    const fn as_db(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Assistant => "assistant",
-        }
-    }
-
-    /// Parse a `message_role` value read from the database.
-    pub(crate) fn from_db(value: &str) -> Result<Self, sqlx::Error> {
-        match value {
-            "user" => Ok(Self::User),
-            "assistant" => Ok(Self::Assistant),
-            other => Err(decode_error("message_role", other)),
-        }
+/// Parse a `message_role` value read from the database.
+pub(crate) fn message_role_from_db(value: &str) -> Result<MessageRole, sqlx::Error> {
+    match value {
+        "user" => Ok(MessageRole::User),
+        "assistant" => Ok(MessageRole::Assistant),
+        other => Err(decode_error("message_role", other)),
     }
 }
 
 /// Build an sqlx decode error for an unrecognized enum value read from the DB.
 fn decode_error(kind: &str, value: &str) -> sqlx::Error {
     sqlx::Error::Decode(format!("invalid {kind} value in database: {value:?}").into())
-}
-
-impl std::fmt::Display for TxKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_db())
-    }
-}
-
-impl std::fmt::Display for Cadence {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_db())
-    }
-}
-
-impl MessageRole {
-    /// Stable lowercase label (`user`/`assistant`) for prompts and display.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        self.as_db()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WriteIntent {
-    Transaction {
-        kind: TxKind,
-        user_id: Uuid,
-        amount_centavos: i64,
-        category: Category,
-        note: Option<String>,
-        local_date: NaiveDate,
-        account: Option<String>,
-    },
-    GoalContribution {
-        user_id: Uuid,
-        goal_id: Uuid,
-        amount_centavos: i64,
-        local_date: NaiveDate,
-    },
-    DeleteLast {
-        user_id: Uuid,
-        target_id: Option<Uuid>,
-        target_same_turn: bool,
-    },
-    EditLast {
-        user_id: Uuid,
-        target_id: Option<Uuid>,
-        target_same_turn: bool,
-        amount_centavos: Option<i64>,
-        category: Option<Category>,
-        note: Option<String>,
-    },
-    CreateGoal {
-        user_id: Uuid,
-        name: String,
-        target_centavos: i64,
-        target_date: Option<NaiveDate>,
-    },
-    SetBudget {
-        user_id: Uuid,
-        category: Category,
-        monthly_limit_centavos: i64,
-    },
-    RemoveBudget {
-        user_id: Uuid,
-        category: Category,
-    },
-    EditGoal {
-        user_id: Uuid,
-        goal_id: Uuid,
-        name: Option<String>,
-        target_centavos: Option<i64>,
-        target_date: Option<Option<NaiveDate>>,
-    },
-    DeleteGoal {
-        user_id: Uuid,
-        goal_id: Uuid,
-    },
-    SaveMemory {
-        user_id: Uuid,
-        content: String,
-        kind: MemoryKind,
-    },
-    ForgetMemory {
-        user_id: Uuid,
-        query: String,
-    },
-    SaveTurn {
-        user_id: Uuid,
-        role: MessageRole,
-        content: String,
-    },
-    OutboundReply {
-        user_id: Uuid,
-        phone: String,
-        content: String,
-        dedup_key: Option<String>,
-    },
-    AddRecurring {
-        user_id: Uuid,
-        recurring: RecurringInput,
-    },
-    RemoveRecurring {
-        user_id: Uuid,
-        query: String,
-    },
-    EditRecurring {
-        user_id: Uuid,
-        query: String,
-        amount_centavos: Option<i64>,
-        category: Option<Category>,
-        cadence: Option<Cadence>,
-        day_of_month: Option<Option<i64>>,
-        day_of_week: Option<Option<i64>>,
-    },
-    /// A movement between the user's own accounts. Stored in `transfers`, never
-    /// in `transactions`, so it does not count as income or expense.
-    Transfer {
-        user_id: Uuid,
-        amount_centavos: i64,
-        from_account: Option<String>,
-        to_account: Option<String>,
-        note: Option<String>,
-        local_date: NaiveDate,
-    },
-    /// Consume a pending confirmation as part of this flush. If the row is no
-    /// longer `pending` (already consumed by a racing "yes", or this flush is a
-    /// superseded retry) the whole transaction is rolled back, so the parked
-    /// writes apply exactly once and only when the consume succeeds. Place this
-    /// first in the intent list for a "yes" turn.
-    ConsumeConfirmation {
-        user_id: Uuid,
-        id: Uuid,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MemoryKind {
-    Fact,
-    Preference,
-    Payday,
-    Goal,
-    Person,
-    Other,
-}
-
-impl MemoryKind {
-    const fn as_db(self) -> &'static str {
-        match self {
-            Self::Fact => "fact",
-            Self::Preference => "preference",
-            Self::Payday => "payday",
-            Self::Goal => "goal",
-            Self::Person => "person",
-            Self::Other => "other",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -612,7 +405,7 @@ async fn apply_write_intent(
                 "#,
             )
             .bind(user_id)
-            .bind(role.as_db())
+            .bind(role.label())
             .bind(truncate(content, 4000))
             .execute(&mut **tx)
             .await?;
@@ -1166,15 +959,15 @@ mod tests {
 
     #[test]
     fn enum_from_db_parses_known_and_rejects_unknown() {
-        assert_eq!(TxKind::from_db("income").unwrap(), TxKind::Income);
-        assert_eq!(Cadence::from_db("weekly").unwrap(), Cadence::Weekly);
+        assert_eq!(tx_kind_from_db("income").unwrap(), TxKind::Income);
+        assert_eq!(cadence_from_db("weekly").unwrap(), Cadence::Weekly);
         assert_eq!(
-            MessageRole::from_db("assistant").unwrap(),
+            message_role_from_db("assistant").unwrap(),
             MessageRole::Assistant
         );
-        assert!(TxKind::from_db("bogus").is_err());
-        assert!(Cadence::from_db("daily").is_err());
-        assert!(MessageRole::from_db("system").is_err());
+        assert!(tx_kind_from_db("bogus").is_err());
+        assert!(cadence_from_db("daily").is_err());
+        assert!(message_role_from_db("system").is_err());
     }
 
     #[test]

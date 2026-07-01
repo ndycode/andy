@@ -4,12 +4,11 @@ use andy_shared::{
     time::{MANILA_OFFSET_MINUTES, month_range},
 };
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::sql::escape_like;
-use crate::writes::{MessageRole, TxKind};
+use crate::writes::{message_role_from_db, tx_kind_from_db};
 
 pub const CLAIM_TTL_MS: i64 = 2 * 60 * 1000;
 
@@ -19,77 +18,13 @@ pub enum ClaimResult {
     Skip,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConversationTurn {
-    pub role: MessageRole,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransactionRow {
-    pub id: Uuid,
-    pub kind: TxKind,
-    pub amount_centavos: i64,
-    pub category: Category,
-    pub note: Option<String>,
-    pub goal_id: Option<Uuid>,
-    pub local_date: NaiveDate,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransactionSummaryRow {
-    pub kind: TxKind,
-    pub amount_centavos: i64,
-    pub category: Category,
-    pub note: Option<String>,
-    pub local_date: NaiveDate,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BudgetStatus {
-    pub category: Category,
-    pub limit: i64,
-    pub spent: i64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MonthOverview {
-    pub income: i64,
-    pub expense: i64,
-    pub net: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GoalRow {
-    pub id: Uuid,
-    pub name: String,
-    pub target_centavos: i64,
-    pub saved_centavos: i64,
-    pub created_at: DateTime<Utc>,
-    pub target_date: Option<NaiveDate>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct TransactionSearch {
-    pub text: Option<String>,
-    pub category: Option<Category>,
-    pub start_date: Option<NaiveDate>,
-    pub end_date: Option<NaiveDate>,
-    pub min_centavos: Option<i64>,
-    pub max_centavos: Option<i64>,
-    pub kind: Option<String>,
-    pub by_amount: bool,
-    pub limit: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferRow {
-    pub amount_centavos: i64,
-    pub from_account: Option<String>,
-    pub to_account: Option<String>,
-    pub note: Option<String>,
-    pub local_date: NaiveDate,
-}
+// Row DTOs and the transaction-search input now live in andy_shared::domain
+// (pure value types). db owns only the sqlx row-mapping glue below. Re-exported
+// so existing `andy_db::{TransactionRow, GoalRow, ...}` paths keep working.
+pub use andy_shared::domain::{
+    BudgetStatus, ConversationTurn, GoalRow, MonthOverview, TransactionRow, TransactionSearch,
+    TransactionSummaryRow, TransferRow,
+};
 
 /// Recent transfers (account-to-account movements), newest first. Optional
 /// `account` filters to transfers touching that account on either side.
@@ -203,7 +138,7 @@ pub async fn recent_turns(
         .map(|row| {
             let role: String = row.try_get("role")?;
             Ok(ConversationTurn {
-                role: MessageRole::from_db(&role)?,
+                role: message_role_from_db(&role)?,
                 content: row.try_get("content")?,
             })
         })
@@ -544,7 +479,7 @@ fn transaction_from_row(row: sqlx::postgres::PgRow) -> Result<TransactionRow, sq
     let kind: String = row.try_get("kind")?;
     Ok(TransactionRow {
         id: row.try_get("id")?,
-        kind: TxKind::from_db(&kind)?,
+        kind: tx_kind_from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
         note: row.try_get("note")?,
@@ -559,7 +494,7 @@ fn transaction_summary_from_row(
     let category: String = row.try_get("category")?;
     let kind: String = row.try_get("kind")?;
     Ok(TransactionSummaryRow {
-        kind: TxKind::from_db(&kind)?,
+        kind: tx_kind_from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
         note: row.try_get("note")?,

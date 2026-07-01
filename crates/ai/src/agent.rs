@@ -1,4 +1,4 @@
-use andy_db::{FinanceRead, writes::WriteIntent};
+use andy_shared::domain::{FinanceRead, WriteIntent};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

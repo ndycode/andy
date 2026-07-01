@@ -1,6 +1,6 @@
-use andy_db::{
-    ConversationTurn, FinanceRead, GoalRow, RecurringRow, TransactionRow, TransactionSearch,
-    writes::{Cadence, MemoryKind, MessageRole, RecurringInput, TxKind, WriteIntent},
+use andy_shared::domain::{
+    Cadence, ConversationTurn, FinanceRead, GoalRow, MemoryKind, MessageRole, RecurringInput,
+    RecurringRow, TransactionRow, TransactionSearch, TxKind, WriteIntent,
 };
 use andy_shared::{
     categories::{Category, coerce_category},
