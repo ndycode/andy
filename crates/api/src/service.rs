@@ -14,7 +14,7 @@ use andy_ai::{
 };
 use andy_db::{
     ClaimResult, FlushResult, PgFinanceRead, WriteIntent, budget_statuses_for,
-    cancel_pending_confirmations, claim_slot, connect_pool, flush_writes, last_transaction,
+    cancel_pending_confirmations, claim_slot, flush_writes, last_transaction,
     latest_pending_confirmation, list_goals, list_memories, list_recurring, recent_turns,
     resolve_user_id, save_pending_confirmation,
 };
@@ -36,36 +36,35 @@ use crate::{
 const CONFIRM_TTL_MINUTES: i64 = 60;
 
 /// Orchestrates one inbound message. Borrows the shared [`AppState`] and the
-/// resolved [`Env`]; resolves a pool/Sendblue/OpenRouter lazily when the state
-/// doesn't already carry them (serverless lazy mode).
+/// resolved [`Env`], and holds the request's single resolved DB pool so the
+/// whole invocation uses exactly one connection.
 pub struct InboundMessageService<'a> {
     state: &'a AppState,
     env: &'a Env,
+    pool: PgPool,
     clock: AppTimeConfig,
 }
 
 impl<'a> InboundMessageService<'a> {
+    /// Build the service with an already-resolved pool (resolved once by the
+    /// caller and shared with the rate-limit check), avoiding a second
+    /// `connect_pool` per request in serverless lazy mode.
     #[must_use]
-    pub fn new(state: &'a AppState, env: &'a Env) -> Self {
+    pub fn new(state: &'a AppState, env: &'a Env, pool: PgPool) -> Self {
         Self {
             state,
             env,
+            pool,
             clock: env.time_config(),
         }
     }
 
     fn sendblue(&self) -> SendblueClient {
-        self.state
-            .sendblue
-            .clone()
-            .unwrap_or_else(|| SendblueClient::from_env(self.env))
+        self.state.resolve_sendblue(self.env)
     }
 
-    async fn pool(&self) -> Result<PgPool, anyhow::Error> {
-        Ok(match self.state.pool.clone() {
-            Some(pool) => pool,
-            None => connect_pool(&self.env.database_url).await?,
-        })
+    fn pool(&self) -> PgPool {
+        self.pool.clone()
     }
 
     /// Entry point: handle one allowed inbound message end to end.
@@ -78,7 +77,7 @@ impl<'a> InboundMessageService<'a> {
         if !is_allowed(&phone, &self.env.allowed_phone) {
             return Ok(());
         }
-        let pool = self.pool().await?;
+        let pool = self.pool();
         let dedup_id = message_id
             .clone()
             .unwrap_or_else(|| content_dedup_key(&phone, &text, Utc::now()));

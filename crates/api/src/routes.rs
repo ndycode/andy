@@ -61,6 +61,34 @@ impl AppState {
     pub fn production_lazy() -> Self {
         Self::test()
     }
+
+    /// Resolve the process [`Env`], preferring a state-carried one and falling
+    /// back to `Env::from_process` (serverless lazy mode). Single place that
+    /// defines the lazy-env contract.
+    pub fn resolve_env(&self) -> Result<Env, anyhow::Error> {
+        match self.env.clone() {
+            Some(env) => Ok(env),
+            None => Ok(Env::from_process()?),
+        }
+    }
+
+    /// Resolve a DB pool, preferring a state-carried one and connecting lazily
+    /// from `env` otherwise. Callers should resolve ONCE per request and reuse
+    /// the returned pool so a single invocation holds at most one connection.
+    pub async fn resolve_pool(&self, env: &Env) -> Result<PgPool, anyhow::Error> {
+        match self.pool.clone() {
+            Some(pool) => Ok(pool),
+            None => Ok(connect_pool(&env.database_url).await?),
+        }
+    }
+
+    /// Resolve a Sendblue client, preferring a state-carried one.
+    #[must_use]
+    pub fn resolve_sendblue(&self, env: &Env) -> SendblueClient {
+        self.sendblue
+            .clone()
+            .unwrap_or_else(|| SendblueClient::from_env(env))
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -105,7 +133,7 @@ struct ReadyResponse {
 /// Sendblue are configured — all without exposing any secret value. Returns
 /// 200 when ready and 503 otherwise so a load balancer can act on it.
 async fn ready(State(state): State<AppState>) -> Response {
-    let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
+    let env = match state.resolve_env() {
         Ok(env) => env,
         Err(_) => {
             return json_status(
@@ -185,7 +213,7 @@ async fn sendblue_webhook(
         ));
     }
 
-    let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
+    let env = match state.resolve_env() {
         Ok(env) => env,
         Err(err) => {
             error!(event = "webhook.env.error", error = %err);
@@ -233,10 +261,23 @@ async fn sendblue_webhook(
         }
     };
 
+    // Resolve the pool ONCE for this request; the rate-limit check and the
+    // message service share it, so a single invocation holds one connection.
+    let pool = match state.resolve_pool(&env).await {
+        Ok(pool) => pool,
+        Err(err) => {
+            error!(event = "webhook.pool.error", error = %err);
+            return Ok(json_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                OkResponse { ok: false },
+            ));
+        }
+    };
+
     // Durable, cross-instance rate limit keyed on a hash of token+phone (no raw
     // secret/PII stored). Fail closed: if the check errors we return 503 rather
     // than let unknown traffic reach the model.
-    match durable_rate_ok(&state, &env, token.as_deref(), &msg.phone).await {
+    match durable_rate_ok(&pool, &env, token.as_deref(), &msg.phone).await {
         Ok(true) => {}
         Ok(false) => {
             return Ok(json_status(
@@ -253,7 +294,7 @@ async fn sendblue_webhook(
         }
     }
 
-    crate::service::InboundMessageService::new(&state, &env)
+    crate::service::InboundMessageService::new(&state, &env, pool)
         .handle(msg.phone, msg.text, msg.message_id)
         .await
         .map_err(|err| {
@@ -266,27 +307,22 @@ async fn sendblue_webhook(
 const DEFAULT_INBOUND_RATE_LIMIT: i64 = 60;
 const DEFAULT_INBOUND_RATE_WINDOW_SECONDS: i64 = 60;
 
-/// Durable rate-limit gate. Resolves a pool (from state or env), increments the
-/// fixed-window counter for `sha256(token|phone)`, and returns whether the
+/// Durable rate-limit gate. Increments the fixed-window counter for
+/// `sha256(token|phone)` on the caller-provided pool and returns whether the
 /// request is under the configured limit. Errors propagate so the caller can
 /// fail closed.
 async fn durable_rate_ok(
-    state: &AppState,
+    pool: &PgPool,
     env: &Env,
     token: Option<&str>,
     phone: &str,
 ) -> Result<bool, anyhow::Error> {
-    let pool = if let Some(pool) = state.pool.clone() {
-        pool
-    } else {
-        connect_pool(&env.database_url).await?
-    };
     let limit = env.inbound_rate_limit.unwrap_or(DEFAULT_INBOUND_RATE_LIMIT);
     let window = env
         .inbound_rate_window_seconds
         .unwrap_or(DEFAULT_INBOUND_RATE_WINDOW_SECONDS);
     let key_hash = sha256_hex(&format!("{}|{}", token.unwrap_or_default(), phone));
-    let decision = check_and_increment(&pool, &key_hash, Utc::now(), window, limit).await?;
+    let decision = check_and_increment(pool, &key_hash, Utc::now(), window, limit).await?;
     Ok(decision == RateDecision::Allow)
 }
 
@@ -294,7 +330,7 @@ async fn daily_cron(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
-    let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
+    let env = match state.resolve_env() {
         Ok(env) => env,
         Err(err) => {
             error!(event = "cron.env.error", error = %err);
@@ -316,18 +352,17 @@ async fn daily_cron(
             OkResponse { ok: false },
         ));
     }
-    let pool = if let Some(pool) = state.pool.clone() {
-        pool
-    } else {
-        connect_pool(&env.database_url).await.map_err(|err| {
+    let pool = match state.resolve_pool(&env).await {
+        Ok(pool) => pool,
+        Err(err) => {
             error!(event = "cron.pool.error", error = %err);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
+            return Ok(json_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                OkResponse { ok: false },
+            ));
+        }
     };
-    let sendblue = state
-        .sendblue
-        .clone()
-        .unwrap_or_else(|| SendblueClient::from_env(&env));
+    let sendblue = state.resolve_sendblue(&env);
     let result = run_daily_checks(&pool, &sendblue, &env.allowed_phone, Utc::now())
         .await
         .map_err(|err| {
@@ -442,6 +477,18 @@ mod tests {
             inbound_rate_limit: None,
             inbound_rate_window_seconds: None,
         }
+    }
+
+    #[test]
+    fn resolve_env_prefers_state_carried_env() {
+        // The single-resolution contract: when state carries an env, resolve_env
+        // returns it without touching process env. The webhook path resolves env
+        // and pool once and shares the pool with both the rate-limit check and
+        // the message service, so one invocation holds one connection.
+        let mut state = AppState::test();
+        state.env = Some(env());
+        let resolved = state.resolve_env().expect("state env");
+        assert_eq!(resolved.allowed_phone, "+639171234567");
     }
 
     #[tokio::test]
