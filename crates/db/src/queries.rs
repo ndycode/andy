@@ -308,55 +308,6 @@ async fn budget_status_rows(
         .collect()
 }
 
-pub async fn sum_by_category(
-    pool: &PgPool,
-    user_id: Uuid,
-    category: Category,
-    at: DateTime<Utc>,
-) -> Result<i64, sqlx::Error> {
-    let (start, end) = month_range(at, MANILA_OFFSET_MINUTES);
-    let row = sqlx::query(
-        r#"
-        select coalesce(sum(amount_centavos), 0)::bigint as total
-        from transactions
-        where user_id = $1 and category = $2::category and kind = 'expense'
-          and local_date between $3 and $4
-        "#,
-    )
-    .bind(user_id)
-    .bind(category.as_str())
-    .bind(start)
-    .bind(end)
-    .fetch_one(pool)
-    .await?;
-    row.try_get("total")
-}
-
-pub async fn sum_spend_between(
-    pool: &PgPool,
-    user_id: Uuid,
-    start: NaiveDate,
-    end: NaiveDate,
-    category: Option<Category>,
-) -> Result<i64, sqlx::Error> {
-    let category = category.map(|category| category.as_str().to_string());
-    let row = sqlx::query(
-        r#"
-        select coalesce(sum(amount_centavos), 0)::bigint as total
-        from transactions
-        where user_id = $1 and kind = 'expense' and local_date between $2 and $3
-          and ($4::text is null or category = $4::category)
-        "#,
-    )
-    .bind(user_id)
-    .bind(start)
-    .bind(end)
-    .bind(category)
-    .fetch_one(pool)
-    .await?;
-    row.try_get("total")
-}
-
 /// Total expense and entry count for an optional category over `[start, end]`.
 /// Uses an aggregate `count(*)`, so the count is exact regardless of how many
 /// rows match (unlike counting a capped `search_transactions` result).
@@ -493,36 +444,6 @@ pub async fn get_spending_by_category_between(
         .collect()
 }
 
-pub async fn find_recent_duplicate(
-    pool: &PgPool,
-    user_id: Uuid,
-    kind: &str,
-    amount_centavos: i64,
-    note: Option<&str>,
-    local_date: NaiveDate,
-) -> Result<Option<Option<String>>, sqlx::Error> {
-    let note_key = note.unwrap_or_default().trim().to_ascii_lowercase();
-    let row = sqlx::query(
-        r#"
-        select note
-        from transactions
-        where user_id = $1 and kind = $2::tx_kind and amount_centavos = $3
-          and local_date = $4
-          and lower(coalesce(trim(note), '')) = $5
-        order by seq desc
-        limit 1
-        "#,
-    )
-    .bind(user_id)
-    .bind(kind)
-    .bind(amount_centavos)
-    .bind(local_date)
-    .bind(note_key)
-    .fetch_optional(pool)
-    .await?;
-    row.map(|row| row.try_get("note")).transpose()
-}
-
 pub async fn get_recent_transactions(
     pool: &PgPool,
     user_id: Uuid,
@@ -617,23 +538,6 @@ pub async fn list_goals(pool: &PgPool, user_id: Uuid) -> Result<Vec<GoalRow>, sq
         .collect()
 }
 
-pub async fn find_goals_by_name(
-    pool: &PgPool,
-    user_id: Uuid,
-    name: &str,
-) -> Result<Vec<GoalRow>, sqlx::Error> {
-    Ok(match_goals(list_goals(pool, user_id).await?, name))
-}
-
-pub async fn find_goal_by_name(
-    pool: &PgPool,
-    user_id: Uuid,
-    name: &str,
-) -> Result<Option<GoalRow>, sqlx::Error> {
-    let matches = find_goals_by_name(pool, user_id, name).await?;
-    Ok((matches.len() == 1).then(|| matches[0].clone()))
-}
-
 fn transaction_from_row(row: sqlx::postgres::PgRow) -> Result<TransactionRow, sqlx::Error> {
     let category: String = row.try_get("category")?;
     let kind: String = row.try_get("kind")?;
@@ -669,52 +573,9 @@ fn escape_like(value: &str) -> String {
         .replace('_', r"\_")
 }
 
-fn match_goals(goals: Vec<GoalRow>, query: &str) -> Vec<GoalRow> {
-    let q = query.trim().to_ascii_lowercase();
-    if q.is_empty() {
-        return Vec::new();
-    }
-    let exact = goals
-        .iter()
-        .filter(|goal| goal.name.eq_ignore_ascii_case(&q))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !exact.is_empty() {
-        return exact;
-    }
-    goals
-        .into_iter()
-        .filter(|goal| goal.name.to_ascii_lowercase().contains(&q))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn goal_matching_is_exact_first_then_contains() {
-        let goals = vec![
-            GoalRow {
-                id: Uuid::new_v4(),
-                name: "Japan Trip".into(),
-                target_centavos: 1,
-                saved_centavos: 0,
-                created_at: Utc::now(),
-                target_date: None,
-            },
-            GoalRow {
-                id: Uuid::new_v4(),
-                name: "Trip".into(),
-                target_centavos: 1,
-                saved_centavos: 0,
-                created_at: Utc::now(),
-                target_date: None,
-            },
-        ];
-        assert_eq!(match_goals(goals.clone(), "Trip").len(), 1);
-        assert_eq!(match_goals(goals, "japan").len(), 1);
-    }
 
     #[test]
     fn escapes_like_metacharacters() {
