@@ -1,6 +1,6 @@
-use andy_db::{
-    ConversationTurn, FinanceRead, GoalRow, RecurringRow, TransactionRow, TransactionSearch,
-    writes::{Cadence, MemoryKind, MessageRole, RecurringInput, TxKind, WriteIntent},
+use andy_shared::domain::{
+    Cadence, ConversationTurn, FinanceRead, GoalRow, MemoryKind, MessageRole, RecurringInput,
+    RecurringRow, TransactionRow, TransactionSearch, TxKind, WriteIntent,
 };
 use andy_shared::{
     categories::{Category, coerce_category},
@@ -9,7 +9,7 @@ use andy_shared::{
     money::{format_php, parse_amount},
     time::{month_bounds, month_bounds_from_str},
 };
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -45,6 +45,107 @@ pub struct FinanceToolContext<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolExecution {
     pub content: String,
+}
+
+/// The finance tools Andy can call, parsed once from the model's tool-call
+/// name. This is the single source of truth for the tool name set and the
+/// read-vs-write classification, so the spec catalog, dispatch, and routing
+/// can never silently drift: a spec with no dispatch arm is a compile error,
+/// and a misclassified tool is caught by the enum's exhaustive `is_read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tool {
+    LogExpense,
+    LogIncome,
+    LogTransfer,
+    EditLast,
+    DeleteLast,
+    SetBudget,
+    RemoveBudget,
+    Remember,
+    ForgetMemory,
+    ListMemory,
+    CreateGoal,
+    ContributeToGoal,
+    EditGoal,
+    DeleteGoal,
+    AddRecurringBill,
+    EditRecurringBill,
+    RemoveRecurringBill,
+    GetMonthOverview,
+    GetCategorySpend,
+    SearchTransactions,
+    ListBudgets,
+    ListGoals,
+    ListRecurring,
+    SearchTransfers,
+}
+
+impl Tool {
+    /// Parse a model-supplied tool name. `None` for an unrecognized name (the
+    /// caller reports it as unsupported rather than guessing).
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "logExpense" => Self::LogExpense,
+            "logIncome" => Self::LogIncome,
+            "logTransfer" => Self::LogTransfer,
+            "editLast" => Self::EditLast,
+            "deleteLast" => Self::DeleteLast,
+            "setBudget" => Self::SetBudget,
+            "removeBudget" => Self::RemoveBudget,
+            "remember" => Self::Remember,
+            "forgetMemory" => Self::ForgetMemory,
+            "listMemory" => Self::ListMemory,
+            "createGoal" => Self::CreateGoal,
+            "contributeToGoal" => Self::ContributeToGoal,
+            "editGoal" => Self::EditGoal,
+            "deleteGoal" => Self::DeleteGoal,
+            "addRecurringBill" => Self::AddRecurringBill,
+            "editRecurringBill" => Self::EditRecurringBill,
+            "removeRecurringBill" => Self::RemoveRecurringBill,
+            "getMonthOverview" => Self::GetMonthOverview,
+            "getCategorySpend" => Self::GetCategorySpend,
+            "searchTransactions" => Self::SearchTransactions,
+            "listBudgets" => Self::ListBudgets,
+            "listGoals" => Self::ListGoals,
+            "listRecurring" => Self::ListRecurring,
+            "searchTransfers" => Self::SearchTransfers,
+            _ => return None,
+        })
+    }
+
+    /// Read tools are async and never touch `writes`; everything else buffers
+    /// writes synchronously. `listMemory` is intentionally NOT a read tool: it
+    /// answers from the in-memory snapshot via the write path but never mutates
+    /// the ledger. Keeping this exhaustive makes a new tool's classification a
+    /// deliberate choice rather than an accidental default.
+    const fn is_read(self) -> bool {
+        match self {
+            Self::GetMonthOverview
+            | Self::GetCategorySpend
+            | Self::SearchTransactions
+            | Self::ListBudgets
+            | Self::ListGoals
+            | Self::ListRecurring
+            | Self::SearchTransfers => true,
+            Self::LogExpense
+            | Self::LogIncome
+            | Self::LogTransfer
+            | Self::EditLast
+            | Self::DeleteLast
+            | Self::SetBudget
+            | Self::RemoveBudget
+            | Self::Remember
+            | Self::ForgetMemory
+            | Self::ListMemory
+            | Self::CreateGoal
+            | Self::ContributeToGoal
+            | Self::EditGoal
+            | Self::DeleteGoal
+            | Self::AddRecurringBill
+            | Self::EditRecurringBill
+            | Self::RemoveRecurringBill => false,
+        }
+    }
 }
 
 #[must_use]
@@ -288,33 +389,51 @@ pub async fn execute_finance_tool(
     ctx: &FinanceToolContext<'_>,
     writes: &mut Vec<WriteIntent>,
 ) -> ToolExecution {
+    let Some(tool) = Tool::from_name(call.function.name.as_str()) else {
+        let name = &call.function.name;
+        return ToolExecution {
+            content: json!({ "ok": false, "error": format!("unsupported tool {name}") })
+                .to_string(),
+        };
+    };
+
     // Read tools are async and never touch `writes`; write tools are pure
     // buffering and stay synchronous. Keeping the split explicit makes it
     // impossible for a read tool to mutate the ledger.
-    if is_read_tool(call.function.name.as_str()) {
+    if tool.is_read() {
         return ToolExecution {
-            content: execute_read_tool(call, ctx).await.to_string(),
+            content: execute_read_tool(tool, call, ctx).await.to_string(),
         };
     }
-    let result = match call.function.name.as_str() {
-        "logExpense" => parse_and(call, |args| log_expense(ctx, writes, args)),
-        "logIncome" => parse_and(call, |args| log_income(ctx, writes, args)),
-        "logTransfer" => parse_and(call, |args| log_transfer(ctx, writes, args)),
-        "editLast" => parse_and(call, |args| edit_last(ctx, writes, args)),
-        "deleteLast" => parse_and(call, |_args: EmptyArgs| delete_last(ctx, writes)),
-        "setBudget" => parse_and(call, |args| set_budget(ctx, writes, args)),
-        "removeBudget" => parse_and(call, |args| remove_budget(ctx, writes, args)),
-        "remember" => parse_and(call, |args| remember(ctx, writes, args)),
-        "forgetMemory" => parse_and(call, |args| forget_memory(ctx, writes, args)),
-        "listMemory" => Ok(json!({ "remembered": ctx.snapshot.memories })),
-        "createGoal" => parse_and(call, |args| create_goal(ctx, writes, args)),
-        "contributeToGoal" => parse_and(call, |args| contribute_to_goal(ctx, writes, args)),
-        "editGoal" => parse_and(call, |args| edit_goal(ctx, writes, args)),
-        "deleteGoal" => parse_and(call, |args| delete_goal(ctx, writes, args)),
-        "addRecurringBill" => parse_and(call, |args| add_recurring(ctx, writes, args)),
-        "editRecurringBill" => parse_and(call, |args| edit_recurring(ctx, writes, args)),
-        "removeRecurringBill" => parse_and(call, |args| remove_recurring(ctx, writes, args)),
-        other => Ok(json!({ "ok": false, "error": format!("unsupported tool {other}") })),
+    let result = match tool {
+        Tool::LogExpense => parse_and(call, |args| log_expense(ctx, writes, args)),
+        Tool::LogIncome => parse_and(call, |args| log_income(ctx, writes, args)),
+        Tool::LogTransfer => parse_and(call, |args| log_transfer(ctx, writes, args)),
+        Tool::EditLast => parse_and(call, |args| edit_last(ctx, writes, args)),
+        Tool::DeleteLast => parse_and(call, |_args: EmptyArgs| delete_last(ctx, writes)),
+        Tool::SetBudget => parse_and(call, |args| set_budget(ctx, writes, args)),
+        Tool::RemoveBudget => parse_and(call, |args| remove_budget(ctx, writes, args)),
+        Tool::Remember => parse_and(call, |args| remember(ctx, writes, args)),
+        Tool::ForgetMemory => parse_and(call, |args| forget_memory(ctx, writes, args)),
+        Tool::ListMemory => Ok(json!({ "remembered": ctx.snapshot.memories })),
+        Tool::CreateGoal => parse_and(call, |args| create_goal(ctx, writes, args)),
+        Tool::ContributeToGoal => parse_and(call, |args| contribute_to_goal(ctx, writes, args)),
+        Tool::EditGoal => parse_and(call, |args| edit_goal(ctx, writes, args)),
+        Tool::DeleteGoal => parse_and(call, |args| delete_goal(ctx, writes, args)),
+        Tool::AddRecurringBill => parse_and(call, |args| add_recurring(ctx, writes, args)),
+        Tool::EditRecurringBill => parse_and(call, |args| edit_recurring(ctx, writes, args)),
+        Tool::RemoveRecurringBill => parse_and(call, |args| remove_recurring(ctx, writes, args)),
+        // Read tools are handled above via the async path and can never reach
+        // this synchronous write dispatch.
+        Tool::GetMonthOverview
+        | Tool::GetCategorySpend
+        | Tool::SearchTransactions
+        | Tool::ListBudgets
+        | Tool::ListGoals
+        | Tool::ListRecurring
+        | Tool::SearchTransfers => {
+            unreachable!("read tool routed to write dispatch")
+        }
     };
     ToolExecution {
         content: result
@@ -323,44 +442,49 @@ pub async fn execute_finance_tool(
     }
 }
 
-#[must_use]
-fn is_read_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "getMonthOverview"
-            | "getCategorySpend"
-            | "searchTransactions"
-            | "searchTransfers"
-            | "listBudgets"
-            | "listGoals"
-            | "listRecurring"
-    )
-}
-
-async fn execute_read_tool(call: &ToolCall, ctx: &FinanceToolContext<'_>) -> Value {
-    let result = match call.function.name.as_str() {
-        "getMonthOverview" => match parse::<MonthArgs>(call) {
+async fn execute_read_tool(tool: Tool, call: &ToolCall, ctx: &FinanceToolContext<'_>) -> Value {
+    let result = match tool {
+        Tool::GetMonthOverview => match parse::<MonthArgs>(call) {
             Ok(args) => get_month_overview_tool(ctx, args).await,
             Err(err) => Err(err),
         },
-        "getCategorySpend" => {
+        Tool::GetCategorySpend => {
             match serde_json::from_str::<CategorySpendArgs>(call.function.arguments.trim()) {
                 Ok(args) => get_category_spend_tool(ctx, args).await,
                 Err(err) => Err(format!("invalid arguments: {err}")),
             }
         }
-        "searchTransactions" => match parse::<SearchArgs>(call) {
+        Tool::SearchTransactions => match parse::<SearchArgs>(call) {
             Ok(args) => search_transactions_tool(ctx, args).await,
             Err(err) => Err(err),
         },
-        "listBudgets" => list_budgets_tool(ctx).await,
-        "listGoals" => Ok(list_goals_tool(ctx)),
-        "listRecurring" => Ok(list_recurring_tool(ctx)),
-        "searchTransfers" => match parse::<TransfersQueryArgs>(call) {
+        Tool::ListBudgets => list_budgets_tool(ctx).await,
+        Tool::ListGoals => Ok(list_goals_tool(ctx)),
+        Tool::ListRecurring => Ok(list_recurring_tool(ctx)),
+        Tool::SearchTransfers => match parse::<TransfersQueryArgs>(call) {
             Ok(args) => search_transfers_tool(ctx, args).await,
             Err(err) => Err(err),
         },
-        other => Ok(json!({ "ok": false, "error": format!("unsupported tool {other}") })),
+        // Write tools never reach the read dispatch (routed by `is_read`).
+        Tool::LogExpense
+        | Tool::LogIncome
+        | Tool::LogTransfer
+        | Tool::EditLast
+        | Tool::DeleteLast
+        | Tool::SetBudget
+        | Tool::RemoveBudget
+        | Tool::Remember
+        | Tool::ForgetMemory
+        | Tool::ListMemory
+        | Tool::CreateGoal
+        | Tool::ContributeToGoal
+        | Tool::EditGoal
+        | Tool::DeleteGoal
+        | Tool::AddRecurringBill
+        | Tool::EditRecurringBill
+        | Tool::RemoveRecurringBill => {
+            unreachable!("write tool routed to read dispatch")
+        }
     };
     result.unwrap_or_else(|err| json!({ "ok": false, "error": err }))
 }
@@ -1549,16 +1673,6 @@ fn optional_i64(description: &'static str) -> Value {
     json!({ "type": "integer", "description": description, "optional": true })
 }
 
-trait DateYear {
-    fn year(self) -> i32;
-}
-
-impl DateYear for NaiveDate {
-    fn year(self) -> i32 {
-        chrono::Datelike::year(&self)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1582,6 +1696,26 @@ mod tests {
                 arguments: args.to_string(),
             },
         }
+    }
+
+    #[test]
+    fn every_advertised_spec_maps_to_a_tool_variant() {
+        // A spec advertised to the model with no Tool variant would dispatch to
+        // "unsupported tool" at runtime; the exhaustive dispatch match already
+        // guarantees the reverse. Lock the forward direction here.
+        for spec in finance_tool_specs() {
+            assert!(
+                Tool::from_name(spec.function.name).is_some(),
+                "advertised tool {:?} has no Tool variant",
+                spec.function.name
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_tool_name_is_not_a_variant() {
+        assert!(Tool::from_name("logExpense").is_some());
+        assert!(Tool::from_name("notARealTool").is_none());
     }
 
     #[tokio::test]

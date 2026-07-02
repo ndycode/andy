@@ -36,6 +36,15 @@ fn parse_calendar_date(input: &str) -> DateResult {
     if parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2 {
         return DateResult::Err("date must be YYYY-MM-DD");
     }
+    // Require pure ASCII digits per part: Rust's integer FromStr accepts a
+    // leading '+' (and surrounding cases), so "2026-+6-15" or "+123-06-15"
+    // would otherwise slip past a strict-YYYY-MM-DD validator.
+    if parts
+        .iter()
+        .any(|part| !part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return DateResult::Err("date must be YYYY-MM-DD");
+    }
     let Ok(year) = parts[0].parse::<i32>() else {
         return DateResult::Err("date must be YYYY-MM-DD");
     };
@@ -80,6 +89,47 @@ mod tests {
         assert_eq!(
             validate_log_date("2020-01-01", now),
             DateResult::Err("that's too far back")
+        );
+    }
+
+    // Characterization: the "too far back" bound is a whole-year comparison at
+    // today.year() - 5, so the entire year-5 is accepted and year-6 is rejected.
+    #[test]
+    fn log_date_year_bound_is_inclusive_at_minus_five() {
+        let now = "2026-06-15T00:00:00Z".parse().unwrap();
+        // year() - 5 == 2021: accepted even on Jan 1.
+        assert_eq!(
+            validate_log_date("2021-01-01", now),
+            DateResult::Ok("2021-01-01".parse().unwrap())
+        );
+        // year() - 6 == 2020: rejected.
+        assert_eq!(
+            validate_log_date("2020-12-31", now),
+            DateResult::Err("that's too far back")
+        );
+    }
+
+    #[test]
+    fn same_day_log_is_accepted() {
+        let now = "2026-06-15T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            validate_log_date("2026-06-15", now),
+            DateResult::Ok("2026-06-15".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn leap_day_validates_through_log_path() {
+        let now = "2026-06-15T00:00:00Z".parse().unwrap();
+        // 2024 is a leap year: Feb 29 is real and within range.
+        assert_eq!(
+            validate_log_date("2024-02-29", now),
+            DateResult::Ok("2024-02-29".parse().unwrap())
+        );
+        // 2026 is not a leap year: Feb 29 is not a real date.
+        assert_eq!(
+            validate_calendar_date("2026-02-29"),
+            DateResult::Err("not a real date")
         );
     }
 }

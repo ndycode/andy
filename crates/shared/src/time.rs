@@ -9,9 +9,9 @@ pub const APP_TIMEZONE_DEFAULT: &str = "Asia/Manila";
 /// product invariant rather than per-request state. This struct makes that
 /// invariant explicit and injectable: business logic that needs the offset
 /// should take an `AppTimeConfig` instead of reaching for `MANILA_OFFSET_MINUTES`
-/// or reading env deep in a helper. [`AppTimeConfig::from_env`] honors the
-/// `APP_TIMEZONE` / `APP_TIMEZONE_OFFSET_MINUTES` overrides for tests and
-/// relocation, defaulting to Manila.
+/// or reading env deep in a helper. Build it from validated config via
+/// [`crate::env::Env::time_config`], which honors the `APP_TIMEZONE` /
+/// `APP_TIMEZONE_OFFSET_MINUTES` overrides and defaults to Manila.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppTimeConfig {
     pub label: String,
@@ -38,15 +38,6 @@ impl AppTimeConfig {
         }
     }
 
-    /// Read from process env, falling back to the Manila invariant.
-    #[must_use]
-    pub fn from_env() -> Self {
-        Self {
-            label: app_timezone(),
-            offset_minutes: default_offset_minutes(),
-        }
-    }
-
     /// Local calendar date for an instant under this config.
     #[must_use]
     pub fn local_date(&self, at: DateTime<Utc>) -> NaiveDate {
@@ -61,25 +52,13 @@ impl AppTimeConfig {
 }
 
 #[must_use]
-pub fn app_timezone() -> String {
-    std::env::var("APP_TIMEZONE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| APP_TIMEZONE_DEFAULT.to_string())
-}
-
-#[must_use]
-pub fn default_offset_minutes() -> i32 {
-    std::env::var("APP_TIMEZONE_OFFSET_MINUTES")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<i32>().ok())
-        .filter(|mins| mins.abs() <= 14 * 60)
-        .unwrap_or(MANILA_OFFSET_MINUTES)
-}
-
-#[must_use]
 pub fn local_date(at: DateTime<Utc>, offset_minutes: i32) -> NaiveDate {
-    (at + Duration::minutes(i64::from(offset_minutes))).date_naive()
+    // checked_add_signed, not `+`: chrono's Add panics at the DateTime::MAX/MIN
+    // extreme. No current caller reaches it (all `at` derive from Utc::now()
+    // and offsets are clamped to +/-14h), but this keeps local_date total.
+    at.checked_add_signed(Duration::minutes(i64::from(offset_minutes)))
+        .unwrap_or(at)
+        .date_naive()
 }
 
 #[must_use]
@@ -98,24 +77,37 @@ pub fn month_range(at: DateTime<Utc>, offset_minutes: i32) -> (NaiveDate, NaiveD
 #[must_use]
 pub fn month_bounds(date: NaiveDate) -> (NaiveDate, NaiveDate) {
     let first = NaiveDate::from_ymd_opt(date.year(), date.month(), 1).expect("valid month first");
-    let next_month = if date.month() == 12 {
-        NaiveDate::from_ymd_opt(date.year() + 1, 1, 1).expect("valid next year")
+    // December's last day is always the 31st — computing it directly avoids
+    // constructing year+1, which panics at chrono's max year. For other months
+    // the last day is (first-of-next-month - 1 day), same year.
+    let last = if date.month() == 12 {
+        NaiveDate::from_ymd_opt(date.year(), 12, 31).expect("Dec 31 is valid")
     } else {
         NaiveDate::from_ymd_opt(date.year(), date.month() + 1, 1).expect("valid next month")
+            - Duration::days(1)
     };
-    (first, next_month - Duration::days(1))
+    (first, last)
 }
 
-/// Parse a `YYYY-MM` month string into its inclusive first/last day bounds.
-/// Returns `None` for malformed input or out-of-range year/month.
+/// Parse a `YYYY-MM` string into a validated `(year, month)` pair. Returns
+/// `None` for malformed input or an out-of-range year (2000..=2100) / month.
+/// Single source of truth for [`month_bounds_from_str`] and [`month_anchor`].
 #[must_use]
-pub fn month_bounds_from_str(yyyymm: &str) -> Option<(NaiveDate, NaiveDate)> {
+pub fn parse_year_month(yyyymm: &str) -> Option<(i32, u32)> {
     let (year, month) = yyyymm.trim().split_once('-')?;
     let year = year.parse::<i32>().ok()?;
     let month = month.parse::<u32>().ok()?;
     if !(2000..=2100).contains(&year) || !(1..=12).contains(&month) {
         return None;
     }
+    Some((year, month))
+}
+
+/// Parse a `YYYY-MM` month string into its inclusive first/last day bounds.
+/// Returns `None` for malformed input or out-of-range year/month.
+#[must_use]
+pub fn month_bounds_from_str(yyyymm: &str) -> Option<(NaiveDate, NaiveDate)> {
+    let (year, month) = parse_year_month(yyyymm)?;
     let first = NaiveDate::from_ymd_opt(year, month, 1)?;
     Some(month_bounds(first))
 }
@@ -152,12 +144,7 @@ pub fn days_in_local_month(at: DateTime<Utc>, offset_minutes: i32) -> u32 {
 
 #[must_use]
 pub fn month_anchor(yyyymm: &str) -> Option<DateTime<Utc>> {
-    let (year, month) = yyyymm.trim().split_once('-')?;
-    let year = year.parse::<i32>().ok()?;
-    let month = month.parse::<u32>().ok()?;
-    if !(2000..=2100).contains(&year) || !(1..=12).contains(&month) {
-        return None;
-    }
+    let (year, month) = parse_year_month(yyyymm)?;
     Utc.with_ymd_and_hms(year, month, 15, 4, 0, 0).single()
 }
 

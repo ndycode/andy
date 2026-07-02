@@ -7,7 +7,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-andy_db = { path = "../db" }
 andy_shared = { path = "../shared" }
 anyhow.workspace = true
 async-trait.workspace = true
@@ -21,6 +20,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+proptest = "1.9.0"
 wiremock.workspace = true
 
 [lints]

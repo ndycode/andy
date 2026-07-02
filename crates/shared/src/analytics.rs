@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::budget::BUDGET_NEAR_RATIO;
+use crate::{budget::BUDGET_NEAR_RATIO, percent::percent_rounded};
 
 const PCT_BASELINE_FLOOR_CENTAVOS: i64 = 100;
 
@@ -31,11 +31,17 @@ pub struct PaceVerdict {
 
 #[must_use]
 pub fn spending_delta(current: i64, previous: i64) -> SpendingComparison {
-    let delta = current - previous;
+    // saturating_sub, not `-`: extreme (current, previous) would overflow and
+    // wrap with the WRONG SIGN in release (a decrease reported as an increase).
+    // Saturating clamps to i64::MIN/MAX and preserves sign, keeping Direction
+    // and pct_change coherent.
+    let delta = current.saturating_sub(previous);
     let raw_pct = if previous < PCT_BASELINE_FLOOR_CENTAVOS {
         None
     } else {
-        Some(((delta as f64 / previous as f64) * 100.0).round() as i64)
+        // Exact integer percent (i128 internally); previous >= floor > 0 so this
+        // is always Some here.
+        percent_rounded(delta, previous)
     };
     let pct_change = if raw_pct == Some(0) && delta != 0 {
         None
@@ -66,7 +72,10 @@ pub fn project_month_end(spent_so_far: i64, day_of_month: i64, days_in_month: i6
 
 #[must_use]
 pub fn project_month_end_robust(amounts: &[i64], day_of_month: i64, days_in_month: i64) -> i64 {
-    let spent_so_far = amounts.iter().sum::<i64>();
+    // saturating fold, not sum::<i64>(): sum uses unchecked `+` and would
+    // panic (debug) / silently wrap (release, money corruption) on extreme
+    // aggregates. Saturating clamps instead.
+    let spent_so_far = amounts.iter().copied().fold(0_i64, i64::saturating_add);
     if day_of_month < 1 {
         return spent_so_far;
     }
@@ -77,7 +86,10 @@ pub fn project_month_end_robust(amounts: &[i64], day_of_month: i64, days_in_mont
     sorted.sort_unstable();
     let mid = sorted.len() / 2;
     let median = if sorted.len().is_multiple_of(2) {
-        (sorted[mid - 1] + sorted[mid]) as f64 / 2.0
+        // Cast each operand to f64 BEFORE adding: the i64 pair-sum could
+        // overflow pre-cast, producing a negative median that misclassifies
+        // every amount.
+        (sorted[mid - 1] as f64 + sorted[mid] as f64) / 2.0
     } else {
         sorted[mid] as f64
     };
@@ -86,17 +98,19 @@ pub fn project_month_end_robust(amounts: &[i64], day_of_month: i64, days_in_mont
     let mut typical_total = 0_i64;
     for amount in amounts {
         if *amount as f64 > threshold {
-            outlier_total += amount;
+            outlier_total = outlier_total.saturating_add(*amount);
         } else {
-            typical_total += amount;
+            typical_total = typical_total.saturating_add(*amount);
         }
     }
     if outlier_total == 0 {
         return project_month_end(spent_so_far, day_of_month, days_in_month);
     }
-    let projected = ((typical_total as f64 / day_of_month as f64) * days_in_month as f64).round()
-        as i64
-        + outlier_total;
+    // saturating_add the outlier total: the projection + outlier sum can
+    // overflow i64 and wrap to a large negative in release.
+    let typical_projection =
+        ((typical_total as f64 / day_of_month as f64) * days_in_month as f64).round() as i64;
+    let projected = typical_projection.saturating_add(outlier_total);
     projected.max(spent_so_far)
 }
 
@@ -172,5 +186,51 @@ mod tests {
     fn pace_warning_requires_meaningful_projected_overshoot() {
         let verdict = spending_pace(1_000, 10, 30, 2_000, None);
         assert!(should_warn_pace(verdict, 10, None, None, None));
+    }
+
+    // Characterization: pin the delta/percent contract at its edges.
+    #[test]
+    fn spending_delta_edges() {
+        // Denominator below the baseline floor -> no percent.
+        assert_eq!(spending_delta(5_000, 99).pct_change, None);
+        // Real drop reports a negative percent and Down direction.
+        let down = spending_delta(50, 100);
+        assert_eq!(down.pct_change, Some(-50));
+        assert_eq!(down.direction, Direction::Down);
+        // Sub-rounding change would round to 0% but delta != 0 -> suppressed.
+        assert_eq!(spending_delta(10_001, 10_000).pct_change, None);
+        // Flat.
+        let flat = spending_delta(100, 100);
+        assert_eq!(flat.delta, 0);
+        assert_eq!(flat.direction, Direction::Flat);
+        assert_eq!(flat.pct_change, Some(0));
+    }
+
+    #[test]
+    fn robust_projection_without_outliers_matches_plain() {
+        // No amount exceeds 2x median -> falls back to plain projection.
+        let plain = project_month_end(300, 3, 30);
+        assert_eq!(project_month_end_robust(&[100, 100, 100], 3, 30), plain);
+    }
+
+    #[test]
+    fn robust_projection_even_count_uses_median_pair() {
+        // 4 amounts: median = (100+100)/2 = 100, threshold 200, 10_000 is an
+        // outlier counted once; typical (300) projected over the month + outlier.
+        let projected = project_month_end_robust(&[100, 100, 100, 10_000], 3, 30);
+        assert_eq!(projected, 13_000);
+    }
+
+    #[test]
+    fn should_warn_pace_gates() {
+        let verdict = spending_pace(1_000, 10, 30, 2_000, None);
+        // Before min_day -> never warns.
+        assert!(!should_warn_pace(verdict, 3, Some(5), None, None));
+        // Already near the limit (spent >= limit*near_ratio) -> short-circuits.
+        let near = spending_pace(1_900, 10, 30, 2_000, None);
+        assert!(!should_warn_pace(near, 10, None, Some(0.9), None));
+        // No budget -> never warns.
+        let no_budget = spending_pace(1_000, 10, 30, 0, None);
+        assert!(!should_warn_pace(no_budget, 10, None, None, None));
     }
 }

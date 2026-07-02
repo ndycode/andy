@@ -6,9 +6,9 @@ use uuid::Uuid;
 use crate::{
     ClaimResult, FinanceRead, FlushResult, PgFinanceRead, RateDecision, RecurringInput,
     TransactionSearch, WriteIntent, cancel_pending_confirmations, check_and_increment,
-    claim_outbound_by_dedup_key, claim_reminder, claim_slot, due_recurring_today,
-    find_goal_by_name, flush_writes, latest_pending_confirmation, list_goals, list_memories,
-    list_recurring, mark_outbound_sent, migrations, resolve_user_id, save_pending_confirmation,
+    claim_outbound_by_dedup_key, claim_reminder, claim_slot, due_recurring_today, flush_writes,
+    latest_pending_confirmation, list_goals, list_memories, list_recurring, mark_outbound_sent,
+    migrations, resolve_user_id, save_pending_confirmation,
     writes::{Cadence, MemoryKind, MessageRole, TxKind},
 };
 
@@ -158,8 +158,10 @@ async fn goal_balances_and_recurring_claims_use_real_constraints() -> anyhow::Re
         }],
     )
     .await?;
-    let goal = find_goal_by_name(&pool, user_id, "Japan")
+    let goal = list_goals(&pool, user_id)
         .await?
+        .into_iter()
+        .find(|goal| goal.name == "Japan")
         .expect("goal exists");
     flush_writes(
         &pool,

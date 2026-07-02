@@ -15,10 +15,11 @@ use axum::{
 use chrono::Utc;
 use serde::Serialize;
 use sqlx::PgPool;
+use tracing::{error, warn};
 
 use crate::{
     cron::{DailyCheckResult, run_daily_checks},
-    inbound::parse_inbound,
+    inbound::{InboundOutcome, parse_inbound},
     outbound::SendblueClient,
 };
 
@@ -60,6 +61,34 @@ impl AppState {
     pub fn production_lazy() -> Self {
         Self::test()
     }
+
+    /// Resolve the process [`Env`], preferring a state-carried one and falling
+    /// back to `Env::from_process` (serverless lazy mode). Single place that
+    /// defines the lazy-env contract.
+    pub fn resolve_env(&self) -> Result<Env, anyhow::Error> {
+        match self.env.clone() {
+            Some(env) => Ok(env),
+            None => Ok(Env::from_process()?),
+        }
+    }
+
+    /// Resolve a DB pool, preferring a state-carried one and connecting lazily
+    /// from `env` otherwise. Callers should resolve ONCE per request and reuse
+    /// the returned pool so a single invocation holds at most one connection.
+    pub async fn resolve_pool(&self, env: &Env) -> Result<PgPool, anyhow::Error> {
+        match self.pool.clone() {
+            Some(pool) => Ok(pool),
+            None => Ok(connect_pool(&env.database_url).await?),
+        }
+    }
+
+    /// Resolve a Sendblue client, preferring a state-carried one.
+    #[must_use]
+    pub fn resolve_sendblue(&self, env: &Env) -> SendblueClient {
+        self.sendblue
+            .clone()
+            .unwrap_or_else(|| SendblueClient::from_env(env))
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -68,6 +97,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ready", get(ready))
         .route("/webhooks/sendblue", post(sendblue_webhook))
         .route("/api/cron/daily", get(daily_cron))
+        .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }
 
@@ -103,7 +133,7 @@ struct ReadyResponse {
 /// Sendblue are configured — all without exposing any secret value. Returns
 /// 200 when ready and 503 otherwise so a load balancer can act on it.
 async fn ready(State(state): State<AppState>) -> Response {
-    let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
+    let env = match state.resolve_env() {
         Ok(env) => env,
         Err(_) => {
             return json_status(
@@ -183,9 +213,10 @@ async fn sendblue_webhook(
         ));
     }
 
-    let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
+    let env = match state.resolve_env() {
         Ok(env) => env,
-        Err(_) => {
+        Err(err) => {
+            error!(event = "webhook.env.error", error = %err);
             return Ok(json_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 OkResponse { ok: false },
@@ -201,9 +232,21 @@ async fn sendblue_webhook(
         ));
     }
 
-    let raw = to_bytes(body, MAX_BODY_BYTES + 1)
-        .await
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    // Optional second authenticity factor: when a signing secret is configured,
+    // the `sb-signing-secret` header must match it (constant time). Sendblue
+    // delivers the configured secret verbatim in this header. When unset, the
+    // URL token stays the sole boundary (backward compatible).
+    if !signing_secret_valid(&parts.headers, &env) {
+        return Ok(json_status(
+            StatusCode::UNAUTHORIZED,
+            OkResponse { ok: false },
+        ));
+    }
+
+    let raw = to_bytes(body, MAX_BODY_BYTES + 1).await.map_err(|err| {
+        warn!(event = "webhook.body.read_error", error = %err);
+        StatusCode::BAD_REQUEST
+    })?;
     if raw.len() > MAX_BODY_BYTES {
         return Ok(json_status(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -211,17 +254,41 @@ async fn sendblue_webhook(
         ));
     }
 
-    let Some(msg) = parse_inbound(&raw) else {
-        return Ok(json_status(
-            StatusCode::UNAUTHORIZED,
-            OkResponse { ok: false },
-        ));
+    let msg = match parse_inbound(&raw) {
+        InboundOutcome::Actionable(msg) => msg,
+        // Well-formed but non-actionable (status callback, outbound echo,
+        // blank): acknowledge with 200 so the provider does not retry or
+        // disable the endpoint. 401 is reserved strictly for auth failures.
+        InboundOutcome::Ignore => {
+            return Ok(json_status(StatusCode::OK, OkResponse { ok: true }));
+        }
+        // Genuinely unparseable body: this is a client error, not auth.
+        InboundOutcome::Malformed => {
+            warn!(event = "webhook.body.malformed");
+            return Ok(json_status(
+                StatusCode::BAD_REQUEST,
+                OkResponse { ok: false },
+            ));
+        }
+    };
+
+    // Resolve the pool ONCE for this request; the rate-limit check and the
+    // message service share it, so a single invocation holds one connection.
+    let pool = match state.resolve_pool(&env).await {
+        Ok(pool) => pool,
+        Err(err) => {
+            error!(event = "webhook.pool.error", error = %err);
+            return Ok(json_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                OkResponse { ok: false },
+            ));
+        }
     };
 
     // Durable, cross-instance rate limit keyed on a hash of token+phone (no raw
     // secret/PII stored). Fail closed: if the check errors we return 503 rather
     // than let unknown traffic reach the model.
-    match durable_rate_ok(&state, &env, token.as_deref(), &msg.phone).await {
+    match durable_rate_ok(&pool, &env, token.as_deref()).await {
         Ok(true) => {}
         Ok(false) => {
             return Ok(json_status(
@@ -229,7 +296,8 @@ async fn sendblue_webhook(
                 OkResponse { ok: false },
             ));
         }
-        Err(_) => {
+        Err(err) => {
+            error!(event = "webhook.ratelimit.error", error = %err);
             return Ok(json_status(
                 StatusCode::SERVICE_UNAVAILABLE,
                 OkResponse { ok: false },
@@ -237,37 +305,40 @@ async fn sendblue_webhook(
         }
     }
 
-    crate::service::InboundMessageService::new(&state, &env)
+    crate::service::InboundMessageService::new(&state, &env, pool)
         .handle(msg.phone, msg.text, msg.message_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| {
+            error!(event = "webhook.handle.error", error = %err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(json_status(StatusCode::OK, OkResponse { ok: true }))
 }
 
 const DEFAULT_INBOUND_RATE_LIMIT: i64 = 60;
 const DEFAULT_INBOUND_RATE_WINDOW_SECONDS: i64 = 60;
 
-/// Durable rate-limit gate. Resolves a pool (from state or env), increments the
-/// fixed-window counter for `sha256(token|phone)`, and returns whether the
-/// request is under the configured limit. Errors propagate so the caller can
-/// fail closed.
+/// Durable rate-limit gate. Increments the fixed-window counter for
+/// `sha256(token)` on the caller-provided pool and returns whether the request
+/// is under the configured limit. Errors propagate so the caller can fail
+/// closed.
+///
+/// The key is the token hash ALONE, not `token|phone`: `phone` comes from the
+/// attacker-controlled request body, so including it would let a token-holder
+/// rotate the number field to land in a fresh bucket on every request and churn
+/// the limiter. This is a single-allowed-phone app, so per-token granularity is
+/// exactly right.
 async fn durable_rate_ok(
-    state: &AppState,
+    pool: &PgPool,
     env: &Env,
     token: Option<&str>,
-    phone: &str,
 ) -> Result<bool, anyhow::Error> {
-    let pool = if let Some(pool) = state.pool.clone() {
-        pool
-    } else {
-        connect_pool(&env.database_url).await?
-    };
     let limit = env.inbound_rate_limit.unwrap_or(DEFAULT_INBOUND_RATE_LIMIT);
     let window = env
         .inbound_rate_window_seconds
         .unwrap_or(DEFAULT_INBOUND_RATE_WINDOW_SECONDS);
-    let key_hash = sha256_hex(&format!("{}|{}", token.unwrap_or_default(), phone));
-    let decision = check_and_increment(&pool, &key_hash, Utc::now(), window, limit).await?;
+    let key_hash = sha256_hex(token.unwrap_or_default());
+    let decision = check_and_increment(pool, &key_hash, Utc::now(), window, limit).await?;
     Ok(decision == RateDecision::Allow)
 }
 
@@ -275,9 +346,10 @@ async fn daily_cron(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
-    let env = match state.env.clone().map(Ok).unwrap_or_else(Env::from_process) {
+    let env = match state.resolve_env() {
         Ok(env) => env,
-        Err(_) => {
+        Err(err) => {
+            error!(event = "cron.env.error", error = %err);
             return Ok(json_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 OkResponse { ok: false },
@@ -296,20 +368,23 @@ async fn daily_cron(
             OkResponse { ok: false },
         ));
     }
-    let pool = if let Some(pool) = state.pool.clone() {
-        pool
-    } else {
-        connect_pool(&env.database_url)
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    let pool = match state.resolve_pool(&env).await {
+        Ok(pool) => pool,
+        Err(err) => {
+            error!(event = "cron.pool.error", error = %err);
+            return Ok(json_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                OkResponse { ok: false },
+            ));
+        }
     };
-    let sendblue = state
-        .sendblue
-        .clone()
-        .unwrap_or_else(|| SendblueClient::from_env(&env));
+    let sendblue = state.resolve_sendblue(&env);
     let result = run_daily_checks(&pool, &sendblue, &env.allowed_phone, Utc::now())
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| {
+            error!(event = "cron.run.error", error = %err);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(json_status(
         StatusCode::OK,
         CronOkResponse { ok: true, result },
@@ -336,6 +411,21 @@ fn webhook_token_valid(actual: Option<&str>, env: &Env) -> bool {
         return token_matches_hash(actual, expected_hash);
     }
     !env.webhook_url_token.is_empty() && constant_time_equal(actual, &env.webhook_url_token)
+}
+
+/// Verify the optional Sendblue `sb-signing-secret` header. Returns `true` when
+/// no signing secret is configured (feature off) or when the header matches the
+/// configured secret in constant time. A configured secret with a missing or
+/// mismatched header fails closed.
+fn signing_secret_valid(headers: &HeaderMap, env: &Env) -> bool {
+    let Some(expected) = env.sendblue_signing_secret.as_deref() else {
+        return true;
+    };
+    let presented = headers
+        .get("sb-signing-secret")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    constant_time_equal(presented, expected)
 }
 
 /// Extract a single query parameter value (percent-decoded). Returns `None`
@@ -407,6 +497,7 @@ mod tests {
             sendblue_from_number: "+1".into(),
             webhook_url_token: "token".into(),
             webhook_url_token_sha256: None,
+            sendblue_signing_secret: None,
             cron_secret: "cron".into(),
             allowed_phone: "+639171234567".into(),
             openrouter_api_key: None,
@@ -418,6 +509,18 @@ mod tests {
             inbound_rate_limit: None,
             inbound_rate_window_seconds: None,
         }
+    }
+
+    #[test]
+    fn resolve_env_prefers_state_carried_env() {
+        // The single-resolution contract: when state carries an env, resolve_env
+        // returns it without touching process env. The webhook path resolves env
+        // and pool once and shares the pool with both the rate-limit check and
+        // the message service, so one invocation holds one connection.
+        let mut state = AppState::test();
+        state.env = Some(env());
+        let resolved = state.resolve_env().expect("state env");
+        assert_eq!(resolved.allowed_phone, "+639171234567");
     }
 
     #[tokio::test]
@@ -516,9 +619,8 @@ mod tests {
 
     #[tokio::test]
     async fn webhook_hashed_token_passes_auth_gate() {
-        // A correct hashed token must not be rejected at the token gate. With a
-        // non-RECEIVED body it still 401s at parse, so compare against a wrong
-        // token: both reach the same handler path only if auth passed.
+        // A correct hashed token passes the gate; a well-formed non-actionable
+        // body ({}) is then acknowledged with 200 (ack-and-ignore), never 401.
         let mut state = AppState::test();
         let mut e = env();
         e.webhook_url_token = String::new();
@@ -528,14 +630,92 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/webhooks/sendblue?t=wrong-token")
+                    .uri("/webhooks/sendblue?t=token")
                     .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
             .unwrap();
-        // Wrong token is rejected at the gate.
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn webhook_acks_status_callback_with_200() {
+        // An authenticated SENT/DELIVERED status callback is a legitimate event,
+        // not an auth failure: ack it with 200 so the provider keeps the
+        // endpoint healthy.
+        let mut state = AppState::test();
+        state.env = Some(env());
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/sendblue?t=token")
+                    .body(Body::from(r#"{"status":"DELIVERED","number":"+1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn webhook_rejects_unparseable_body_with_400() {
+        let mut state = AppState::test();
+        state.env = Some(env());
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/sendblue?t=token")
+                    .body(Body::from("not json at all"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn webhook_requires_signing_secret_header_when_configured() {
+        // With a signing secret configured, a valid token but missing/mismatched
+        // sb-signing-secret header must be rejected.
+        let mut state = AppState::test();
+        let mut e = env();
+        e.sendblue_signing_secret = Some("shh".into());
+        state.env = Some(e);
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/sendblue?t=token")
+                    .body(Body::from(r#"{"status":"DELIVERED"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn webhook_accepts_matching_signing_secret_header() {
+        let mut state = AppState::test();
+        let mut e = env();
+        e.sendblue_signing_secret = Some("shh".into());
+        state.env = Some(e);
+        // Valid token + matching header + non-actionable body -> 200 ack.
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/sendblue?t=token")
+                    .header("sb-signing-secret", "shh")
+                    .body(Body::from(r#"{"status":"DELIVERED"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

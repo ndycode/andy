@@ -6,7 +6,7 @@
 //! explicit user confirmation, or must be rejected outright. It is pure and
 //! fully testable — no IO, no clock — so the rules are auditable.
 
-use andy_db::writes::{TxKind, WriteIntent};
+use andy_shared::domain::{TxKind, WriteIntent};
 use serde::{Deserialize, Serialize};
 
 /// Default high-value threshold: ₱50,000.00 in centavos. A single create/edit
@@ -156,6 +156,41 @@ fn max_amount_centavos(writes: &[WriteIntent]) -> Option<i64> {
         .max()
 }
 
+/// The total create/edit amount across the turn (absolute values). Mirrors the
+/// amount-bearing variants of [`max_amount_centavos`]; folds with saturating
+/// ops so a hostile combination can't overflow. Used to catch a large total
+/// split across several individually-sub-threshold writes.
+#[must_use]
+fn total_amount_centavos(writes: &[WriteIntent]) -> i64 {
+    writes
+        .iter()
+        .filter_map(|intent| match intent {
+            WriteIntent::Transaction {
+                amount_centavos, ..
+            }
+            | WriteIntent::GoalContribution {
+                amount_centavos, ..
+            }
+            | WriteIntent::Transfer {
+                amount_centavos, ..
+            } => Some(*amount_centavos),
+            WriteIntent::EditLast {
+                amount_centavos, ..
+            } => *amount_centavos,
+            WriteIntent::SetBudget {
+                monthly_limit_centavos,
+                ..
+            } => Some(*monthly_limit_centavos),
+            WriteIntent::CreateGoal {
+                target_centavos, ..
+            } => Some(*target_centavos),
+            _ => None,
+        })
+        .fold(0_i64, |acc, amount| {
+            acc.saturating_add(amount.saturating_abs())
+        })
+}
+
 /// Short human label for a single write, used to build a confirmation summary.
 #[must_use]
 fn describe(intent: &WriteIntent) -> &'static str {
@@ -254,6 +289,17 @@ pub fn classify_writes(
         };
     }
 
+    // Needs confirmation: a large TOTAL spread across several individually
+    // sub-threshold writes. Without this, up to MAX_WRITES_PER_TURN writes each
+    // just under the threshold could commit a large aggregate with no
+    // confirmation.
+    if total_amount_centavos(writes) >= settings.confirm_threshold_centavos {
+        return WriteRisk::NeedsConfirmation {
+            reason: "that's a large total".to_string(),
+            summary,
+        };
+    }
+
     WriteRisk::Safe
 }
 
@@ -301,10 +347,38 @@ mod tests {
     }
 
     #[test]
+    fn large_total_split_across_sub_threshold_writes_needs_confirmation() {
+        // Each write is below the ₱50,000 threshold and the count (4) is within
+        // MAX_WRITES_PER_TURN, so neither the per-write max gate nor the volume
+        // gate fires — but the total (₱60,000) is large and must be confirmed.
+        let writes = vec![
+            expense(1_500_000),
+            expense(1_500_000),
+            expense(1_500_000),
+            expense(1_500_000),
+        ];
+        assert!(matches!(
+            classify_writes("split it up", &writes, settings()),
+            WriteRisk::NeedsConfirmation { .. }
+        ));
+    }
+
+    #[test]
+    fn small_multi_write_turn_stays_safe() {
+        // Several small writes whose total is still well under the threshold
+        // must not trip the aggregate gate.
+        let writes = vec![expense(18_000), expense(9_000), expense(4_000)];
+        assert_eq!(
+            classify_writes("a few small things", &writes, settings()),
+            WriteRisk::Safe
+        );
+    }
+
+    #[test]
     fn bookkeeping_only_is_safe() {
         let writes = vec![WriteIntent::SaveTurn {
             user_id: Uuid::nil(),
-            role: andy_db::writes::MessageRole::User,
+            role: andy_shared::domain::MessageRole::User,
             content: "hi".into(),
         }];
         assert_eq!(classify_writes("hi", &writes, settings()), WriteRisk::Safe);
@@ -369,7 +443,7 @@ mod tests {
         let writes = vec![WriteIntent::SaveMemory {
             user_id: Uuid::nil(),
             content: "spent 180 on coffee today".into(),
-            kind: andy_db::writes::MemoryKind::Fact,
+            kind: andy_shared::domain::MemoryKind::Fact,
         }];
         assert!(matches!(
             classify_writes("remember I spent 180 on coffee", &writes, settings()),

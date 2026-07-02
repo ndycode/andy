@@ -1,6 +1,8 @@
 use std::env;
 use thiserror::Error;
 
+use crate::time::{APP_TIMEZONE_DEFAULT, AppTimeConfig, MANILA_OFFSET_MINUTES};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Env {
     pub database_url: String,
@@ -12,6 +14,13 @@ pub struct Env {
     /// inbound webhook verifies `sha256(query token)` against this instead of
     /// comparing the raw token, so the plaintext token need not live in env.
     pub webhook_url_token_sha256: Option<String>,
+    /// Optional Sendblue webhook signing secret. When set, the inbound webhook
+    /// additionally verifies the `sb-signing-secret` request header against this
+    /// (constant-time) as a second authenticity factor beyond the URL token.
+    /// Sendblue delivers this configured secret verbatim in the header (a plain
+    /// shared-secret comparison, not an HMAC over the body). When unset, the URL
+    /// token remains the sole authenticity boundary (backward compatible).
+    pub sendblue_signing_secret: Option<String>,
     pub cron_secret: String,
     pub allowed_phone: String,
     pub openrouter_api_key: Option<String>,
@@ -53,7 +62,7 @@ impl Env {
     pub fn from_getter(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self, EnvError> {
         let app_timezone = get("APP_TIMEZONE")
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "Asia/Manila".to_string());
+            .unwrap_or_else(|| APP_TIMEZONE_DEFAULT.to_string());
         let app_timezone_offset_minutes = match get("APP_TIMEZONE_OFFSET_MINUTES") {
             Some(raw) if !raw.trim().is_empty() => raw
                 .trim()
@@ -61,7 +70,7 @@ impl Env {
                 .ok()
                 .filter(|mins| mins.abs() <= 14 * 60)
                 .ok_or(EnvError::InvalidOffset)?,
-            _ => 480,
+            _ => MANILA_OFFSET_MINUTES,
         };
 
         let webhook_url_token_sha256 = match optional(&mut get, "WEBHOOK_URL_TOKEN_SHA256") {
@@ -89,6 +98,7 @@ impl Env {
             sendblue_from_number: required(&mut get, "SENDBLUE_FROM_NUMBER")?,
             webhook_url_token,
             webhook_url_token_sha256,
+            sendblue_signing_secret: optional(&mut get, "SENDBLUE_SIGNING_SECRET"),
             cron_secret: required(&mut get, "CRON_SECRET")?,
             allowed_phone: required(&mut get, "ALLOWED_PHONE")?,
             openrouter_api_key: optional(&mut get, "OPENROUTER_API_KEY"),
@@ -100,6 +110,14 @@ impl Env {
             inbound_rate_limit,
             inbound_rate_window_seconds,
         })
+    }
+
+    /// The app clock built from the already-validated timezone fields. This is
+    /// the single source of truth for date math config — callers holding an
+    /// [`Env`] should use this instead of re-reading process env.
+    #[must_use]
+    pub fn time_config(&self) -> AppTimeConfig {
+        AppTimeConfig::new(self.app_timezone.clone(), self.app_timezone_offset_minutes)
     }
 }
 
@@ -204,5 +222,40 @@ mod tests {
         assert_eq!(env.confirm_amount_threshold_centavos, Some(5_000_000));
         assert_eq!(env.inbound_rate_limit, Some(120));
         assert_eq!(env.inbound_rate_window_seconds, Some(30));
+    }
+
+    #[test]
+    fn invalid_offset_fails_once_at_env() {
+        // The offset is validated exactly once, at Env construction — a bad
+        // value is a hard error rather than a silent fallback parsed twice.
+        let mut values = base();
+        values.insert("WEBHOOK_URL_TOKEN", "t".to_string());
+        values.insert("APP_TIMEZONE_OFFSET_MINUTES", "not-a-number".to_string());
+        let env = Env::from_getter(|key| values.get(key).cloned());
+        assert_eq!(env, Err(EnvError::InvalidOffset));
+    }
+
+    #[test]
+    fn time_config_reflects_validated_fields() {
+        let mut values = base();
+        values.insert("WEBHOOK_URL_TOKEN", "t".to_string());
+        values.insert("APP_TIMEZONE", "UTC".to_string());
+        values.insert("APP_TIMEZONE_OFFSET_MINUTES", "0".to_string());
+        let env = Env::from_getter(|key| values.get(key).cloned()).unwrap();
+        let cfg = env.time_config();
+        assert_eq!(cfg.label, "UTC");
+        assert_eq!(cfg.offset_minutes, 0);
+    }
+
+    #[test]
+    fn signing_secret_is_optional() {
+        let mut values = base();
+        values.insert("WEBHOOK_URL_TOKEN", "t".to_string());
+        let env = Env::from_getter(|key| values.get(key).cloned()).unwrap();
+        assert_eq!(env.sendblue_signing_secret, None);
+
+        values.insert("SENDBLUE_SIGNING_SECRET", "shh".to_string());
+        let env = Env::from_getter(|key| values.get(key).cloned()).unwrap();
+        assert_eq!(env.sendblue_signing_secret.as_deref(), Some("shh"));
     }
 }

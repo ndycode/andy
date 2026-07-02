@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::sql::truncate;
 use crate::writes::{PHONE_MAX, WriteIntent};
 
 /// A stored, still-actionable confirmation.
@@ -167,8 +168,4 @@ pub async fn reap_pending_confirmations(
     .execute(pool)
     .await?;
     Ok(result.rows_affected())
-}
-
-fn truncate(value: &str, max: usize) -> String {
-    value.chars().take(max).collect()
 }

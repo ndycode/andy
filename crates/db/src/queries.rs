@@ -4,11 +4,11 @@ use andy_shared::{
     time::{MANILA_OFFSET_MINUTES, month_range},
 };
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::writes::{MessageRole, TxKind};
+use crate::sql::escape_like;
+use crate::writes::{message_role_from_db, tx_kind_from_db};
 
 pub const CLAIM_TTL_MS: i64 = 2 * 60 * 1000;
 
@@ -18,77 +18,13 @@ pub enum ClaimResult {
     Skip,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConversationTurn {
-    pub role: MessageRole,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransactionRow {
-    pub id: Uuid,
-    pub kind: TxKind,
-    pub amount_centavos: i64,
-    pub category: Category,
-    pub note: Option<String>,
-    pub goal_id: Option<Uuid>,
-    pub local_date: NaiveDate,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransactionSummaryRow {
-    pub kind: TxKind,
-    pub amount_centavos: i64,
-    pub category: Category,
-    pub note: Option<String>,
-    pub local_date: NaiveDate,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BudgetStatus {
-    pub category: Category,
-    pub limit: i64,
-    pub spent: i64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MonthOverview {
-    pub income: i64,
-    pub expense: i64,
-    pub net: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GoalRow {
-    pub id: Uuid,
-    pub name: String,
-    pub target_centavos: i64,
-    pub saved_centavos: i64,
-    pub created_at: DateTime<Utc>,
-    pub target_date: Option<NaiveDate>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct TransactionSearch {
-    pub text: Option<String>,
-    pub category: Option<Category>,
-    pub start_date: Option<NaiveDate>,
-    pub end_date: Option<NaiveDate>,
-    pub min_centavos: Option<i64>,
-    pub max_centavos: Option<i64>,
-    pub kind: Option<String>,
-    pub by_amount: bool,
-    pub limit: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferRow {
-    pub amount_centavos: i64,
-    pub from_account: Option<String>,
-    pub to_account: Option<String>,
-    pub note: Option<String>,
-    pub local_date: NaiveDate,
-}
+// Row DTOs and the transaction-search input now live in andy_shared::domain
+// (pure value types). db owns only the sqlx row-mapping glue below. Re-exported
+// so existing `andy_db::{TransactionRow, GoalRow, ...}` paths keep working.
+pub use andy_shared::domain::{
+    BudgetStatus, ConversationTurn, GoalRow, MonthOverview, TransactionRow, TransactionSearch,
+    TransactionSummaryRow, TransferRow,
+};
 
 /// Recent transfers (account-to-account movements), newest first. Optional
 /// `account` filters to transfers touching that account on either side.
@@ -202,7 +138,7 @@ pub async fn recent_turns(
         .map(|row| {
             let role: String = row.try_get("role")?;
             Ok(ConversationTurn {
-                role: MessageRole::from_db(&role)?,
+                role: message_role_from_db(&role)?,
                 content: row.try_get("content")?,
             })
         })
@@ -306,55 +242,6 @@ async fn budget_status_rows(
             })
         })
         .collect()
-}
-
-pub async fn sum_by_category(
-    pool: &PgPool,
-    user_id: Uuid,
-    category: Category,
-    at: DateTime<Utc>,
-) -> Result<i64, sqlx::Error> {
-    let (start, end) = month_range(at, MANILA_OFFSET_MINUTES);
-    let row = sqlx::query(
-        r#"
-        select coalesce(sum(amount_centavos), 0)::bigint as total
-        from transactions
-        where user_id = $1 and category = $2::category and kind = 'expense'
-          and local_date between $3 and $4
-        "#,
-    )
-    .bind(user_id)
-    .bind(category.as_str())
-    .bind(start)
-    .bind(end)
-    .fetch_one(pool)
-    .await?;
-    row.try_get("total")
-}
-
-pub async fn sum_spend_between(
-    pool: &PgPool,
-    user_id: Uuid,
-    start: NaiveDate,
-    end: NaiveDate,
-    category: Option<Category>,
-) -> Result<i64, sqlx::Error> {
-    let category = category.map(|category| category.as_str().to_string());
-    let row = sqlx::query(
-        r#"
-        select coalesce(sum(amount_centavos), 0)::bigint as total
-        from transactions
-        where user_id = $1 and kind = 'expense' and local_date between $2 and $3
-          and ($4::text is null or category = $4::category)
-        "#,
-    )
-    .bind(user_id)
-    .bind(start)
-    .bind(end)
-    .bind(category)
-    .fetch_one(pool)
-    .await?;
-    row.try_get("total")
 }
 
 /// Total expense and entry count for an optional category over `[start, end]`.
@@ -493,36 +380,6 @@ pub async fn get_spending_by_category_between(
         .collect()
 }
 
-pub async fn find_recent_duplicate(
-    pool: &PgPool,
-    user_id: Uuid,
-    kind: &str,
-    amount_centavos: i64,
-    note: Option<&str>,
-    local_date: NaiveDate,
-) -> Result<Option<Option<String>>, sqlx::Error> {
-    let note_key = note.unwrap_or_default().trim().to_ascii_lowercase();
-    let row = sqlx::query(
-        r#"
-        select note
-        from transactions
-        where user_id = $1 and kind = $2::tx_kind and amount_centavos = $3
-          and local_date = $4
-          and lower(coalesce(trim(note), '')) = $5
-        order by seq desc
-        limit 1
-        "#,
-    )
-    .bind(user_id)
-    .bind(kind)
-    .bind(amount_centavos)
-    .bind(local_date)
-    .bind(note_key)
-    .fetch_optional(pool)
-    .await?;
-    row.map(|row| row.try_get("note")).transpose()
-}
-
 pub async fn get_recent_transactions(
     pool: &PgPool,
     user_id: Uuid,
@@ -617,29 +474,12 @@ pub async fn list_goals(pool: &PgPool, user_id: Uuid) -> Result<Vec<GoalRow>, sq
         .collect()
 }
 
-pub async fn find_goals_by_name(
-    pool: &PgPool,
-    user_id: Uuid,
-    name: &str,
-) -> Result<Vec<GoalRow>, sqlx::Error> {
-    Ok(match_goals(list_goals(pool, user_id).await?, name))
-}
-
-pub async fn find_goal_by_name(
-    pool: &PgPool,
-    user_id: Uuid,
-    name: &str,
-) -> Result<Option<GoalRow>, sqlx::Error> {
-    let matches = find_goals_by_name(pool, user_id, name).await?;
-    Ok((matches.len() == 1).then(|| matches[0].clone()))
-}
-
 fn transaction_from_row(row: sqlx::postgres::PgRow) -> Result<TransactionRow, sqlx::Error> {
     let category: String = row.try_get("category")?;
     let kind: String = row.try_get("kind")?;
     Ok(TransactionRow {
         id: row.try_get("id")?,
-        kind: TxKind::from_db(&kind)?,
+        kind: tx_kind_from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
         note: row.try_get("note")?,
@@ -654,70 +494,10 @@ fn transaction_summary_from_row(
     let category: String = row.try_get("category")?;
     let kind: String = row.try_get("kind")?;
     Ok(TransactionSummaryRow {
-        kind: TxKind::from_db(&kind)?,
+        kind: tx_kind_from_db(&kind)?,
         amount_centavos: row.try_get("amount_centavos")?,
         category: coerce_category(category),
         note: row.try_get("note")?,
         local_date: row.try_get("local_date")?,
     })
-}
-
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', r"\\")
-        .replace('%', r"\%")
-        .replace('_', r"\_")
-}
-
-fn match_goals(goals: Vec<GoalRow>, query: &str) -> Vec<GoalRow> {
-    let q = query.trim().to_ascii_lowercase();
-    if q.is_empty() {
-        return Vec::new();
-    }
-    let exact = goals
-        .iter()
-        .filter(|goal| goal.name.eq_ignore_ascii_case(&q))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !exact.is_empty() {
-        return exact;
-    }
-    goals
-        .into_iter()
-        .filter(|goal| goal.name.to_ascii_lowercase().contains(&q))
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn goal_matching_is_exact_first_then_contains() {
-        let goals = vec![
-            GoalRow {
-                id: Uuid::new_v4(),
-                name: "Japan Trip".into(),
-                target_centavos: 1,
-                saved_centavos: 0,
-                created_at: Utc::now(),
-                target_date: None,
-            },
-            GoalRow {
-                id: Uuid::new_v4(),
-                name: "Trip".into(),
-                target_centavos: 1,
-                saved_centavos: 0,
-                created_at: Utc::now(),
-                target_date: None,
-            },
-        ];
-        assert_eq!(match_goals(goals.clone(), "Trip").len(), 1);
-        assert_eq!(match_goals(goals, "japan").len(), 1);
-    }
-
-    #[test]
-    fn escapes_like_metacharacters() {
-        assert_eq!(escape_like(r"50%_off\deal"), r"50\%\_off\\deal");
-    }
 }

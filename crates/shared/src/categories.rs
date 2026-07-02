@@ -62,11 +62,6 @@ impl FromStr for Category {
 }
 
 #[must_use]
-pub fn is_category(value: &str) -> bool {
-    Category::from_str(value).is_ok()
-}
-
-#[must_use]
 pub fn coerce_category(value: impl AsRef<str>) -> Category {
     let raw = value.as_ref();
     if let Ok(category) = Category::from_str(raw) {
