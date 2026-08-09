@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MySched school proof preview</title>
+  <style>
+    :root {
+      --blue: #0066ff;
+      --ink: #0c1937;
+      --muted: #5f6878;
+      --line: rgba(12, 25, 55, 0.12);
+      --yellow: #ffe566;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #f4f6fa;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .canvas {
+      width: min(1280px, calc(100% - 48px));
+      margin: 42px auto;
+      overflow: hidden;
+      border: 1px solid #dfe4ec;
+      border-radius: 28px;
+      background: #fff;
+      box-shadow: 0 30px 80px rgba(12, 25, 55, 0.12);
+    }
+    .hero-slice {
+      min-height: 160px;
+      display: grid;
+      place-items: center;
+      padding: 40px;
+      background: linear-gradient(180deg, #edf4ff 0%, #e3efff 100%);
+      text-align: center;
+    }
+    .hero-slice h1 {
+      margin: 0;
+      font-size: clamp(32px, 4vw, 58px);
+      line-height: 0.98;
+      letter-spacing: -0.045em;
+    }
+    .hero-slice h1 span { color: var(--blue); }
+    .proof-band {
+      position: relative;
+      overflow: hidden;
+      padding: 30px 0 18px;
+      border-block: 1px solid var(--line);
+      background: #fff;
+    }
+    .proof-title {
+      margin: 0 20px 24px;
+      color: #667085;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      line-height: 1.35;
+      text-align: center;
+      text-transform: uppercase;
+    }
+    .viewport {
+      position: relative;
+      overflow: hidden;
+      mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+      -webkit-mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+    }
+    .track {
+      display: flex;
+      width: max-content;
+      animation: marquee 38s linear infinite;
+    }
+    .set {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: clamp(50px, 5.5vw, 82px);
+      padding-inline: clamp(30px, 4vw, 60px);
+    }
+    .school {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 11px;
+      min-height: 58px;
+      white-space: nowrap;
+    }
+    .school img {
+      width: 48px;
+      height: 48px;
+      object-fit: contain;
+      display: block;
+    }
+    .school strong {
+      font-size: 16px;
+      font-weight: 760;
+      letter-spacing: -0.015em;
+    }
+    .disclaimer {
+      max-width: 760px;
+      margin: 18px auto 0;
+      padding-inline: 20px;
+      color: #727b8b;
+      font-size: 11px;
+      line-height: 1.45;
+      text-align: center;
+    }
+    .next-section {
+      padding: 38px 60px 58px;
+      background: #fff;
+    }
+    .bento {
+      min-height: 112px;
+      display: flex;
+      align-items: center;
+      padding: 30px 38px;
+      border: 1px solid rgba(122, 69, 0, 0.14);
+      border-radius: 30px;
+      background: var(--yellow);
+      color: #7a4500;
+    }
+    .bento h2 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.05;
+      letter-spacing: -0.035em;
+    }
+    @keyframes marquee { to { transform: translateX(-50%); } }
+    @media (prefers-reduced-motion: reduce) { .track { animation: none; } .set:last-child { display: none; } }
+    @media (max-width: 640px) {
+      .canvas { width: min(390px, calc(100% - 24px)); margin: 18px auto; border-radius: 24px; }
+      .hero-slice { min-height: 118px; padding: 28px 20px; }
+      .hero-slice h1 { font-size: 31px; }
+      .proof-band { padding: 24px 0 16px; }
+      .proof-title { max-width: 330px; margin: 0 auto 20px; padding: 0 16px; font-size: 11px; }
+      .set { gap: 38px; padding-inline: 20px; }
+      .school { gap: 8px; min-height: 48px; }
+      .school img { width: 38px; height: 38px; }
+      .school strong { font-size: 14px; }
+      .disclaimer { font-size: 10px; margin-top: 16px; }
+      .next-section { padding: 24px 16px 34px; }
+      .bento { min-height: 86px; padding: 22px; border-radius: 22px; }
+      .bento h2 { font-size: 21px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="canvas">
+    <section class="hero-slice">
+      <h1>Your class schedule,<br /><span>always with you.</span></h1>
+    </section>
+
+    <section class="proof-band" aria-label="MySched school community">
+      <p class="proof-title">Used by students from 900+ schools and campuses</p>
+      <div class="viewport">
+        <div class="track">
+          <div class="set">
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/3126ecc92e812a0c90d8b700aa2d58c992bd72c9fb22d40831f83bd4e415ee12.png" alt="University of Santo Tomas" /><strong>UST</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/10e3af41ca2edaa0bbd844a41411b75f2b191e5b3401cc46448aea1fd6ea6e10.png" alt="Our Lady of Fatima University" /><strong>OLFU</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/526711cc6bead84d977a6d26a18e4b2d28e8f79b7b885e3afcda3528023fdb33.png" alt="STI Education Services Group" /><strong>STI</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/411d486dab50a93336a01df9dbe2e9e32d8deb7fecc74ad634774fd85c784b2f.png" alt="University of the Philippines" /><strong>UP</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/b732f01fb6c86bfaa85a86eadaadda5c919f9f0201f2461e779ebcb997afb7d5.png" alt="Polytechnic University of the Philippines" /><strong>PUP</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/9fba9cc46b1522fa6f27e9ac5d64902693e659f6662c233c6f85b750ed644b47.png" alt="Far Eastern University" /><strong>FEU</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/32b3b4233825f146f9b696f4843e8460b30f531cf8b35cec0d7f5d8967ace0ad.png" alt="Cavite State University" /><strong>CvSU</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/79bd89776bae4e8b7cde6dc0de2310e01b30c8f7d59d630f892e5f57b35df926.png" alt="National University" /><strong>NU</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/abe6a6ca1bc75b6b0581d2f1a3a2698bbef50c808d598aafda92d7824e2aa221.png" alt="University of Mindanao" /><strong>UM</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/5487fcc7cbb8087bf2419dc38512e9455b8fafa9bff7ac716679eecf21142172.png" alt="Batangas State University" /><strong>BatStateU</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/8d2a0c5a509fd223c1e45c7ca525de2c881f02b1d5c16538cecd1cc477655044.png" alt="Saint Louis University" /><strong>SLU</strong></div>
+          </div>
+          <div class="set" aria-hidden="true">
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/3126ecc92e812a0c90d8b700aa2d58c992bd72c9fb22d40831f83bd4e415ee12.png" alt="" /><strong>UST</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/10e3af41ca2edaa0bbd844a41411b75f2b191e5b3401cc46448aea1fd6ea6e10.png" alt="" /><strong>OLFU</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/526711cc6bead84d977a6d26a18e4b2d28e8f79b7b885e3afcda3528023fdb33.png" alt="" /><strong>STI</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/411d486dab50a93336a01df9dbe2e9e32d8deb7fecc74ad634774fd85c784b2f.png" alt="" /><strong>UP</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/b732f01fb6c86bfaa85a86eadaadda5c919f9f0201f2461e779ebcb997afb7d5.png" alt="" /><strong>PUP</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/9fba9cc46b1522fa6f27e9ac5d64902693e659f6662c233c6f85b750ed644b47.png" alt="" /><strong>FEU</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/32b3b4233825f146f9b696f4843e8460b30f531cf8b35cec0d7f5d8967ace0ad.png" alt="" /><strong>CvSU</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/79bd89776bae4e8b7cde6dc0de2310e01b30c8f7d59d630f892e5f57b35df926.png" alt="" /><strong>NU</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/abe6a6ca1bc75b6b0581d2f1a3a2698bbef50c808d598aafda92d7824e2aa221.png" alt="" /><strong>UM</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/5487fcc7cbb8087bf2419dc38512e9455b8fafa9bff7ac716679eecf21142172.png" alt="" /><strong>BatStateU</strong></div>
+            <div class="school"><img src="https://zszdsuhqgwwfikxtwtyn.supabase.co/storage/v1/object/public/school-logos/normalized/8d2a0c5a509fd223c1e45c7ca525de2c881f02b1d5c16538cecd1cc477655044.png" alt="" /><strong>SLU</strong></div>
+          </div>
+        </div>
+      </div>
+      <p class="disclaimer">School names and marks identify where MySched users study. MySched is not affiliated with or endorsed by the institutions shown.</p>
+    </section>
+
+    <section class="next-section">
+      <div class="bento"><h2>Plan your college term in one place</h2></div>
+    </section>
+  </main>
+</body>
+</html>
